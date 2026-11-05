@@ -892,6 +892,51 @@ def _register_bundled_tito_plugins(
         register()
 
 
+def _install_assistant_reasoning_canonicalization() -> None:
+    """Fold protocol-equivalent *empty* reasoning fields into the TITO lineage canonicalizer.
+
+    TITO opens a new training segment whenever an assistant turn, as replayed by the
+    agent in the next request's history, is not canonically identical to the turn the
+    sampler committed. Each such split re-encodes the whole conversation prefix as
+    masked (untrained) tokens, and those re-encoded prefixes dominate the trainer's
+    forward/backward cost.
+
+    The SDK's ``_normalize_chat_message`` already maps a tool-call assistant's
+    ``content`` null/whitespace to ``""`` so harnesses that disagree on how to spell
+    "no content" do not cause a false history rewrite. It does **not** do the same for
+    ``reasoning_content``/``reasoning``: a turn the sampler produced with no reasoning
+    (field absent or ``None``) that the agent replays as ``reasoning_content: ""`` (or
+    vice versa) therefore splits on every such turn.
+
+    Both sides of the lineage comparison -- the committed assistant message
+    (``TITOParsedAssistant``) and every replayed request message (``TITOChatRequest``)
+    -- are canonicalized through this single function, so wrapping it normalizes both
+    sides identically. We only collapse *empty* spellings (None / absent / whitespace)
+    to "absent"; a non-empty reasoning string is left untouched, so a genuine reasoning
+    difference still (correctly) opens a new segment and training stays on-policy.
+    This changes neither the trained tokens (sourced from the exact completion ids) nor
+    the rendered prefix (the renderer emits a reasoning block only for truthy reasoning,
+    so ``None`` and ``""`` already render identically).
+    """
+    from fireworks.training.sdk.tito import _types as tito_types
+
+    original = tito_types._normalize_chat_message
+    if getattr(original, "_reasoning_canonicalized", False):
+        return  # idempotent: safe to call more than once
+
+    def _normalize_chat_message_canonical_reasoning(message: Mapping[str, Any]) -> dict:
+        normalized = original(message)
+        if normalized.get("role") == "assistant":
+            for key in ("reasoning_content", "reasoning"):
+                value = normalized.get(key)
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    normalized.pop(key, None)
+        return normalized
+
+    _normalize_chat_message_canonical_reasoning._reasoning_canonicalized = True  # type: ignore[attr-defined]
+    tito_types._normalize_chat_message = _normalize_chat_message_canonical_reasoning
+
+
 async def serve(spec_path: Path) -> None:
     from fireworks.training.sdk import (
         DeploymentSampler,
@@ -905,6 +950,11 @@ async def serve(spec_path: Path) -> None:
         build_sidecar_tito_renderer,
         load_sidecar_tokenizer,
     )
+
+    # Collapse empty-reasoning spellings so the sampler-committed assistant message and
+    # the agent's replay of it compare equal, avoiding a full-prefix segment split per
+    # turn. Installed before any TITOChatRequest/TITOParsedAssistant is constructed.
+    _install_assistant_reasoning_canonicalization()
 
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     if spec.get("schema_version") != 2:
