@@ -1601,6 +1601,7 @@ def main(
 
         # -- Final checkpoint --------------------------------------------------
 
+        final_training_checkpoint = None
         start_step = resume_info.step if resume_info else 0
         trained_new_steps = step > start_step
         # Promotion may have failed after the final training checkpoint was saved.
@@ -1609,7 +1610,7 @@ def main(
         if cfg.save_final_checkpoint and (trained_new_steps or needs_model_finalization):
             logger.info("Saving final checkpoint (step %d)...", step)
             cp_name = f"step-{step}"
-            ckpt.save(
+            final_training_checkpoint = ckpt.save(
                 cp_name,
                 resumable=trained_new_steps,
                 promotable=True,
@@ -1641,7 +1642,11 @@ def main(
         write_completed(runner, step=step, total_steps=step)
         logger.info("Training complete: %d optimizer steps", step)
         wandb_finish()
-        return {"steps": step, "job_id": job_id}
+        return {
+            "steps": step,
+            "job_id": job_id,
+            "final_training_checkpoint": final_training_checkpoint,
+        }
 
 
 if __name__ == "__main__":

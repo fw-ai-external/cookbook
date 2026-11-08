@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -646,6 +647,18 @@ class TestResume:
 
 
 class TestSave:
+    def test_returns_authoritative_dcp_path_and_reuses_it_on_repeat_save(self, log_dir: str) -> None:
+        ckpt, client, _ = _make(log_dir)
+        saved_path = "account/run-0123456789abcdef0123456789abcdef/server-chosen-checkpoint"
+        client.save_state.side_effect = None
+        client.save_state.return_value = SimpleNamespace(path=saved_path)
+
+        first = ckpt.save("step-42", resumable=True, promotable=False)
+        repeated = ckpt.save("step-42", resumable=True, promotable=False)
+
+        assert first == repeated == saved_path
+        client.save_state.assert_called_once_with("step-42")
+
     def test_resumable_only_writes_dcp_and_dataloader(self, log_dir):
         ckpt, client, fw = _make(log_dir)
         ckpt.save("step-1", resumable=True, promotable=False, data_consumed=100)
@@ -659,7 +672,7 @@ class TestSave:
 
     def test_promotable_only_writes_sampler_no_dataloader(self, log_dir):
         ckpt, client, fw = _make(log_dir)
-        ckpt.save("step-1", resumable=False, promotable=True)
+        assert ckpt.save("step-1", resumable=False, promotable=True) is None
         client.save_state.assert_not_called()
         client.save_weights_for_sampler.assert_called_once_with(
             "step-1-base", checkpoint_type="base"

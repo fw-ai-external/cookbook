@@ -649,6 +649,8 @@ def _run_main_with_fake_trainer(
             saves.append((name, kwargs))
             if finalization_error == "save":
                 raise RuntimeError("sampler export unavailable")
+            if kwargs["resumable"]:
+                return "account/run-0123456789abcdef0123456789abcdef/server-saved-final"
 
         def promote_latest(self, output_model_id: str, base_model: str, **kwargs: Any) -> dict[str, str]:
             events.append("promote")
@@ -795,6 +797,9 @@ def test_output_model_finalization_runs_after_terminal_step_resume(
         )
     ]
     assert result["steps"] == final_step
+    assert result["final_training_checkpoint"] == (
+        "account/run-0123456789abcdef0123456789abcdef/server-saved-final" if new_steps else None
+    )
     output = json.loads((tmp_path / "output-model.json").read_text())
     assert output["model_id"] == "trained-model"
     assert output["checkpoint"] == f"step-{final_step}"
@@ -882,7 +887,7 @@ def test_terminal_step_resume_without_finalization_keeps_existing_behavior(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any]
 ) -> None:
     saves, promotions = [], []
-    _run_main_with_fake_trainer(
+    _, _, result = _run_main_with_fake_trainer(
         tmp_path,
         monkeypatch,
         resume_info=SimpleNamespace(step=9, data_consumed=4),
@@ -893,6 +898,25 @@ def test_terminal_step_resume_without_finalization_keeps_existing_behavior(
 
     assert saves == []
     assert promotions == []
+    assert result["final_training_checkpoint"] is None
+
+
+def test_disabled_final_save_does_not_return_an_intermediate_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saves = []
+    _, _, result = _run_main_with_fake_trainer(
+        tmp_path,
+        monkeypatch,
+        resume_info=None,
+        save_final_checkpoint=False,
+        dcp_save_interval=1,
+        saves=saves,
+    )
+
+    assert len(saves) == 2
+    assert result["steps"] == 2
+    assert result["final_training_checkpoint"] is None
 
 
 @pytest.mark.parametrize("resumed", [False, True])
@@ -918,7 +942,11 @@ def test_generation_eval_failure_is_logged_and_training_still_succeeds(tmp_path,
             generation_eval_fails=True,
             resume_info=None,
         )
-    assert result == {"steps": 2, "job_id": "session-1"}
+    assert result == {
+        "steps": 2,
+        "job_id": "session-1",
+        "final_training_checkpoint": "account/run-0123456789abcdef0123456789abcdef/server-saved-final",
+    }
     assert events[-2:] == ["completed", "close"]
     assert "Generation evaluation failed" in caplog.text
     artifact = json.loads((tmp_path / "logs" / "generation_eval.json").read_text())

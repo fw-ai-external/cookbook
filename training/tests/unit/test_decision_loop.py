@@ -10,6 +10,7 @@ import pytest
 
 from fireworks.training.sdk.client import qualify_snapshot_name
 from fireworks.training.sdk.training_spec import CosineSchedule, compute_lr, normalize_lr_scheduler_spec
+from fireworks.training.sdk.types.save_weights_response import SaveWeightsResponse
 from training.recipes import decision_loop, sft_loop
 from training.renderer.muse_glimmer import MuseGlimmerOptions, MuseGlimmerRenderer
 from training.utils.checkpoints import TrainingCheckpoints, _RUN_ID_RE, _public_logical_name
@@ -121,8 +122,9 @@ class _ControlPlane:
             outputs.append({"logprobs": SimpleNamespace(data=[0.0] * (d.model_input.length - 1) * k + answer)})
         return SimpleNamespace(loss_fn_outputs=outputs)
 
-    def save_state(self, name):
+    def save_state(self, name) -> SaveWeightsResponse:
         self._row(self._stored_name(name, sampler=False), "CHECKPOINT_TYPE_TRAINING_LORA", promotable=False)
+        return SaveWeightsResponse(path=f"a/{self.run_id or self.trainer_job_id}/{name}")
 
     def save_weights_for_sampler(self, name, checkpoint_type=None, metadata=None, **kwargs):
         self.sampler_metadata[name] = metadata
@@ -169,6 +171,7 @@ def _run(
         plane.step_tokens.append(tokens)
 
     monkeypatch.setattr(decision_loop, "write_running_step", _write_running_step)
+
     def _provision(**kwargs):
         plane.provisioned = True
         return plane
@@ -284,7 +287,10 @@ def test_unlabeled_carve_out_is_rejected_before_provisioning(monkeypatch, tmp_pa
     rows = _rows(40)
     for i in decision_loop._carve_out(decision_loop.Config(log_path=""), 40):
         questions = rows[i]["questions"]
-        rows[i] = {**rows[i], "questions": {q: {k: v for k, v in s.items() if k != "label"} for q, s in questions.items()}}
+        rows[i] = {
+            **rows[i],
+            "questions": {q: {k: v for k, v in s.items() if k != "label"} for q, s in questions.items()},
+        }
     plane = _ControlPlane()
     with pytest.raises(DatasetError, match="calibration split has no labeled decision questions"):
         _run(monkeypatch, tmp_path, plane, dataset=_write(tmp_path / "t.jsonl", rows), evaluation_dataset="")
