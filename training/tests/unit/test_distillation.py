@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from math import exp
 from types import SimpleNamespace
 
+import httpx
 import pytest
 import training.recipes.distillation_loop as distillation_loop
 from fireworks.training import sdk
+from fireworks.training.sdk.deployment import DeploymentSampler
 from training.recipes.distillation_loop import Config
 from training.recipes.distillation_loop import main as run_opd_main
 from training.utils import (
@@ -40,6 +43,7 @@ from training.utils.distillation.sampling import (
     completions_from_sample_response,
     score_teacher_logprobs,
     score_teacher_logprobs_with_sampling_client,
+    score_with_teacher,
     teacher_messages_for_row,
     tokenize_teacher_prompt,
 )
@@ -507,6 +511,33 @@ def test_teacher_messages_fallback_to_student_prompt() -> None:
     student_messages = [{"role": "user", "content": "student"}]
 
     assert teacher_messages_for_row({"messages": student_messages}, student_messages) == student_messages
+
+
+@pytest.mark.asyncio
+async def test_teacher_scoring_uses_sdk_default_without_raw_snapshot() -> None:
+    choice = {
+        "text": "synthetic",
+        "finish_reason": "stop",
+        "prompt_token_ids": [10, 11, 40, 41],
+        "token_ids": [10, 11, 40, 41, 99],
+        "logprobs": {"content": [{"logprob": value} for value in (0.0, -0.2, -0.4, -0.5, -0.7)]},
+    }
+    event = {"choices": [choice], "usage": {"completion_tokens": 1}}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload.get("raw_output", False) is False
+        assert payload["echo"] is True
+        return httpx.Response(200, content=f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n".encode())
+
+    sampler = DeploymentSampler("https://example.invalid", "model", "unused")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        sampler._get_async_client = lambda: client
+        try:
+            scores = await score_with_teacher(sampler, [10, 11, 40, 41], prompt_len=2, response_len=2, http_timeout=5)
+            assert scores == [-0.4, -0.5]
+        finally:
+            sampler.close()
 
 
 def test_teacher_messages_accept_privileged_messages_alias() -> None:

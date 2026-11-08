@@ -465,7 +465,7 @@ class FireworksV1ImageCompletionsClient:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "return_token_ids": True,
-            "raw_output": True,
+            "raw_output": False,
         }
         if self.logprobs:
             request_payload["logprobs"] = True

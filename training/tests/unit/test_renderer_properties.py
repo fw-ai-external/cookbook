@@ -39,6 +39,7 @@ tokenizer silently stops loading.
 
 from __future__ import annotations
 
+import gc
 import os
 from collections.abc import Iterator
 from functools import cache
@@ -50,6 +51,7 @@ import pytest
 # kimi_k27_code, ...) under training.renderer._registry.get_renderer.
 import training.renderer  # noqa: F401
 from training.renderer import Renderer, get_renderer
+from training.renderer._tokenizer_utils import _get_hf_tokenizer
 from training.renderer.tokenizer import Tokenizer, get_tokenizer
 from training.renderer.verifier.utils import hf_parity
 from training.renderer.verifier.utils.hf_parity import (
@@ -86,7 +88,15 @@ def _reuse_renderer_instances() -> Iterator[None]:
     with pytest.MonkeyPatch.context() as patch:
         patch.setitem(globals(), "get_renderer", cached_renderer)
         patch.setattr(hf_parity, "get_renderer", cached_renderer)
-        yield
+        try:
+            yield
+        finally:
+            # Do not retain every QA vocabulary when later tests spawn workers.
+            cached_renderer.cache_clear()
+            _load_tokenizer_result.cache_clear()
+            hf_parity._load_tokenizer.cache_clear()
+            _get_hf_tokenizer.cache_clear()
+            gc.collect()
 
 
 def _shard_renderer_cases(cases: list[RendererCase], shard_index: int, shard_count: int) -> list[RendererCase]:
