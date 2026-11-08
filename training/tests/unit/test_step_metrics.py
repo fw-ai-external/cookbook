@@ -242,7 +242,9 @@ class TestSamplerMetrics:
             outcome = outcomes.pop(0)
             if isinstance(outcome, Exception):
                 raise outcome
-            choice = {"text": "ok", "finish_reason": "stop", "raw_output": {"completion_token_ids": [7]}}
+            choice = {"text": "ok", "finish_reason": "stop", "token_ids": [7], "prompt_token_ids": [1, 2, 3]}
+            if kwargs.get("raw_output", False):
+                choice["raw_output"] = {"completion_token_ids": [7]}
             return {"choices": [choice]}, ServerMetrics(server_processing_time=0.1)
 
         sampler = DeploymentSampler(

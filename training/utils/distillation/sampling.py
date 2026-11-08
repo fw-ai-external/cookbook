@@ -162,7 +162,6 @@ async def score_with_teacher(
             temperature=0.0,
             logprobs=True,
             echo=True,
-            raw_output=True,
             http_timeout=http_timeout,
         )
     except Exception as exc:

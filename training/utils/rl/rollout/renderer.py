@@ -638,7 +638,7 @@ async def sample_vision_completion(
         "temperature": temperature,
         "logprobs": True,
         "return_token_ids": True,
-        "raw_output": True,
+        "raw_output": False,
         "n": 1,
     }
     if stop:
