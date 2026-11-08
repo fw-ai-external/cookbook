@@ -10,6 +10,20 @@ The cookbook's checkpoint manager is `TrainingCheckpoints` in `training/utils/ch
 - `promotable=True` → sampler write (HF safetensors). Eligible for `promote_checkpoint`.
 - Both → DCP + sampler in one call.
 
+A resumable `save()` returns the exact DCP path from the SDK's `save_state()`
+response; repeated saves of the same name in one manager return that same path.
+Sampler-only saves return `None`.
+
+`sft_loop.main()` returns `steps`, `job_id`, and `final_training_checkpoint`.
+The checkpoint field is the final save's DCP path, usable with
+`service.create_training_client_from_state(...)` in a later phase. It is `None`
+when final saving is disabled or the invocation did not save a final DCP
+(including a resume with no new optimizer steps). Keep the original run's
+returned path when resuming such a completed run; do not derive it from the
+step number or use the sampler export. For serverless runs, closing the SDK
+client only closes its connections; leave `close_session_on_exit=False` while
+later stages need session-scoped checkpoint listing or promotion.
+
 Periodic dedicated recipe saves evaluate DCP and sampler cadences independently. Managed SFT/DPO/ORPO uses a server-managed DCP interval and forwards the customer's optional sampler interval separately. When both are due on the same step, one call writes both checkpoint types. The final save is `resumable=True, promotable=True`. A `TrainingCheckpoints` instance writes each DCP name once: if a periodic save already wrote the final step's name, the final save skips the DCP write (serverless multi-session LoRA rejects same-name overwrites) and only refreshes `dataloader.json`. RL FILE weight sync saves sampler checkpoints with `save_weights_for_sampler_ext` and hotloads the returned snapshot identity; those sampler rows are separate from DCP resume saves. Negotiated RDMA weight sync publishes temporary GPU weights without creating sampler checkpoint rows. Explicit resumable/promotable saves remain necessary; see [transport negotiation](rl-hotload.md#transport-negotiation).
 
 ### Snapshot type is part of the contract

@@ -432,6 +432,8 @@ class TrainingCheckpoints:
         self._save_poll_s = save_poll_s
         # Caller DCP name -> name keyed in dataloader.json.
         self._saved_dcp_names: dict[str, str] = {}
+        # Preserve the authoritative save response for downstream phase handoff.
+        self._saved_dcp_paths: dict[str, str] = {}
         self._confirmed_promotable: dict | None = None
 
     # -- Save --------------------------------------------------------------
@@ -444,8 +446,12 @@ class TrainingCheckpoints:
         promotable: bool,
         data_consumed: int | None = None,
         sampler_metadata: Any | None = None,
-    ) -> None:
+    ) -> str | None:
         """Save a checkpoint with the requested capabilities.
+
+        Returns the exact DCP path returned by ``save_state`` when resumable,
+        including a repeated save of the same name in this instance. A
+        sampler-only save returns ``None``.
 
         ``resumable=True`` writes a DCP checkpoint (weights + optimizer),
         unless this instance already saved a DCP checkpoint named ``name``.
@@ -495,7 +501,8 @@ class TrainingCheckpoints:
             # the newest resumable row (which is exactly what resume will pick).
             t_save_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             logger.info("Saving DCP checkpoint '%s'...", name)
-            self._client.save_state(name)
+            saved = self._client.save_state(name)
+            self._saved_dcp_paths[name] = saved.path
             logger.info("DCP checkpoint '%s' saved (%.1fs)", name, time.time() - t0)
             self._saved_dcp_names[name] = name
             if data_consumed is not None:
@@ -562,6 +569,8 @@ class TrainingCheckpoints:
                         actual_name,
                         name,
                     )
+
+        return self._saved_dcp_paths[name] if resumable else None
 
     # -- Resume ------------------------------------------------------------
 
