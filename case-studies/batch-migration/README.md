@@ -49,6 +49,30 @@ Failed rows go to `results.jsonl.errors.jsonl` unless you pass `--errors`.
 | 2 | The run stopped early: `FIREWORKS_API_KEY` is missing, the API returned 401 (bad key), or it returned 404 because the model or deployment isn't available. Rows not yet sent are untouched, so rerun the same command once that's fixed. |
 | 130 or 143 | You pressed Ctrl-C (130), or a job scheduler sent SIGTERM (143). The script stops at once without waiting for requests in flight; rerun the same command to continue. |
 
+## Running on a preemptible deployment
+
+A preemptible deployment behaves differently from a Batch job in a few ways:
+
+- **Leave the region unset.** Leave out `--region` unless you need a specific
+  one for data residency. Then Fireworks can place the deployment, and move a
+  waiting replica, wherever capacity is free. A deployment pinned to one region
+  waits there until that region has room.
+- **Expect waits at busy times.** A preemptible replica can wait a long time
+  for capacity, both at create and after a preemption, sometimes longer than
+  the 30-minute default retry window. Raise both `--max-retry-time` and
+  `--max-retries`, or rerun the same command later; finished rows are skipped.
+- **Delete the deployment when you're done.** Unlike a Batch job, a deployment
+  keeps running, and billing, after your run finishes:
+
+  ```bash
+  firectl deployment delete <DEPLOYMENT_ID>
+  ```
+
+  If you run files regularly, you can instead create it with
+  `--min-replica-count 0 --scale-to-zero-window 30m`, so it scales to zero
+  when idle. The first request after that waits for a replica to start, which
+  the script retries through.
+
 ## Input and output formats
 
 | Input row | Output row (success) | Output row (error) |
@@ -105,8 +129,9 @@ The `error.code` in a failed row is one of:
   - **Preemption:** a preemptible deployment can lose its replica mid-run.
     Until the replica is rescheduled, requests fail with dropped connections or
     with 503 `DEPLOYMENT_SCALING_UP` and `Retry-After: 60`. The defaults ride
-    out about 30 minutes of that. If rescheduling takes longer, raise
-    `--max-retry-time`, or rerun the same command afterward.
+    out about 30 minutes of that. If rescheduling takes longer, raise both
+    `--max-retry-time` and `--max-retries`, or rerun the same command
+    afterward.
   - **Bad key or model:** a 401 (bad key), or the gateway's 404 saying the
     model or deployment isn't available, stops the whole run with exit
     status 2 instead of failing every row. Rows not yet sent are left
