@@ -16,8 +16,10 @@ built on the [Fireworks Python SDK](https://github.com/fw-ai-external/python-sdk
     evaluate, deploy, and tear down a run.
   - [`skills/debug/`](skills/debug/SKILL.md): a run is stuck, failed, or
     produced a poor model.
+  - [`skills/migrate-tinker/`](skills/migrate-tinker/SKILL.md): port an existing
+    Tinker SDK or cookbook loop to the native Fireworks SDK.
   - [`skills/fireworks-training/`](skills/fireworks-training/SKILL.md) holds the
-    shared references the three skills load. `skills/discover/` is a redirect
+    shared references the entry skills load. `skills/discover/` is a redirect
     for older installs.
 - **Installing these skills:** follow the Install section of
   [`skills/GETTING-STARTED.md`](skills/GETTING-STARTED.md#install).

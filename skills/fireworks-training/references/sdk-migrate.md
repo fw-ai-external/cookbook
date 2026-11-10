@@ -3,6 +3,10 @@
 > Applies to Dedicated Training recipes. Serverless recipes never provisioned
 > trainers or deployments.
 
+For a Tinker SDK or upstream Tinker Cookbook port, use the
+[migrate-tinker skill](../../migrate-tinker/SKILL.md). This reference covers the
+older Fireworks infrastructure configuration migration.
+
 The cookbook moved trainer/deployment provisioning out of the recipe layer and
 behind SDK-managed provisioning. Refactored recipes build one SDK-managed
 service client and then use Tinker-shaped `service.create_*` calls. Recipe `Config` objects now take

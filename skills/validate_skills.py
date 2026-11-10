@@ -10,7 +10,7 @@ from pathlib import Path
 
 SKILLS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SKILLS_DIR.parent
-ACTIVE_SKILLS = ("research", "configure", "debug")
+ACTIVE_SKILLS = ("research", "configure", "debug", "migrate-tinker")
 REDIRECTS = ("discover", "fireworks-training")
 EXPECTED_SKILLS = (*ACTIVE_SKILLS, *REDIRECTS)
 CONFIGURE_PATH_OPTIONS = {
@@ -173,6 +173,7 @@ def check_packaging(errors: list[str]) -> None:
             "-s research",
             "-s configure",
             "-s debug",
+            "-s migrate-tinker",
         ):
             if marker not in text:
                 errors.append(f"{path.name}: install command missing `{marker}`")
@@ -441,7 +442,7 @@ def main() -> int:
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print("OK: validated slim research/configure/debug skill split.")
+    print("OK: validated training and Tinker migration skill workflows.")
     return 0
 
 
