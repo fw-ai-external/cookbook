@@ -6,6 +6,8 @@ package and the training notebooks under [`training/case-studies`](../training/c
 
 - [Advisor](advisor/README.md): add a critique-only frontier reviewer to a coding
   agent running on Fireworks.
+- [Batch migration](batch-migration/README.md): run Batch input JSONL files on
+  serverless or your own deployment, with concurrency, retries and resume.
 - [Voyage AI retrieval](voyage-ai/README.md): combine embeddings, MongoDB vector
   search, and reranking on dedicated deployments.
 
