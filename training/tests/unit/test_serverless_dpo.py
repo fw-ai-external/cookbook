@@ -20,7 +20,7 @@ def test_serverless_dpo_defaults_use_supported_model_and_matching_tokenizer(tmp_
     assert cfg.max_seq_len > 0
     assert cfg.lora_rank > 0
     assert 0 < cfg.beta < 0.5
-    assert cfg.max_pairs == 32
+    assert cfg.max_pairs is None
     assert cfg.output_model_id is None
 
 

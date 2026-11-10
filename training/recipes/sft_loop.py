@@ -48,6 +48,7 @@ from typing import Any, Dict, List, Literal
 import torch
 from dotenv import load_dotenv
 from fireworks.training import sdk
+from training.model_defaults import resolve_tokenizer_model
 from fireworks.training.sdk.training_spec import (
     LRSchedulerSpec,
     compute_lr,
@@ -1047,11 +1048,7 @@ def main(
             raise ValueError("generation_eval requires serverless SFT with a pooled sampler.")
         if cfg.max_eval_seqs <= 0:
             raise ValueError("Generation evaluation sample limit must be positive.")
-    if not cfg.tokenizer_model:
-        raise ValueError(
-            "Config.tokenizer_model is required for chat template formatting. "
-            "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
-        )
+    cfg.tokenizer_model = resolve_tokenizer_model(cfg.base_model, cfg.tokenizer_model)
     # Resolve a direct request or reuse the persisted concrete renderer before
     # a managed GPU trainer is provisioned. A persisted concrete name is
     # authoritative across retries and resumes.

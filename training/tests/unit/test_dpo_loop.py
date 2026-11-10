@@ -1414,12 +1414,13 @@ class TestGroupByLength:
 # ---------------------------------------------------------------------------
 
 
-def test_main_requires_tokenizer_model(monkeypatch):
+def test_main_requires_tokenizer_model_for_unknown_model(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     cfg = module.Config(
         log_path="/tmp/dpo_test_logs",
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="",
+        base_model="accounts/customer/models/custom",
     )
     with pytest.raises(ValueError, match="tokenizer_model"):
         module.main(cfg)

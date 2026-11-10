@@ -98,6 +98,7 @@ After three failed hypotheses on the same issue:
 |---|---|
 | Triage categories | `references/triage-paths.md` |
 | Error catalog | `../fireworks-training/references/error-reference.md` |
+| Missing or mismatched tokenizer | [Automatically resolve and validate](../fireworks-training/references/sdk-recipes.md#tokenizer-recovery) |
 | TITO parsing, local traces, and transport errors | `references/tito-failures.md` |
 | Resume and idempotency | `../fireworks-training/references/run-state-and-reporting.md` |
 | Deployment proof | `../fireworks-training/references/deploy-and-troubleshoot.md` |

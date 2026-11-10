@@ -520,14 +520,20 @@ def test_main_rejects_adapter_with_zero_lora_rank(tmp_path, monkeypatch):
         module.main(cfg)
 
 
-def test_main_requires_tokenizer_model(tmp_path, monkeypatch):
+def test_main_requires_tokenizer_model_for_unknown_model(tmp_path, monkeypatch):
     dataset_path = _write_dataset(
         tmp_path,
         [{"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]}],
     )
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
 
-    cfg = module.Config(log_path=str(tmp_path / "logs"), dataset=str(dataset_path), tokenizer_model="", max_seq_len=32)
+    cfg = module.Config(
+        base_model="accounts/customer/models/custom",
+        log_path=str(tmp_path / "logs"),
+        dataset=str(dataset_path),
+        tokenizer_model="",
+        max_seq_len=32,
+    )
 
     with pytest.raises(ValueError, match="tokenizer_model"):
         module.main(cfg)

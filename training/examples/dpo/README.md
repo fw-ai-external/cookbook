@@ -58,18 +58,24 @@ export FIREWORKS_API_KEY=fw_...          # or put it in training/.env
 ./run_serverless.sh                         # from anywhere: data prep + train + promote
 # or by hand, from training/:
 python -m examples.dpo.prepare_data
-python -m examples.dpo.train_dpo_serverless --output-model-id serverless-dpo-uf-demo
+python -m examples.dpo.train_dpo_serverless --max-pairs 32 --output-model-id serverless-dpo-uf-demo
 ```
 
 Flags: `--base-model`, `--tokenizer-model`, `--renderer-name`, `--dataset`,
-`--max-pairs` (default 32 → 8 steps of 4 pairs), `--lora-rank`,
+`--max-pairs` (default: all valid pairs; pass 32 for an eight-step demo), `--lora-rank`,
 `--max-seq-len`, `--epochs`, `--batch-size`, `--learning-rate`, `--beta`,
 `--dcp-save-interval`, `--log-path`, `--init-from-checkpoint`,
 `--output-model-id` (omit to skip promotion), `--wandb-entity` (enables W&B).
 
 [`run_serverless.sh`](run_serverless.sh) prepares the data on first run, exports
 `HF_TRUST_REMOTE_CODE=1` for the K3 tokenizer, and promotes to a timestamped
-model id. Extra flags are passed through.
+model id. Extra flags are passed through. Changing `BASE_MODEL` or passing
+`--base-model` also changes the inferred tokenizer; set `TOKENIZER_MODEL` or
+pass `--tokenizer-model` only for an explicit override.
+
+`--tokenizer-model` is inferred from the exact `--base-model` for known catalog
+models. Pass an explicit matching HF repository or local tokenizer directory for
+an unlisted model or an override.
 
 ## Did it learn?
 

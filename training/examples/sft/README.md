@@ -64,6 +64,10 @@ Flags: `--base-model`, `--tokenizer-model`, `--renderer-name`, `--dataset`,
 `--log-path`, `--init-from-checkpoint`, `--output-model-id` (omit to skip
 promotion), `--wandb-entity` (enables W&B).
 
+`--tokenizer-model` is inferred from the exact `--base-model` for known catalog
+models. Pass an explicit matching HF repository or local tokenizer directory for
+an unlisted model or an override.
+
 ### Kimi K3
 
 [`run_serverless.sh`](run_serverless.sh) wraps the flags for a K3 run — LoRA rank 8,
@@ -76,8 +80,9 @@ timestamped output model id so repeated runs don't collide:
 ```
 
 It exports `HF_TRUST_REMOTE_CODE=1` (K3 ships a custom image processor) and
-defaults `--tokenizer-model` to `moonshotai/Kimi-K3`, which resolves to the
-`kimi_k3` renderer. Override with the `BASE_MODEL` / `TOKENIZER_MODEL` env vars.
+infers the tokenizer from the selected base model. Set `BASE_MODEL` or pass
+`--base-model` to change models; `TOKENIZER_MODEL` / `--tokenizer-model` are
+optional explicit overrides.
 
 ## Checkpoints and resume
 
