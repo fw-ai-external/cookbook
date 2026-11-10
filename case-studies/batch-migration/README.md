@@ -116,9 +116,6 @@ The `error.code` in a failed row is one of:
   - **New deployments:** a deployment answers 404 until it is `READY`, so
     wait for `firectl deployment get <DEPLOYMENT_ID>` to show `State: READY`
     before you start.
-  - **Duplicates:** a retry after a timeout or a dropped connection can resend
-    a request the server already processed, which you are billed for again.
-    The output still has one row per id.
 - **`--timeout`** (default 600s): the per-request timeout. Raise it for very
   long generations.
 
@@ -142,8 +139,7 @@ already failed, for example ones that fail validation every time, add
 `--skip-errors`.
 
 Each row is written and flushed as soon as it finishes, so an interrupted run
-loses at most the rows that were in flight. Those are sent again on the rerun,
-and you are billed for them again.
+loses at most the rows that were in flight. Those are sent again on the rerun.
 
 If the process is killed in the middle of writing a row, the rerun first
 repairs the file: it removes the incomplete last line (and sends that row
