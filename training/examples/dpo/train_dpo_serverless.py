@@ -36,6 +36,7 @@ import time
 from pathlib import Path
 
 import training.recipes.dpo_loop as dpo_loop
+from training.model_defaults import resolve_tokenizer_model
 from training.utils import RunnerConfig, WandBConfig
 
 DATASET = Path(__file__).resolve().parent / "preference_train.jsonl"
@@ -44,10 +45,10 @@ DATASET = Path(__file__).resolve().parent / "preference_train.jsonl"
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Serverless DPO on UltraFeedback")
     p.add_argument("--base-model", default="accounts/fireworks/models/kimi-k3")
-    p.add_argument("--tokenizer-model", default="moonshotai/Kimi-K3")
+    p.add_argument("--tokenizer-model", default="", help="Infer from --base-model unless overridden.")
     p.add_argument("--renderer-name", default="", help="Empty = infer from the tokenizer.")
     p.add_argument("--dataset", default=str(DATASET))
-    p.add_argument("--max-pairs", type=int, default=32, help="Train on the first N valid pairs.")
+    p.add_argument("--max-pairs", type=int, default=None, help="Optional cap; default trains on all valid pairs.")
     p.add_argument("--lora-rank", type=int, default=8)
     p.add_argument("--max-seq-len", type=int, default=32768)
     p.add_argument("--epochs", type=int, default=1)
@@ -75,7 +76,7 @@ def build_config(args: argparse.Namespace) -> dpo_loop.Config:
         serverless=True,
         log_path=args.log_path,
         base_model=args.base_model,
-        tokenizer_model=args.tokenizer_model,
+        tokenizer_model=resolve_tokenizer_model(args.base_model, args.tokenizer_model),
         renderer_name=args.renderer_name,
         dataset=args.dataset,
         max_pairs=args.max_pairs,

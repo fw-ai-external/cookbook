@@ -23,7 +23,8 @@ fi
 # Kimi K3 is a gated model: the key must belong to an account that can read it,
 # and serverless training rejects a key with access to more than one account.
 BASE_MODEL="${BASE_MODEL:-accounts/fireworks/models/kimi-k3}"
-TOKENIZER_MODEL="${TOKENIZER_MODEL:-moonshotai/Kimi-K3}"
+# Empty defers to Python inference, including a --base-model override in "$@".
+TOKENIZER_MODEL="${TOKENIZER_MODEL:-}"
 
 # K3 ships a custom image processor behind trust_remote_code.
 export HF_TRUST_REMOTE_CODE="${HF_TRUST_REMOTE_CODE:-1}"

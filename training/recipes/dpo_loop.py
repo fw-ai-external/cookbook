@@ -48,6 +48,7 @@ from typing import Any, Callable, Sequence
 
 import torch
 from fireworks.training import sdk
+from training.model_defaults import resolve_tokenizer_model
 from fireworks.training.sdk.training_spec import (
     LRSchedulerSpec,
     compute_lr,
@@ -1010,11 +1011,7 @@ def main(
         init_from_checkpoint=cfg.init_from_checkpoint,
         lora_rank=cfg.lora_rank,
     )
-    if not cfg.tokenizer_model:
-        raise ValueError(
-            "Config.tokenizer_model is required for client-side tokenization. "
-            "Set it to the HuggingFace model name (e.g. 'Qwen/Qwen3-1.7B')."
-        )
+    cfg.tokenizer_model = resolve_tokenizer_model(cfg.base_model, cfg.tokenizer_model)
     # Resolve a direct request or reuse the persisted concrete renderer before
     # provisioning either GPU service. Chosen and rejected are then rendered by
     # the same concrete renderer in every worker.

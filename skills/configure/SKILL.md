@@ -122,7 +122,7 @@ checkout, use the SDK calls in the [Training API quick reference](../fireworks-t
 
 Confirm in as few calls as possible:
 
-1. Account, authentication, and model support on the chosen surface.
+1. Account, authentication, model support, and tokenizer compatibility; automatically recover missing/incorrect tokenizers with [tokenizer recovery](../fireworks-training/references/sdk-recipes.md#tokenizer-recovery).
 2. Dataset existence, `READY` state, format, row count, and split. For local
    files: schema, roles, empty or malformed rows, duplicates, leakage, and
    token lengths. Account datasets cannot be downloaded by default.

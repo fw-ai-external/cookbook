@@ -15,6 +15,16 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 | Distillation / OPD | `training/recipes/distillation_loop.py` — see [`sdk-distillation.md`](sdk-distillation.md) |
 | SDFT | [Customer guide](../../../training/docs/sdft.md); maintained in the external Fireworks Tinker-Cookbook fork |
 
+## Tokenizer recovery
+
+If mapping is missing or the specified tokenizer fails or mismatches, automatically
+inspect the exact base model with SDK `models.get(model_id, account_id=account_id)`.
+Resolve its `hugging_face_url` or authorized tokenizer artifacts; prefer the owner's
+artifacts for custom models. Check vocabulary/special-token IDs and renderer
+compatibility on a local sample, correct the config, and rerun preflight before
+training. Treat authentication/download failures separately; never guess from a
+model basename. If identity cannot be verified, report the missing repo/files/access.
+
 ## "Reference loop" means these files
 
 They are the canonical wiring of `FiretitanServiceClient` + `FiretitanTrainingClient` + `TrainingCheckpoints` + deployment sampler hotload. Do not rewrite — fork.
@@ -31,13 +41,20 @@ Always required on `Config` (with `trainer=TrainerConfig(...)`):
   GCS range reads instead of staging the payload onto the orchestrator disk.
   Stream mode does not support local paths, CMEK datasets, or
   `group_by_length`.
-- `tokenizer_model` — HF model name
+- `tokenizer_model` — HF model name or local tokenizer directory. Optional for
+  unambiguous SFT/DPO catalog aliases in `training.model_defaults.TOKENIZER_MODELS`,
+  generated from the full training renderer identity manifest, including dedicated
+  models. Unknown or ambiguous aliases and other recipes require an explicit
+  value. Explicit values always take precedence; this table is not an availability list.
 - `log_path` — directory for `dataloader.json` and logs
 - `trainer.training_shape_id` — optional override; leave unset for auto-selection. `accelerator_type` and `accelerator_count` are unsupported; do not set manual `node_count` (see [`sdk-shapes.md`](sdk-shapes.md))
 - `trainer.use_reservation` — optional, default `True`. Tries reservation
   capacity first; set `False` to use shared trainer capacity. A
   full-parameter DPO reference trainer inherits the option and tries
   independently; an existing `trainer.job_id` is reused as-is.
+
+DPO uses all valid preference pairs by default. Set `max_pairs` explicitly only
+when intentionally limiting a run; the serverless demo uses `--max-pairs 32`.
 
 The SAO/PPO recipe uses `actor_trainer` and `critic_trainer` instead of one
 `trainer`; configure the two shapes and resume IDs independently.

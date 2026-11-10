@@ -33,6 +33,7 @@ import time
 from pathlib import Path
 
 import training.recipes.sft_loop as sft_loop
+from training.model_defaults import resolve_tokenizer_model
 from training.utils import WandBConfig
 
 DATASET = Path(__file__).resolve().parent / "data" / "support_triage_train.jsonl"
@@ -41,7 +42,7 @@ DATASET = Path(__file__).resolve().parent / "data" / "support_triage_train.jsonl
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Serverless SFT on support-ticket triage")
     p.add_argument("--base-model", default="accounts/fireworks/models/kimi-k3")
-    p.add_argument("--tokenizer-model", default="moonshotai/Kimi-K3")
+    p.add_argument("--tokenizer-model", default="", help="Infer from --base-model unless overridden.")
     p.add_argument("--renderer-name", default="", help="Empty = infer from the tokenizer.")
     p.add_argument("--dataset", default=str(DATASET))
     p.add_argument("--lora-rank", type=int, default=8)
@@ -70,7 +71,7 @@ def build_config(args: argparse.Namespace) -> sft_loop.Config:
         serverless=True,
         log_path=args.log_path,
         base_model=args.base_model,
-        tokenizer_model=args.tokenizer_model,
+        tokenizer_model=resolve_tokenizer_model(args.base_model, args.tokenizer_model),
         renderer_name=args.renderer_name,
         dataset=args.dataset,
         lora_rank=args.lora_rank,
