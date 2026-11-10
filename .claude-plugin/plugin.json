@@ -1,6 +1,6 @@
 {
   "name": "fireworks-training",
-  "description": "Train on Fireworks from your coding agent: research (plan), configure (run), and debug (triage). Managed SFT/DPO/ORPO/RFT and Training API workflows.",
+  "description": "Plan, run, debug, and migrate Tinker training loops on Fireworks.",
   "version": "2.3.0",
   "author": { "name": "Fireworks AI" },
   "homepage": "https://docs.fireworks.ai/fine-tuning/agent/use-with-coding-agents",

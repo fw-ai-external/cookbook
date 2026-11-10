@@ -8,16 +8,17 @@ It normally asks only the next
 decision-critical question, grouping tightly related blockers when that saves
 churn. It always shows the complete plan and cost before anything is created.
 
-One installation provides three entry points:
+One installation provides four entry points:
 
 | Skill | Use it for |
 |---|---|
 | `research` | Choose method, data, evaluation, and cookbook entry |
 | `configure` | Plan, run, monitor, deploy, or resume training |
 | `debug` | Diagnose a stuck, failed, or low-quality run |
+| `migrate-tinker` | Port an existing Tinker SDK or cookbook loop to Fireworks |
 
 The `fireworks-training` compatibility skill carries the detailed shared
-references. Keep it installed with all three entry skills.
+references. Keep it installed with all four entry skills.
 
 ## Install
 
@@ -37,15 +38,21 @@ Cursor:
 
 ```bash
 npx --yes skills add fw-ai-external/cookbook -g \
-  -s fireworks-training -s research -s configure -s debug -a cursor -y
+  -s fireworks-training -s research -s configure -s debug -s migrate-tinker -a cursor -y
 ```
 
 Codex:
 
 ```bash
 npx --yes skills add fw-ai-external/cookbook -g \
-  -s fireworks-training -s research -s configure -s debug -a codex -y
+  -s fireworks-training -s research -s configure -s debug -s migrate-tinker -a codex -y
 ```
+
+## Migrate an existing Tinker loop
+
+Use [migrate-tinker](migrate-tinker/SKILL.md) to port client setup, native types,
+loss inputs, sampler publication, checkpoints, and cleanup. It preserves the
+experiment and hands off to Configure when you request live execution.
 
 ## Start
 

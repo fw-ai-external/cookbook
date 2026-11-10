@@ -8,7 +8,7 @@
     {
       "name": "fireworks-training",
       "source": "./",
-      "description": "Three skills for coding agents: research (method, data, eval, cookbook), configure (train and monitor), debug (triage failures). Managed SFT/DPO/ORPO/RFT and Training API workflows."
+      "description": "Skills for research, configuration, debugging, and migration of Tinker training loops to Fireworks."
     }
   ]
 }

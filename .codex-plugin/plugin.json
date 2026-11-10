@@ -1,7 +1,7 @@
 {
   "name": "cookbook",
   "version": "2.3.0",
-  "description": "Research, configure, and debug Fireworks training from a coding agent.",
+  "description": "Plan, run, debug, and migrate Tinker training loops on Fireworks.",
   "author": {
     "name": "Fireworks AI",
     "url": "https://fireworks.ai"
@@ -14,7 +14,7 @@
   "interface": {
     "displayName": "Fireworks Training",
     "shortDescription": "Plan, run, and debug Fireworks training.",
-    "longDescription": "Use focused research, configure, and debug skills for managed fine-tuning and custom Training API workflows.",
+    "longDescription": "Use research, configure, debug, and migrate-tinker skills for Fireworks fine-tuning and custom Training API workflows.",
     "developerName": "Fireworks AI",
     "category": "Developer Tools",
     "capabilities": ["Training", "Evaluation", "Deployment"],
