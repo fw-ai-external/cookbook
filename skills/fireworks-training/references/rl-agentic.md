@@ -455,6 +455,10 @@ call classifier, materializer); the harness-neutral
 (sidecar settings in `TITOSidecarSettings`), fresh-trajectory
 retries, trial admission, and artifact-process materialization:
 
+Pi and mimoagent return the verifier score for `evaluation=True` without requiring
+trainable TITO segments, preserving official zeros after an agent/parser failure.
+Training rollouts still require validated artifacts; an absent verifier score stays ungraded.
+
 - Harbor owns local Docker task execution and verifier reward;
 - OpenCode, Pi, Mini-SWE-Agent, or mimoagent supplies the multi-turn agent and tool behavior;
 - one environment-local `TITOSidecar` records exact sampler responses and may

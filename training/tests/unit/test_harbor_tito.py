@@ -1293,29 +1293,90 @@ def test_harness_trial_kwargs_carry_adapter_contract(monkeypatch, tmp_path) -> N
     assert seen[1]["agent_provider"] == "openai"
 
 
-def test_pi_evaluation_uses_verifier_reward_without_trainable_artifact(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    ("module", "settings"),
+    [
+        (pi_rollout, {}),
+        (mimoagent_rollout, {"arm": "bash"}),
+        (mimoagent_rollout, {"arm": "cc"}),
+    ],
+)
+@pytest.mark.parametrize("reward", [0.0, 0.75, 1.0])
+def test_harness_evaluation_uses_verifier_reward_without_trainable_artifact(
+    monkeypatch, tmp_path, module, settings, reward
 ) -> None:
     setup = _setup(tmp_path)
     seen: dict[str, Any] = {}
 
     async def run_trial(**kwargs):
         seen.update(kwargs)
-        return _materialized(kwargs, _outcome(reward=0.75))
+        outcome = replace(
+            _outcome(reward=reward),
+            trajectory_artifact=None,
+            exception_type="NonZeroAgentExitCodeError",
+            phase_timings={"trial_wall_seconds": 2.5},
+        )
+        return _materialized(kwargs, outcome)
 
     _patch_runner(monkeypatch, tmp_path, run_trial)
-    runner = pi_rollout.make_rollout_fn(
-        setup, harbor=_harbor(tmp_path, rollout_retries=0)
+    runner = module.make_rollout_fn(
+        setup, harbor=_harbor(tmp_path, rollout_retries=0), **settings
     )
     result = asyncio.run(runner({"task_name": "example"}, evaluation=True))
 
     assert result is not None
-    assert result.segments[0].reward == 0.75
+    assert result.segments[0].reward == reward
     assert result.segments[0].loss_mask == []
     assert result.metadata["evaluation_reward_only"] is True
+    assert result.metadata["tito_metrics"]["tito/trial/trial_wall_seconds_count"] == 1
+    assert result.metadata["tito_metrics"]["tito/trial/trial_wall_seconds_sum"] == 2.5
     assert result.metadata["task_name"] == "example"
+    assert result.metadata["harbor_exception_type"] == "NonZeroAgentExitCodeError"
     assert seen["require_trajectory_artifact"] is False
     assert seen["artifact_processor"] is None
+
+
+@pytest.mark.parametrize("arm", ["bash", "cc"])
+def test_mimo_training_still_rejects_missing_trainable_artifact(
+    monkeypatch, tmp_path, arm
+) -> None:
+    seen: dict[str, Any] = {}
+
+    async def run_trial(**kwargs):
+        seen.update(kwargs)
+        return _materialized(
+            kwargs, replace(_outcome(reward=1.0), trajectory_artifact=None)
+        )
+
+    _patch_runner(monkeypatch, tmp_path, run_trial)
+    runner = mimoagent_rollout.make_rollout_fn(
+        _setup(tmp_path), harbor=_harbor(tmp_path, rollout_retries=0), arm=arm
+    )
+    assert asyncio.run(runner({"task_name": "example"}, evaluation=False)) is None
+    assert seen["require_trajectory_artifact"] is True
+    assert seen["artifact_processor"] is not None
+
+
+@pytest.mark.parametrize(
+    ("module", "settings"),
+    [
+        (pi_rollout, {}),
+        (mimoagent_rollout, {"arm": "bash"}),
+        (mimoagent_rollout, {"arm": "cc"}),
+    ],
+)
+def test_reward_only_evaluation_does_not_invent_a_missing_score(
+    monkeypatch, tmp_path, module, settings
+) -> None:
+    async def run_trial(**kwargs):
+        outcome = replace(_outcome(), reward=None, rewards={}, trajectory_artifact=None)
+        return _materialized(kwargs, outcome)
+
+    _patch_runner(monkeypatch, tmp_path, run_trial)
+    runner = module.make_rollout_fn(
+        _setup(tmp_path), harbor=_harbor(tmp_path, rollout_retries=0), **settings
+    )
+    assert asyncio.run(runner({"task_name": "example"}, evaluation=True)) is None
 
 
 class _EnvironmentType(str, Enum):

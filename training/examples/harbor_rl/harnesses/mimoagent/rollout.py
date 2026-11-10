@@ -16,6 +16,7 @@ from training.examples.harbor_rl.tito.rollout import (
     HarborHarness,
     HarborRollout,
     HarborSettings,
+    materialize_harbor_evaluation,
 )
 
 if TYPE_CHECKING:
@@ -47,6 +48,7 @@ def make_rollout_fn(
                 "mimoagent_version": PINNED_MIMOAGENT_VERSION,
                 "mimoagent_arm": arm,
             },
+            materialize_evaluation=materialize_harbor_evaluation,
         ),
         harbor,
     )

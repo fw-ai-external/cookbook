@@ -10,11 +10,12 @@ from training.examples.harbor_rl.tito.rollout import (
     HarborHarness,
     HarborRollout,
     HarborSettings,
+    materialize_harbor_evaluation,
     materialize_harbor_trajectory,
 )
 from training.examples.harbor_rl.tito.trial import HarborTrialOutcome
 from training.utils.rl.async_rl.errors import RecoverableRolloutError
-from training.utils.rl.rollout import RolloutRun, RolloutSample
+from training.utils.rl.rollout import RolloutRun
 
 from .artifacts import tool_timeout_count
 from .constants import (
@@ -107,26 +108,6 @@ def _materialize_pi_trajectory(
     return rollout
 
 
-def _materialize_pi_evaluation(
-    outcome: HarborTrialOutcome,
-) -> RolloutRun | None:
-    """Keep verifier reward evaluation independent of trainable artifacts."""
-    if outcome.reward is None:
-        return None
-    return RolloutRun(
-        segments=[
-            RolloutSample(
-                tokens=[],
-                logprobs=[],
-                loss_mask=[],
-                reward=outcome.reward,
-            )
-        ],
-        run_id=outcome.trial_name,
-        metadata={"evaluation_reward_only": True},
-    )
-
-
 def make_rollout_fn(
     setup: RolloutSetup, *, harbor: HarborSettings, tool_profile: str = "coding"
 ) -> RolloutFn:
@@ -151,7 +132,7 @@ def make_rollout_fn(
                 "pi_version": PINNED_PI_VERSION,
             },
             materialize=_materialize_pi_trajectory,
-            materialize_evaluation=_materialize_pi_evaluation,
+            materialize_evaluation=materialize_harbor_evaluation,
         ),
         harbor,
     )

@@ -45,7 +45,7 @@ from training.examples.harbor_rl.tito.trial import (
 from training.utils.phase_tracing import phase_span
 from training.utils.rl import trial_events
 from training.utils.rl.async_rl.errors import RecoverableRolloutError, DiscardTrajectoryError
-from training.utils.rl.rollout import RolloutRun
+from training.utils.rl.rollout import RolloutRun, RolloutSample
 from training.utils.rl.rollout.lifecycle import ActiveRolloutTasks
 from training.utils.rl.rollout.tito import materialize_tito_trajectory
 from training.utils.runner import UserConfigError
@@ -205,6 +205,23 @@ def materialize_harbor_trajectory(
         raise RecoverableRolloutError(
             "Harbor trial produced no policy-visible trainable segment"
         )
+    _attach_trial_phase_metrics(rollout, outcome.phase_timings)
+    return rollout
+
+
+def materialize_harbor_evaluation(outcome: HarborTrialOutcome) -> RolloutRun | None:
+    """Preserve the selected verifier score without requiring training data."""
+    if outcome.reward is None:
+        return None
+    rollout = RolloutRun(
+        segments=[
+            RolloutSample(
+                tokens=[], logprobs=[], loss_mask=[], reward=outcome.reward
+            )
+        ],
+        run_id=outcome.trial_name,
+        metadata={"evaluation_reward_only": True, "tito_metrics": {}},
+    )
     _attach_trial_phase_metrics(rollout, outcome.phase_timings)
     return rollout
 
@@ -496,6 +513,7 @@ __all__ = [
     "HarborHarness",
     "HarborRollout",
     "HarborSettings",
+    "materialize_harbor_evaluation",
     "materialize_harbor_trajectory",
     "resolve_trials_dir",
     "run_with_fresh_trajectory_retries",
