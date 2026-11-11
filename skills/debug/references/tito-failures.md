@@ -149,9 +149,12 @@ A length stop during reasoning can be valid. A parser rejection alone does not
 establish whether the model, tokenizer contract, or parser caused the failure.
 
 Capture is enabled without full debug logging. Clean completed/abandoned traces
-are deleted; diagnosed failures survive within per-writer limits: 32 MiB per
-trajectory, 256 MiB total, 32 failures, 128 active traces, 64 MiB free-space floor.
-Old failures can be evicted. The default root is
+are deleted; diagnosed failures survive within per-writer limits: 256 MiB per
+trajectory, 5,000 failures, 128 active traces, and a 64 MiB free-space floor.
+The default total byte ceiling accommodates all 5,128 traces at their individual
+limit (1,282 GiB); this is not preallocated space. Disk exhaustion can still
+prevent capture. Explicit smaller limits remain supported; oldest failures can
+be evicted when the configured count or byte limit is reached. The default root is
 `tempfile.gettempdir()/fireworks-tito-traces`. Standalone sidecars configure
 `TITOFailureTraceConfig(root_dir=...)` or disable automatic capture with
 `enabled=False`. POSIX startup reclaims only marked directories older than

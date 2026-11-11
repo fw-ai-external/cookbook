@@ -66,15 +66,20 @@ because the sidecar runs inside it. OpenCode is pinned to `1.18.8`; every trial
 verifies the baked CLI version and fails with a rebuild instruction on
 mismatch.
 
-For DeepSWE, the dataset wrapper also records the checkout revision, task
-membership, and source/prepared hashes in an external manifest:
+The installer can record harness identity and source/prepared hashes with
+`--manifest`. For a local DeepSWE checkout:
 
 ```bash
-uv run python -m training.examples.harbor_rl.tasks.deep_swe.prepare_tasks \
-  --source-repository ./deep-swe \
+uv run python -m training.examples.harbor_rl.harnesses.opencode.prepare_tasks \
+  --source ./deep-swe/tasks \
   --destination ./runs/<run-id>/prepared/deep-swe \
   --manifest ./runs/<run-id>/deep-swe-manifest.json
 ```
+
+To include the Git checkout revision and remote, a runner composes
+`inspect_deep_swe` with `prepare_harbor_tasks` as shown in the
+[Harbor entry-point guide](../../README.md). The old dataset-specific
+OpenCode preparation API still works with a deprecation warning.
 
 The prepared Dockerfile is also the E2B template source. E2B cannot run Docker
 Compose tasks. Harbor names E2B templates by the environment content hash and

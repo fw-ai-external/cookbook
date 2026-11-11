@@ -28,6 +28,36 @@ renderers, artifacts) are in
 training controls in
 [`rl-async.md`](/skills/fireworks-training/references/rl-async.md).
 
+Runners also own task-image preparation. Dataset inspectors return source
+identity and content; they do not select an installer or pin an agent version.
+For example, a `train.py` can assemble DeepSWE and Pi before loading rows:
+
+```python
+from functools import partial
+from training.examples.harbor_rl.preparation import prepare_harbor_tasks
+from training.examples.harbor_rl.tasks.deep_swe.dataset import inspect_deep_swe
+from training.examples.harbor_rl.harnesses.pi.constants import PINNED_PI_VERSION
+from training.examples.harbor_rl.harnesses.pi.prepare_tasks import prepare
+
+manifest = prepare_harbor_tasks(
+    source_repository / "tasks", prepared_root, run_dir / "preparation.json",
+    source_manifest=inspect_deep_swe(source_repository),
+    prepare_tasks=partial(prepare, version=PINNED_PI_VERSION),
+    harness={"name": "pi", "version": PINNED_PI_VERSION},
+)
+# Load task rows from prepared_root, then pass them and the selected harness's
+# rollout factory to the existing recipe main(config, ...).
+```
+
+Any compatible installer callable can be passed, including one without a
+version argument; no dataset-side harness registry is needed. Pi and OpenCode
+installer CLIs also accept optional `--manifest` for generic Harbor datasets.
+`train_opencode.py --prepare-harbor-tasks --harbor-dataset ./local-tasks`
+uses the same interface before loading training/evaluation rows and writes
+`run-dir/preparation.json`; omitting the flag keeps the prepared/registry path.
+The old `tasks.deep_swe.prepare_tasks` command remains a deprecated OpenCode
+compatibility entry point; new runners should use the composition above.
+
 Sampling settings in `RolloutSetup.sample_kwargs` are authoritative for MiMo,
 Mini-SWE, Pi and OpenCode: the shared TITO sidecar overrides agent-supplied
 `temperature`, `top_p` and `top_k` before calling the sampler. `top_k=0` disables
