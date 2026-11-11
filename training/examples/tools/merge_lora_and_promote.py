@@ -36,11 +36,9 @@ because there is no effective adapter delta. The supported path is
 ``base_model`` + explicit ``load_adapter`` (this script). The gateway rejects
 service-mode ``warmStartFrom`` of a LoRA addon for the same reason.
 
-Pass the promoted Fireworks PEFT model resource to ``--adapter-model``
-(``accounts/<acct>/models/<lora-id>``). ``load_adapter`` accepts that name
-directly. A ``gs://`` PEFT directory (``adapter_config.json`` +
-``adapter_model*.safetensors``) still works via ``--adapter-gcs`` for advanced
-use; regular users should not need ``getDownloadEndpoint``.
+Pass a promoted PEFT Model resource name to ``--adapter-model``
+(``accounts/<account>/models/<name>``). ``load_adapter`` accepts that name
+directly.
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -114,13 +112,10 @@ def parse_args() -> MergeConfig:
     )
     parser.add_argument(
         "--adapter-model",
-        "--adapter-gcs",
         dest="adapter",
         required=True,
-        help="Fireworks PEFT model resource "
-        "(e.g. accounts/<acct>/models/<lora-id>). Passed to "
-        "load_adapter(). --adapter-gcs is an alias for a gs:// PEFT "
-        "directory in advanced use.",
+        help="Promoted PEFT Model resource name "
+        "(accounts/<account>/models/<name>). Passed to load_adapter().",
     )
     parser.add_argument(
         "--lora-rank",
