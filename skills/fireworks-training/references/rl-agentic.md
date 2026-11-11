@@ -484,6 +484,13 @@ The task entry points in `harbor_rl/` (`train_opencode.py`, `train_pi.py`,
 `Config` + `main`, with the harness factory bound to its settings by
 `functools.partial`; their shared CLI, `harbor_settings(...)`, and sampling-only
 scoring live in `harbor_rl/common.py`.
+Preparation is also composed by the runner: dataset inspectors such as
+`tasks.deep_swe.dataset.inspect_deep_swe` provide source provenance, while
+`harbor_rl.preparation.prepare_harbor_tasks` accepts the selected installer
+callable and records harness identity plus source/prepared hashes. Bind agent
+version and image options at the runner with `functools.partial`; datasets do
+not enumerate harnesses or select versions. The original DeepSWE/OpenCode
+preparation wrapper is deprecated but retains its old API and manifest field.
 The default qualification and training path is **Pi + DeepSWE + one
 environment-local TITO sidecar in `full_history` mode**. OpenCode and
 Mini-SWE-Agent are alternate adapters over the same harness-neutral contract;

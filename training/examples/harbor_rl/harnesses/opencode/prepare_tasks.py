@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from functools import partial
 from pathlib import Path
 
+from training.examples.harbor_rl.preparation import prepare_harbor_tasks
 from training.examples.harbor_rl.tito.prepare_tasks import (
     build_node_22_harness_suffix,
     prepare_with_installer,
@@ -49,19 +51,30 @@ def main() -> None:
     parser.add_argument("--destination", required=True, type=Path)
     parser.add_argument("--opencode-version", default=DEFAULT_OPENCODE_VERSION)
     parser.add_argument(
+        "--manifest", type=Path, help="Optional run preparation manifest"
+    )
+    parser.add_argument(
         "--base-image",
         default=None,
         help="Optional immutable image@sha256 base for a single prepared task",
     )
     args = parser.parse_args()
-    prepared = prepare(
-        args.source,
-        args.destination,
-        args.opencode_version,
-        base_image=args.base_image,
+    installer = partial(
+        prepare, version=args.opencode_version, base_image=args.base_image
     )
+    if args.manifest is not None:
+        manifest = prepare_harbor_tasks(
+            args.source,
+            args.destination,
+            args.manifest,
+            prepare_tasks=installer,
+            harness={"name": "opencode", "version": args.opencode_version},
+        )
+        count = manifest["task_count"]
+    else:
+        count = len(installer(args.source, args.destination))
     print(
-        f"prepared {len(prepared)} Harbor task image contexts in "
+        f"prepared {count} Harbor task image contexts in "
         f"{args.destination} with opencode-ai@{args.opencode_version}"
     )
 

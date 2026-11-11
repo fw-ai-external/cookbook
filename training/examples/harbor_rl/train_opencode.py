@@ -21,9 +21,13 @@ import time
 from functools import partial
 from pathlib import Path
 
-from training.examples.harbor_rl.harnesses.opencode.constants import DEFAULT_OPENCODE_VERSION
+from training.examples.harbor_rl.harnesses.opencode.constants import (
+    DEFAULT_OPENCODE_VERSION,
+)
+from training.examples.harbor_rl.harnesses.opencode.prepare_tasks import prepare
 from training.examples.harbor_rl.harnesses.opencode.rollout import make_rollout_fn
 from training.examples.harbor_rl import common
+from training.examples.harbor_rl.preparation import prepare_harbor_tasks
 from training.examples.harbor_rl.records import select_rows
 from training.examples.harbor_rl.tito.evaluate import make_fixed_evaluation
 from training.examples.harbor_rl.tito.trial import load_harbor_rows
@@ -34,10 +38,14 @@ logger = logging.getLogger(__name__)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     common.add_model_args(parser)
     common.add_harness_args(parser)
-    common.add_resource_args(parser, replica_count=1, sample_timeout=600, weight_sync_timeout=600)
+    common.add_resource_args(
+        parser, replica_count=1, sample_timeout=600, weight_sync_timeout=600
+    )
     common.add_wandb_args(parser, project="harbor-rl-opencode")
     parser.add_argument(
         "--harbor-dataset",
@@ -51,7 +59,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Exact task name to include; repeat to freeze an ordered cohort",
     )
     parser.add_argument("--harbor-registry-path", default=None)
-    parser.add_argument("--harbor-environment", choices=("docker", "e2b"), default="docker")
+    parser.add_argument(
+        "--harbor-environment", choices=("docker", "e2b"), default="docker"
+    )
     parser.add_argument(
         "--harbor-trials-dir",
         type=Path,
@@ -59,6 +69,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Retain Harbor trials here; default uses temporary directories",
     )
     parser.add_argument("--opencode-version", default=DEFAULT_OPENCODE_VERSION)
+    parser.add_argument(
+        "--prepare-harbor-tasks",
+        action="store_true",
+        help="Install the selected OpenCode version into local --harbor-dataset tasks before training or scoring",
+    )
     parser.add_argument("--run-dir", type=Path, default=Path("./harbor_opencode_run"))
     parser.add_argument("--sampling-only", action="store_true")
     parser.add_argument(
@@ -120,7 +135,8 @@ def build_config(args: argparse.Namespace, *, run_dir: Path, row_count: int) -> 
         wandb=WandBConfig(
             entity=args.wandb_entity,
             project=args.wandb_project,
-            run_name=args.wandb_run_name or f"harbor-rl-opencode-{int(time.time()) % 100000}",
+            run_name=args.wandb_run_name
+            or f"harbor-rl-opencode-{int(time.time()) % 100000}",
         ),
     )
 
@@ -131,8 +147,19 @@ def run() -> None:
     )
     args = parse_args()
     run_dir = args.run_dir.expanduser().resolve()
+    dataset_path = args.harbor_dataset
+    if args.prepare_harbor_tasks:
+        prepared_root = run_dir / "prepared-tasks"
+        prepare_harbor_tasks(
+            Path(dataset_path),
+            prepared_root,
+            run_dir / "preparation.json",
+            prepare_tasks=partial(prepare, version=args.opencode_version),
+            harness={"name": "opencode", "version": args.opencode_version},
+        )
+        dataset_path = str(prepared_root)
     rows = load_harbor_rows(
-        args.harbor_dataset,
+        dataset_path,
         registry_path=args.harbor_registry_path,
         task_names=args.harbor_task or None,
         n_tasks=args.max_rows,

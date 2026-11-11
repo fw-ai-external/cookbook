@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterable
+from functools import partial
 from pathlib import Path
 
+from training.examples.harbor_rl.preparation import prepare_harbor_tasks
 from training.examples.harbor_rl.tito.prepare_tasks import (
     build_node_22_harness_suffix,
     prepare_with_installer,
@@ -51,19 +53,28 @@ def main() -> None:
     parser.add_argument("--destination", required=True, type=Path)
     parser.add_argument("--pi-version", default=PINNED_PI_VERSION)
     parser.add_argument(
+        "--manifest", type=Path, help="Optional run preparation manifest"
+    )
+    parser.add_argument(
         "--base-image",
         default=None,
         help="Optional immutable image@sha256 base for a single prepared task",
     )
     args = parser.parse_args()
-    prepared = prepare(
-        args.source,
-        args.destination,
-        args.pi_version,
-        base_image=args.base_image,
-    )
+    installer = partial(prepare, version=args.pi_version, base_image=args.base_image)
+    if args.manifest is not None:
+        manifest = prepare_harbor_tasks(
+            args.source,
+            args.destination,
+            args.manifest,
+            prepare_tasks=installer,
+            harness={"name": "pi", "version": args.pi_version},
+        )
+        count = manifest["task_count"]
+    else:
+        count = len(installer(args.source, args.destination))
     print(
-        f"prepared {len(prepared)} Harbor task image contexts in "
+        f"prepared {count} Harbor task image contexts in "
         f"{args.destination} with Pi {args.pi_version}"
     )
 
