@@ -115,7 +115,7 @@ Two ways to use it:
 
 ## Warm-start from a promoted adapter (LoRA only)
 
-To continue LoRA training from a previously-trained adapter — typically a promoted Fireworks Model or any HF PEFT directory — set `warm_start_from_adapter` on the recipe `Config`:
+To continue LoRA training from a previously-trained adapter, set `warm_start_from_adapter` on the recipe `Config` to a promoted PEFT Model resource name (`accounts/<account>/models/<name>`):
 
 ```python
 cfg = Config(
@@ -126,7 +126,7 @@ cfg = Config(
 )
 ```
 
-Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh. Prefer a Fireworks PEFT model resource; a `gs://` PEFT directory also works.
+Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh. The adapter must be a promoted PEFT Model resource name (`accounts/<account>/models/<name>`).
 
 Priority inside `TrainingCheckpoints.resume` (highest first):
 
