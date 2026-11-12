@@ -18,12 +18,29 @@ class FakeServer:
     def __init__(self):
         self.requests: list[dict] = []
         self.attempts: dict[str, int] = {}
+        # DELETE requests seen, and the status the next ones get.
+        self.deletes: list[str] = []
+        self.delete_status = 200
+        # What a GET of the deployment returns; None answers 404.
+        self.deployment_state: str | None = "READY"
         self.lock = threading.Lock()
         server = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
+
+            def do_GET(self):
+                if server.deployment_state is None:
+                    return self._send(404, {"error": {"message": "not found"}})
+                return self._send(200, {"state": server.deployment_state})
+
+            def do_DELETE(self):
+                with server.lock:
+                    server.deletes.append(self.path)
+                    status = server.delete_status
+                body = {} if status == 200 else {"error": {"message": "nope"}}
+                return self._send(status, body)
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -1003,3 +1020,163 @@ def test_fatal_error_stops_rows_that_are_mid_retry(tmp_path, server):
     assert time.monotonic() - started < 2
     assert stats.fatal and "401" in stats.fatal
     assert read_jsonl(out) == [] and read_jsonl(str(out) + ".errors.jsonl") == []
+
+
+def test_retry_defaults_last_a_day():
+    args = b2r.parse_args(["--input", "i", "--output", "o", "--model", "m"])
+    assert args.max_retry_time == 86400
+    # No retry-count limit by default, so the day-long time limit ends retries.
+    assert args.max_retries is None
+
+
+def test_backoff_does_not_overflow_after_many_retries(server):
+    cfg = make_cfg(server)
+    assert 30 <= b2r.backoff_seconds(cfg, 5000, None) <= 60
+    assert 60 <= b2r.backoff_seconds(cfg, 5000, 60.0) <= 60
+    # A tiny --initial-backoff still grows to --max-backoff.
+    tiny = make_cfg(server, initial_backoff=1e-8)
+    assert 30 <= b2r.backoff_seconds(tiny, 40, None) <= 60
+    assert 30 <= b2r.backoff_seconds(tiny, 5000, None) <= 60
+
+
+def test_retry_after_zero_still_waits_half_the_backoff(server):
+    cfg = make_cfg(server)
+    assert b2r.backoff_seconds(cfg, 3, 0.0) >= 4
+
+
+def test_deployment_name_from_model():
+    assert (
+        b2r.deployment_name("accounts/fireworks/models/m#accounts/acme/deployments/d1")
+        == "accounts/acme/deployments/d1"
+    )
+    assert b2r.deployment_name("accounts/acme/deployments/d1") == (
+        "accounts/acme/deployments/d1"
+    )
+    assert b2r.deployment_name("accounts/acme/deployedModels/m-abc") is None
+    assert b2r.deployment_name("accounts/fireworks/models/m") is None
+
+
+@pytest.mark.parametrize(
+    "model", ["accounts/fireworks/models/m", "accounts/acme/deployedModels/m-abc"]
+)
+def test_delete_on_finish_needs_a_deployment_name(model):
+    with pytest.raises(SystemExit):
+        b2r.parse_args(
+            [
+                "--input",
+                "i",
+                "--output",
+                "o",
+                "--model",
+                model,
+                "--delete-deployment-on-finish",
+            ]
+        )
+
+
+DEPLOYMENT_MODEL = "accounts/fireworks/models/m#accounts/acme/deployments/d1"
+
+
+def run_main(tmp_path, server, monkeypatch, prompts, *extra):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    write_jsonl(
+        tmp_path / "in.jsonl",
+        [
+            {"custom_id": str(i), "body": {"messages": chat(p)}}
+            for i, p in enumerate(prompts)
+        ],
+    )
+    return b2r.main(
+        [
+            "--input",
+            str(tmp_path / "in.jsonl"),
+            "--output",
+            str(tmp_path / "o.jsonl"),
+            "--model",
+            DEPLOYMENT_MODEL,
+            "--base-url",
+            server.url,
+            "--progress-every",
+            "0",
+            *extra,
+        ]
+    )
+
+
+def test_deployment_is_deleted_when_every_row_has_a_result(
+    tmp_path, server, monkeypatch, capsys
+):
+    code = run_main(
+        tmp_path, server, monkeypatch, ["a", "b"], "--delete-deployment-on-finish"
+    )
+    assert code == 0
+    assert server.deletes == ["/v1/accounts/acme/deployments/d1?ignoreChecks=true"]
+    err = capsys.readouterr().err
+    assert "Deleted accounts/acme/deployments/d1" in err
+    # Account-qualified, so firectl can't resolve it against another account.
+    assert "firectl deployment undelete accounts/acme/deployments/d1`" in err
+
+
+def test_deployment_is_not_deleted_without_the_flag(tmp_path, server, monkeypatch):
+    assert run_main(tmp_path, server, monkeypatch, ["a"]) == 0
+    assert server.deletes == []
+
+
+def test_deployment_is_kept_when_a_row_failed(tmp_path, server, monkeypatch, capsys):
+    code = run_main(
+        tmp_path,
+        server,
+        monkeypatch,
+        ["a", "bad-request"],
+        "--delete-deployment-on-finish",
+    )
+    assert code == 1
+    assert server.deletes == []
+    err = capsys.readouterr().err
+    assert "Kept accounts/acme/deployments/d1" in err
+    assert (
+        "firectl deployment delete accounts/acme/deployments/d1 --ignore-checks`" in err
+    )
+
+
+def test_deployment_is_kept_when_the_run_stops(tmp_path, server, monkeypatch):
+    code = run_main(
+        tmp_path, server, monkeypatch, ["unauthorized"], "--delete-deployment-on-finish"
+    )
+    assert code == 2
+    assert server.deletes == []
+
+
+def test_failed_delete_exits_3(tmp_path, server, monkeypatch, capsys):
+    server.delete_status = 403
+    code = run_main(
+        tmp_path, server, monkeypatch, ["a"], "--delete-deployment-on-finish"
+    )
+    assert code == 3
+    assert len(server.deletes) == 1  # a 403 is not retried
+    assert (
+        "firectl deployment delete accounts/acme/deployments/d1 --ignore-checks`"
+        in capsys.readouterr().err
+    )
+
+
+def test_already_deleted_deployment_is_fine(tmp_path, server, monkeypatch, capsys):
+    server.delete_status = 404
+    code = run_main(
+        tmp_path, server, monkeypatch, ["a"], "--delete-deployment-on-finish"
+    )
+    assert code == 0
+    assert "already deleted" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("state", ["DELETING", "DELETED", None])
+def test_rerun_after_delete_does_not_delete_again(
+    tmp_path, server, monkeypatch, capsys, state
+):
+    server.deployment_state = state
+    code = run_main(
+        tmp_path, server, monkeypatch, ["a"], "--delete-deployment-on-finish"
+    )
+    assert code == 0
+    assert server.deletes == []
+    assert "already deleted" in capsys.readouterr().err

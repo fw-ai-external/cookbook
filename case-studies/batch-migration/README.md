@@ -10,13 +10,15 @@ The script:
 
 - reads a Batch input JSONL file in the OpenAI batch format;
 - sends rows in parallel, retrying rate limits, server errors, timeouts and
-  dropped connections for up to 30 minutes per row, so it rides out a
+  dropped connections for up to a day per row, so it rides out a
   preemptible deployment losing its replica;
 - writes successful rows to one JSONL file and failed rows to another, in the
   matching Batch output format;
 - reruns like a Batch job continuation: rerunning the same command sends every
   row that has no result yet, both failed rows and rows a stopped run never
-  finished.
+  finished;
+- with `--delete-deployment-on-finish`, deletes your deployment once every row
+  has a result, the way a Batch job cleaned up after itself.
 
 It uses only the Python standard library (Python 3.10 or newer), so there is
 nothing to install.
@@ -32,12 +34,14 @@ python batch_to_realtime.py \
   --output results.jsonl \
   --model accounts/fireworks/models/gpt-oss-120b
 
-# Your own deployment, for example a preemptible one
+# Your own deployment, for example a preemptible one, deleted when every row
+# has a result
 python batch_to_realtime.py \
   --input batch_input.jsonl \
   --output results.jsonl \
   --model "accounts/fireworks/models/gpt-oss-120b#accounts/<ACCOUNT_ID>/deployments/<DEPLOYMENT_ID>" \
-  --concurrency 64
+  --concurrency 64 \
+  --delete-deployment-on-finish
 ```
 
 Failed rows go to `results.jsonl.errors.jsonl` unless you pass `--errors`.
@@ -47,6 +51,7 @@ Failed rows go to `results.jsonl.errors.jsonl` unless you pass `--errors`.
 | 0 | Every row has a result. |
 | 1 | Some rows still have no result: they failed in this run, or failed in an earlier run and were skipped with `--skip-errors`. Rerun the same command to try them again. |
 | 2 | The run stopped early: `FIREWORKS_API_KEY` is missing, the API returned 401 (bad key), or it returned 404 because the model or deployment isn't available. Rows not yet sent are untouched, so rerun the same command once that's fixed. |
+| 3 | Every row has a result, but `--delete-deployment-on-finish` couldn't delete the deployment. The message says why; delete it with `firectl deployment delete accounts/<ACCOUNT_ID>/deployments/<DEPLOYMENT_ID> --ignore-checks`. |
 | 130 or 143 | You pressed Ctrl-C (130), or a job scheduler sent SIGTERM (143). The script stops at once without waiting for requests in flight; rerun the same command to continue. |
 
 ## Running on a preemptible deployment
@@ -58,14 +63,28 @@ A preemptible deployment behaves differently from a Batch job in a few ways:
   waiting replica, wherever capacity is free. A deployment pinned to one region
   waits there until that region has room.
 - **Expect waits at busy times.** A preemptible replica can wait a long time
-  for capacity, both at create and after a preemption, sometimes longer than
-  the 30-minute default retry window. Raise both `--max-retry-time` and
-  `--max-retries`, or rerun the same command later; finished rows are skipped.
+  for capacity, both at create and after a preemption. By default each row
+  keeps retrying for up to a day. If that's still not enough, raise
+  `--max-retry-time`, or rerun the same command later; finished rows are
+  skipped.
 - **Delete the deployment when you're done.** Unlike a Batch job, a deployment
-  keeps running, and billing, after your run finishes:
+  keeps running, and billing, after your run finishes. Pass
+  `--delete-deployment-on-finish` and the script deletes it once every row has
+  a result. If any row failed or the run stopped, it keeps the deployment so a
+  rerun can finish, and says so. It's a soft delete, so
+  `firectl deployment undelete accounts/<ACCOUNT_ID>/deployments/<DEPLOYMENT_ID>`
+  brings it back for a while afterward.
+
+  Use this option only with a deployment created for this run. To delete it
+  right after the run, the script skips the API's safety checks: the one that
+  refuses to delete a deployment that served requests in the last hour, and
+  the one that protects a default deployment. It deletes the deployment even
+  if other traffic or other models use it.
+
+  To delete it yourself instead:
 
   ```bash
-  firectl deployment delete <DEPLOYMENT_ID>
+  firectl deployment delete accounts/<ACCOUNT_ID>/deployments/<DEPLOYMENT_ID> --ignore-checks
   ```
 
   If you run files regularly, you can instead create it with
@@ -119,19 +138,20 @@ The `error.code` in a failed row is one of:
     timeouts, and connections dropped mid-response. Other 4xx errors, such as
     a context that is too long or a 403 for an endpoint your plan doesn't
     include, go straight to the errors file.
-  - **How long to wait:** the server's `Retry-After` when it sends one,
-    otherwise exponential backoff from `--initial-backoff` (default 1s). Each
+  - **How long to wait:** exponential backoff from `--initial-backoff`
+    (default 1s), or the server's `Retry-After` when it asks for longer. Each
     wait is jittered and never longer than `--max-backoff` (default 60s).
-  - **When to give up:** after `--max-retries` (default 30) or
-    `--max-retry-time` (default 1800s, 30 minutes), whichever comes first. A
-    retry's request timeout is cut to the time left, so a row never runs much
-    past `--max-retry-time` after its first attempt.
+  - **When to give up:** after `--max-retry-time` (default 86400s, a day).
+    `--max-retries` also caps the number of retries; by default it has no
+    limit. On serverless, lower `--max-retry-time` if you'd rather see a
+    failing row in the errors file sooner. A retry's request timeout is cut to
+    the time left, so a row never runs much past `--max-retry-time` after its
+    first attempt.
   - **Preemption:** a preemptible deployment can lose its replica mid-run.
     Until the replica is rescheduled, requests fail with dropped connections or
     with 503 `DEPLOYMENT_SCALING_UP` and `Retry-After: 60`. The defaults ride
-    out about 30 minutes of that. If rescheduling takes longer, raise both
-    `--max-retry-time` and `--max-retries`, or rerun the same command
-    afterward.
+    out up to a day of that. If rescheduling takes longer, raise
+    `--max-retry-time`, or rerun the same command afterward.
   - **Bad key or model:** a 401 (bad key), or the gateway's 404 saying the
     model or deployment isn't available, stops the whole run with exit
     status 2 instead of failing every row. Rows not yet sent are left

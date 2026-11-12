@@ -26,10 +26,11 @@ Examples:
     python batch_to_realtime.py --input batch.jsonl --output results.jsonl \\
         --model accounts/fireworks/models/gpt-oss-120b
 
-    # Your own deployment, such as a preemptible one
+    # Your own deployment, such as a preemptible one, deleted once every row
+    # has a result
     python batch_to_realtime.py --input batch.jsonl --output results.jsonl \\
         --model "accounts/fireworks/models/gpt-oss-120b#accounts/<ACCOUNT>/deployments/<DEPLOYMENT_ID>" \\
-        --concurrency 64
+        --concurrency 64 --delete-deployment-on-finish
 
 --concurrency is capped at 32 for serverless, which is shared with other
 customers, and at 256 for your own deployment. When the API answers 429 or
@@ -46,11 +47,13 @@ import itertools
 import json
 import os
 import random
+import re
 import signal
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -84,11 +87,11 @@ def is_model_unavailable(status: int, body: str) -> bool:
 
 # A deployment with no running replica (for example a preemptible one that was
 # just preempted) answers 503 DEPLOYMENT_SCALING_UP with Retry-After: 60 until
-# a replica is back, which can take several minutes. The defaults keep a row
-# retrying for up to 30 minutes so it survives that gap.
-DEFAULT_MAX_RETRIES = 30
-DEFAULT_MAX_RETRY_TIME = 1800.0
+# a replica is back. At busy times that can take hours. By default a row keeps
+# retrying for up to a day, with no limit on the number of retries, so the time
+# limit is the one that ends retries.
 DEFAULT_MAX_BACKOFF = 60.0
+DEFAULT_MAX_RETRY_TIME = 86400.0
 RETRY_LOG_INTERVAL = 30.0
 
 # Serverless capacity is shared with other customers, so keep a single run
@@ -104,6 +107,63 @@ SHARED_BACKOFF_STATUS = frozenset({429, 503})
 def is_deployment(model: str) -> bool:
     """True when --model routes to the caller's own deployment, not serverless."""
     return "#" in model or "/deployedModels/" in model or "/deployments/" in model
+
+
+DEPLOYMENT_NAME = re.compile(r"accounts/[^/#]+/deployments/[^/#]+")
+
+
+def deployment_name(model: str) -> str | None:
+    """Returns accounts/<account>/deployments/<id> when --model names one, as
+    '<model>#accounts/<account>/deployments/<id>' or directly."""
+    target = model.split("#", 1)[1] if "#" in model else model
+    return target if DEPLOYMENT_NAME.fullmatch(target) else None
+
+
+def deployment_request(
+    cfg: Config, name: str, method: str, attempts: int = 3
+) -> dict[str, Any] | None:
+    """Sends method to the deployment's Fireworks REST resource and returns the
+    JSON response, or None when the deployment doesn't exist (404). Retries
+    transient errors, then raises RuntimeError."""
+    parts = urllib.parse.urlsplit(cfg.base_url)
+    url = f"{parts.scheme}://{parts.netloc}/v1/{name}"
+    if method == "DELETE":
+        # The API refuses to delete a deployment that served requests in the
+        # last hour, which this one just did.
+        url += "?ignoreChecks=true"
+    headers = {
+        "Authorization": f"Bearer {cfg.api_key}",
+        "User-Agent": "fireworks-batch-migration/1.0",
+    }
+    last = ""
+    for attempt in range(attempts):
+        try:
+            request = urllib.request.Request(url, headers=headers, method=method)
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            last = f"HTTP {e.code}: {read_error_body(e) or e.reason}"
+            if not is_retryable_status(e.code):
+                break
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            last = f"{type(e).__name__}: {getattr(e, 'reason', e)}"
+        except ValueError as e:
+            last = f"response was not JSON: {e}"
+        if attempt + 1 < attempts:
+            time.sleep(2**attempt)
+    raise RuntimeError(last)
+
+
+def delete_deployment(cfg: Config, name: str) -> bool:
+    """Soft-deletes the deployment, which `firectl deployment undelete` can
+    undo. Returns False if it was already deleted, for example by an earlier
+    run. Raises RuntimeError when it can't delete it."""
+    deployment = deployment_request(cfg, name, "GET")
+    if deployment is None or deployment.get("state") in ("DELETING", "DELETED"):
+        return False
+    return deployment_request(cfg, name, "DELETE") is not None
 
 
 class Throttle:
@@ -166,7 +226,7 @@ class Config:
     api_key: str
     model: str
     timeout: float
-    max_retries: int
+    max_retries: int | None
     initial_backoff: float
     max_backoff: float
     max_retry_time: float = DEFAULT_MAX_RETRY_TIME
@@ -254,10 +314,16 @@ def backoff_seconds(cfg: Config, attempt: int, retry_after: float | None) -> flo
     otherwise exponential backoff. Jitter spreads out the in-flight rows so they
     don't retry in lockstep, and equal jitter keeps every wait at least half
     the backoff, so retries really do slow down."""
+    # Retries have no count limit by default. 2.0**1023 is the largest power of
+    # two a float holds, and a product past that is inf, not an error, so the
+    # step still saturates at --max-backoff however small --initial-backoff is.
+    step = min(cfg.max_backoff, cfg.initial_backoff * 2.0 ** min(attempt, 1023))
     if retry_after is not None:
-        # Never sooner than the server asked, never longer than --max-backoff.
-        return min(cfg.max_backoff, retry_after + random.uniform(0, retry_after * 0.1))
-    step = min(cfg.max_backoff, cfg.initial_backoff * 2**attempt)
+        # Never sooner than the server asked or than half the backoff (so a
+        # Retry-After of 0 can't make a row retry in a tight loop), never
+        # longer than --max-backoff.
+        wait = max(retry_after, step / 2)
+        return min(cfg.max_backoff, wait + random.uniform(0, wait * 0.1))
     return step / 2 + random.uniform(0, step / 2)
 
 
@@ -318,7 +384,7 @@ def post_json(
             )
         except ValueError as e:  # not JSON, or not UTF-8
             last = RequestError("invalid_response", f"response was not JSON: {e}")
-        if attempt >= cfg.max_retries:
+        if cfg.max_retries is not None and attempt >= cfg.max_retries:
             break
         wait = backoff_seconds(cfg, attempt, retry_after)
         if time.monotonic() - started + wait > cfg.max_retry_time:
@@ -741,9 +807,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--max-retries",
         type=int,
-        default=DEFAULT_MAX_RETRIES,
+        default=None,
         help="Most retries per row for 408, 409, 425, 429, 5xx (except 501 and 505), "
-        "timeouts and dropped connections.",
+        "timeouts and dropped connections. By default there is no limit, and "
+        "--max-retry-time ends retries.",
     )
     p.add_argument(
         "--initial-backoff",
@@ -761,8 +828,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--max-retry-time",
         type=float,
         default=DEFAULT_MAX_RETRY_TIME,
-        help="Longest time to keep retrying one row, in seconds. The default rides out a "
-        "preemptible deployment rescheduling its replica.",
+        help="Longest time to keep retrying one row, in seconds. The default (a day) rides "
+        "out a preemptible deployment waiting for capacity.",
     )
     p.add_argument(
         "--timeout", type=float, default=600.0, help="Per-request timeout, in seconds."
@@ -780,6 +847,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Don't resend rows that failed in an earlier run. By default a rerun "
         "retries them, like a Batch job continuation.",
+    )
+    p.add_argument(
+        "--delete-deployment-on-finish",
+        action="store_true",
+        help="When every row has a result, delete the deployment named in --model "
+        "(a soft delete). If any row failed or the run stopped, the deployment is kept "
+        "so a rerun can finish. The delete skips the API's in-use and default-deployment "
+        "checks, so use it only with a deployment created for this run.",
     )
     p.add_argument(
         "--progress-every",
@@ -802,10 +877,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             else "serverless, which is shared"
         )
         p.error(f"--concurrency is at most {limit} on {target}")
-    if args.max_retries < 0:
+    if args.max_retries is not None and args.max_retries < 0:
         p.error("--max-retries must be 0 or more")
     if args.max_retry_time < 0:
         p.error("--max-retry-time must be 0 or more")
+    if args.delete_deployment_on_finish and deployment_name(args.model) is None:
+        p.error(
+            "--delete-deployment-on-finish needs --model to name the deployment, as "
+            "'<model>#accounts/<account>/deployments/<id>'"
+        )
     return args
 
 
@@ -844,6 +924,20 @@ def main(argv: list[str] | None = None) -> int:
         # reading earlier results on a rerun. Nothing new was sent yet.
         stats = Stats(interrupted=True)
     errors_path = args.errors or args.output + ".errors.jsonl"
+    deployment = (
+        deployment_name(args.model) if args.delete_deployment_on_finish else None
+    )
+
+    def keep_note(reason: str) -> None:
+        if deployment is not None:
+            print(
+                f"Kept {deployment} because {reason}. It keeps billing until deleted: rerun "
+                f"to finish, or run `firectl deployment delete {deployment} "
+                "--ignore-checks`.",
+                file=sys.stderr,
+                flush=True,
+            )
+
     if stats.interrupted:
         print(
             f"Interrupted: {stats.succeeded} succeeded, {stats.failed} failed this run. "
@@ -851,6 +945,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
             flush=True,
         )
+        keep_note("the run was stopped")
         # Don't wait for requests still in flight; their rows are resent on rerun.
         os._exit(128 + stopped_by[0])
     if stats.fatal:
@@ -860,6 +955,7 @@ def main(argv: list[str] | None = None) -> int:
             "are untouched; rerun the same command to continue.",
             file=sys.stderr,
         )
+        keep_note("the run stopped early")
         return 2
     print(
         f"Finished: {stats.succeeded} succeeded, {stats.failed} failed, {stats.skipped} skipped (already done). "
@@ -869,7 +965,29 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
     )
     # Exit 1 while any row lacks a result, including earlier failures.
-    return 1 if stats.failed or stats.outstanding else 0
+    if stats.failed or stats.outstanding:
+        keep_note("some rows have no result")
+        return 1
+    if deployment is not None:
+        try:
+            deleted = delete_deployment(cfg, deployment)
+        except RuntimeError as e:
+            print(
+                f"Every row has a result, but deleting {deployment} failed ({e}). It keeps "
+                f"billing until deleted: run `firectl deployment delete "
+                f"{deployment} --ignore-checks`.",
+                file=sys.stderr,
+            )
+            return 3
+        if deleted:
+            print(
+                f"Deleted {deployment}. To undo, run `firectl deployment undelete "
+                f"{deployment}`.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"{deployment} was already deleted.", file=sys.stderr)
+    return 0
 
 
 if __name__ == "__main__":
