@@ -161,6 +161,10 @@ def test_main_requests_cleanup_for_sdk_created_trainer(monkeypatch, tmp_path):
     kwargs = _build_service_kwargs(monkeypatch, cfg)
 
     assert kwargs["cleanup_trainer_on_close"] is True
+    # The run's exit stack decides whether the trainer survives a failure.
+    assert kwargs["exit_stack"] is not None
+    # A kept trainer is recorded under log_path, so a rerun there can delete it.
+    assert kwargs["log_path"] == cfg.log_path
 
 
 def test_main_can_disable_cleanup_on_exit(monkeypatch, tmp_path):
@@ -1323,6 +1327,7 @@ def _run_dpo_batches(
         render_workers=0,
         group_by_length=group_by_length,
         length_group_factor=group_factor,
+        dcp_save_interval=0,  # no checkpoint manager here
     )
     asyncio.run(
         module._train_loop(
@@ -1995,6 +2000,58 @@ def test_checkpoint_schedule_scores_every_save_point_including_final(tmp_path, m
         "save(step-2)",
         "eval(step=4, checkpoint_eval+eval, n=1)",
     ]
+
+
+@pytest.mark.parametrize(
+    "lora_rank, expected",
+    [
+        # LoRA defaults to the timed schedule, which saves at each epoch end.
+        (
+            16,
+            [
+                "eval(step=2, checkpoint_eval+eval, n=1)",
+                "save(step-2)",
+                "eval(step=4, checkpoint_eval+eval, n=1)",
+                "save(step-4)",
+            ],
+        ),
+        # Full-parameter defaults to every 50 steps, so this 4-step run saves none.
+        (0, ["eval(step=2, eval, n=1)", "eval(step=4, eval, n=1)"]),
+    ],
+)
+def test_default_checkpoint_cadence_depends_on_lora_rank(tmp_path, monkeypatch, lora_rank, expected):
+    _stub_train_step_deps(monkeypatch, {})
+    _stub_run_eval(monkeypatch)
+    events: list = []
+    ref_cache = AppendOnlyPickleLog(str(tmp_path / "ref_cache.pkl"))
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        epochs=2,
+        batch_size=2,
+        lora_rank=lora_rank,
+        save_final_checkpoint=False,
+        render_workers=0,
+    )
+    try:
+        asyncio.run(
+            module._train_loop(
+                _make_pair_dataset(tmp_path, n=4),
+                ref_cache,
+                _FakeReference(),
+                _FakePolicy(),
+                adam_params=_adam_params(),
+                cfg=cfg,
+                step_offset=0,
+                cursor=_new_cursor(max_rows=8),
+                ckpt=_RecordingCheckpoints(events),
+                runner=_RecordingRunner(events),
+                eval_pairs=[_eval_pair(0)],
+            )
+        )
+    finally:
+        ref_cache.close()
+
+    assert events == expected
 
 
 def test_checkpoint_eval_logs_ranking_metrics_at_save_points(tmp_path, monkeypatch):

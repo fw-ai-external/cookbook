@@ -86,6 +86,7 @@ from training.utils import (
 )
 from training.utils.checkpoints import (
     TrainingCheckpoints,
+    resolve_checkpoint_cadence,
     timed_checkpoint_due,
     validate_warm_start_config,
 )
@@ -807,11 +808,14 @@ class Config:
 
     save_final_checkpoint: bool = True
 
-    dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
+    dcp_save_interval: int | None = None
+    """Save a resumable DCP checkpoint every N steps. 0 disables. Unset (None)
+    means 50, except in a LoRA run that also leaves
+    ``checkpoint_interval_minutes`` unset: that run uses the timed schedule."""
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
 
-    checkpoint_interval_minutes: float = 0.0
+    checkpoint_interval_minutes: float | None = None
     """When > 0, save a resumable + promotable checkpoint at every epoch end
     and every ``max(N minutes, estimated run time / 20)`` within an epoch, or
     every ``sampler_save_interval`` steps when that is set. When a held-out
@@ -820,7 +824,8 @@ class Config:
     the same first ``CHECKPOINT_EVAL_MAX_EXAMPLES`` eval examples so points
     can be ranked, and epoch ends also log the full-set ``eval/loss``; without
     one, save points are unscored. Replaces ``dcp_save_interval``. 0
-    disables."""
+    disables. Unset (None) means 30 in a LoRA run that also leaves
+    ``dcp_save_interval`` unset, and 0 otherwise."""
 
     prefer_current_run_checkpoint: bool = False
     """Prefer this run's checkpoints over a previous-attempt reference on resume.
@@ -1120,8 +1125,9 @@ def main(
                 learning_rate=cfg.learning_rate,
                 trainer=cfg.trainer,
                 cleanup_trainer_on_close=True,
+                exit_stack=stack,
+                log_path=cfg.log_path,
             )
-            stack.callback(service.close)
             training_client = service.create_training_client(
                 cfg.base_model,
                 lora_rank=cfg.lora_rank,
@@ -1299,14 +1305,13 @@ def main(
         start_batch = rows_into_current_epoch // effective_batch_size
         remaining_raw_rows = max(0, total_raw_rows - cursor.value)
         total_steps_estimate = step + ((remaining_raw_rows + effective_batch_size - 1) // effective_batch_size)
-        schedule_on = cfg.checkpoint_interval_minutes > 0
-        if schedule_on and cfg.dcp_save_interval > 0:
-            logger.warning(
-                "dcp_save_interval=%d is ignored because checkpoint_interval_minutes=%s is set",
-                cfg.dcp_save_interval,
-                cfg.checkpoint_interval_minutes,
-            )
-        dcp_save_interval = 0 if schedule_on else cfg.dcp_save_interval
+        cadence = resolve_checkpoint_cadence(
+            dcp_save_interval=cfg.dcp_save_interval,
+            checkpoint_interval_minutes=cfg.checkpoint_interval_minutes,
+            lora_rank=cfg.lora_rank,
+        )
+        schedule_on = cadence.schedule_on
+        dcp_save_interval = cadence.dcp_save_interval
         sampler_save_interval = 0 if schedule_on else cfg.sampler_save_interval
         checkpoint_eval_data = eval_data[:CHECKPOINT_EVAL_MAX_EXAMPLES]
 
@@ -1526,7 +1531,7 @@ def main(
                     else:
                         now = time.monotonic()
                         save_point_due = timed_checkpoint_due(
-                            min_interval_s=cfg.checkpoint_interval_minutes * 60,
+                            min_interval_s=cadence.checkpoint_interval_minutes * 60,
                             since_last_save_s=now - last_save_at,
                             elapsed_s=now - schedule_started_at,
                             steps_done=step - schedule_start_step,

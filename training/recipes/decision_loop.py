@@ -43,7 +43,11 @@ from training.utils import (
     wandb_finish,
     wandb_log,
 )
-from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
+from training.utils.checkpoints import (
+    DEFAULT_DCP_SAVE_INTERVAL,
+    TrainingCheckpoints,
+    validate_warm_start_config,
+)
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.decision import (
     DECISION_LOSS_FN_CONFIG,
@@ -364,6 +368,8 @@ def main(config: Config) -> dict:
         )
         completed_epochs, rows_into_epoch = divmod(cursor.value, training_count)
         total_steps = step + math.ceil(max(0, total_rows - cursor.value) / batch_size)
+        # Decision tuning has no timed checkpoint schedule, only the step cadence.
+        dcp_save_interval = DEFAULT_DCP_SAVE_INTERVAL if cfg.dcp_save_interval is None else cfg.dcp_save_interval
         timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
         start_running(runner, total_steps=total_steps)
         if step == 0:
@@ -375,7 +381,7 @@ def main(config: Config) -> dict:
             s, tokens, n, consumed, fb, opt = in_flight.popleft()
             loss = float(fb.result(timeout=timeout).metrics.get("loss:sum", 0.0)) / n
             opt.result(timeout=timeout)
-            dcp_due = cfg.dcp_save_interval > 0 and s % cfg.dcp_save_interval == 0
+            dcp_due = dcp_save_interval > 0 and s % dcp_save_interval == 0
             sampler_due = cfg.sampler_save_interval > 0 and s % cfg.sampler_save_interval == 0
             if dcp_due or sampler_due:
                 ckpt.save(f"step-{s}", resumable=dcp_due, promotable=sampler_due, data_consumed=consumed)
@@ -402,7 +408,7 @@ def main(config: Config) -> dict:
                     opt = client.submit_optim_step(sdk.AdamParams(learning_rate=lr, **adam))
                     in_flight.append((step, tokens, len(batch), cursor.value, fb, opt))
                     checkpoint_step = any(
-                        i > 0 and step % i == 0 for i in (cfg.dcp_save_interval, cfg.sampler_save_interval)
+                        i > 0 and step % i == 0 for i in (dcp_save_interval, cfg.sampler_save_interval)
                     )
                     while in_flight and (len(in_flight) >= cfg.pipeline_depth or checkpoint_step):
                         collect()

@@ -66,6 +66,17 @@ separately from free training. The run reports its sampled token counts. The
 tuned checkpoint is promoted to
 `accounts/<account>/models/muse-starter-sl-$RUN`; pass `--no-promote` to skip.
 
+Every 20 optimizer steps the run saves a resumable checkpoint, the LoRA weights
+and optimizer state, and prints its reference. `--dcp-save-interval N` changes
+the interval, and `0` turns saving off. If the run fails or you stop it with
+Ctrl-C, it prints a `launch` command that continues from the newest checkpoint
+with `--init-from-checkpoint <reference>`; after any other stop, rerun the
+same `launch` with that flag and the newest printed reference. The resumed run
+restores the weights and optimizer state, skips the steps already done, and
+evaluates the base model again for the comparison. Resume right away: a
+training session expires soon after its run stops, and its checkpoints can't be
+loaded after that.
+
 ## Your chat data
 
 Supply a local JSONL file in this format instead of the public example:

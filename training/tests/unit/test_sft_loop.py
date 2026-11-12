@@ -86,7 +86,9 @@ def test_throughput_defaults_keep_trainer_fed():
 
     assert cfg.pipeline_depth == 4
     assert cfg.render_workers is None
-    assert cfg.dcp_save_interval == 0
+    # Unset cadences resolve per run: see resolve_checkpoint_cadence.
+    assert cfg.dcp_save_interval is None
+    assert cfg.checkpoint_interval_minutes is None
     assert cfg.sampler_save_interval == 0
 
 
@@ -572,6 +574,8 @@ def test_main_requests_cleanup_for_sdk_created_trainer(tmp_path, monkeypatch):
 
     assert len(calls) == 1
     assert calls[0]["cleanup_trainer_on_close"] is True
+    # The run's exit stack decides whether the trainer survives a failure.
+    assert calls[0]["exit_stack"] is not None
 
 
 class _ResolvedFuture:
@@ -1050,6 +1054,29 @@ def test_checkpoint_schedule_scores_every_save_point_including_final(tmp_path, m
     ]
     assert saves == [_save(2, 4), _save(4, 8)]
     assert [r["step"] for r in eval_records if "checkpoint_eval/loss" in r] == [2, 4]
+
+
+@pytest.mark.parametrize(
+    "lora_rank, expected_saves",
+    [
+        # LoRA defaults to the timed schedule, which also saves at each epoch end.
+        (16, [_save(2, 4), _save(4, 8)]),
+        # Full-parameter defaults to every 50 steps, so this 4-step run saves none.
+        (0, []),
+    ],
+)
+def test_default_checkpoint_cadence_depends_on_lora_rank(tmp_path, monkeypatch, lora_rank, expected_saves):
+    saves = []
+    _run_main_with_fake_trainer(
+        tmp_path,
+        monkeypatch,
+        resume_info=None,
+        saves=saves,
+        epochs=2,
+        lora_rank=lora_rank,
+    )
+
+    assert saves == expected_saves
 
 
 def test_checkpoint_schedule_timed_point_scores_then_saves(tmp_path, monkeypatch):

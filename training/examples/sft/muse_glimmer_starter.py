@@ -32,6 +32,8 @@ import argparse
 import json
 import os
 import random
+import re
+import shlex
 import sys
 import time
 import warnings
@@ -183,6 +185,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
                     "max_seq_len": args.max_seq_len,
                     "max_eval_tokens": args.max_eval_tokens,
                     "seed": args.seed,
+                    "dcp_save_interval": args.dcp_save_interval,
                     "lora_alpha": LORA_ALPHA,
                     "lora_targets": LORA_TARGETS,
                     "train_on": "last_assistant_turn",
@@ -551,9 +554,149 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     return 0 if report["fits"] else 1
 
 
+# Serverless runs save a resumable checkpoint (LoRA weights and optimizer state)
+# every this many optimizer steps. LoRA state is small, and the default run is
+# about 35 steps, so the recipes' 50-step default would never save one.
+DCP_SAVE_INTERVAL = 20
+CHECKPOINT_PREFIX = "starter-step-"
+# What a serverless save returns: <account>/run-<32 hex>/starter-step-<N>.
+_CHECKPOINT_REF = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?/run-[0-9a-f]{32}/" + CHECKPOINT_PREFIX + r"(\d+)(?:-[a-z0-9]+)*"
+)
+
+
+class _Progress:
+    """The last finished optimizer step and the newest resumable checkpoint."""
+
+    def __init__(self, step: int = 0, checkpoint: str | None = None) -> None:
+        self.step = step
+        self.checkpoint = checkpoint
+        self.checkpoint_step = step if checkpoint else 0
+
+
+def _checkpoint_step(checkpoint: str) -> int:
+    """Return the optimizer step a starter checkpoint reference was saved at."""
+    match = _CHECKPOINT_REF.fullmatch(checkpoint.strip())
+    if match is None:
+        sys.exit(
+            f"{checkpoint!r} is not a checkpoint reference this starter printed; pass the full "
+            f"<account>/run-<id>/{CHECKPOINT_PREFIX}<N> reference to --init-from-checkpoint."
+        )
+    return int(match.group(1))
+
+
+def _resume_command(args: argparse.Namespace, checkpoint: str) -> str:
+    """Return the launch command that continues this run from ``checkpoint`` with the same settings."""
+    parts = ["python", "-m", "examples.sft.muse_glimmer_starter", "launch", "--surface", "serverless"]
+    for name in (
+        "run_id",
+        "file",
+        "log_path",
+        "n_train",
+        "n_eval",
+        "seed",
+        "epochs",
+        "batch_size",
+        "lora_rank",
+        "learning_rate",
+        "max_seq_len",
+        "max_eval_tokens",
+        "dcp_save_interval",
+    ):
+        value = getattr(args, name)
+        if value is not None:
+            parts += [f"--{name.replace('_', '-')}", str(value)]
+    parts += [flag for flag in ("--allow-paid", "--no-promote") if getattr(args, flag[2:].replace("-", "_"))]
+    return shlex.join([*parts, "--init-from-checkpoint", checkpoint])
+
+
+def _stopped_message(args: argparse.Namespace, progress: _Progress) -> str:
+    """Explain how to continue a serverless run that stopped early."""
+    if progress.checkpoint is None:
+        cadence = f"every {args.dcp_save_interval} steps" if args.dcp_save_interval else "off"
+        return (
+            f"The run stopped after step {progress.step} without a checkpoint to resume from "
+            f"(checkpoints: {cadence}); launch again to start over."
+        )
+    return (
+        f"The run stopped after step {progress.step}. To continue from its step-{progress.checkpoint_step} "
+        "checkpoint, run this right away; a training session expires soon after its run stops, and its "
+        f"checkpoints can't be loaded after that:\n  {_resume_command(args, progress.checkpoint)}"
+    )
+
+
+def _resume(training_client, checkpoint: str, progress: _Progress, log) -> None:
+    """Load a checkpoint's weights and optimizer state, then save them again in this run's session.
+
+    The checkpoint's own session expires soon after its run stops, so the
+    resume point this run prints if it stops must live in this run's session.
+    """
+    try:
+        training_client.load_state_with_optimizer(checkpoint).result()
+    except Exception:
+        print(
+            f"Loading {checkpoint} failed. If its training session has expired, its checkpoints can't be "
+            "loaded; launch again without --init-from-checkpoint to start over.",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
+    progress.checkpoint = training_client.save_state(f"{CHECKPOINT_PREFIX}{progress.step}").result().path
+    row = {"resumed_from": checkpoint, "step": progress.step, "checkpoint": progress.checkpoint}
+    log.write(json.dumps(row) + "\n")
+    print(json.dumps(row), flush=True)
+
+
+def _train(training_client, datums: list, args: argparse.Namespace, log, progress: _Progress) -> int:
+    """Run every optimizer step after ``progress.step`` and return the run's step count.
+
+    The batch order depends only on ``--seed``, so a resumed run replays it and
+    skips the steps its checkpoint already holds. Every ``--dcp-save-interval``
+    steps the run saves a resumable checkpoint and logs its reference.
+    """
+    from fireworks.training import sdk
+
+    adam = sdk.AdamParams(
+        learning_rate=args.learning_rate, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.0, grad_clip_norm=1.0
+    )
+    rng = random.Random(args.seed)
+    done = progress.step
+    step = 0
+    for epoch in range(args.epochs):
+        order = list(range(len(datums)))
+        rng.shuffle(order)
+        for start in range(0, len(order), args.batch_size):
+            step += 1
+            if step <= done:
+                continue
+            batch = [datums[i] for i in order[start : start + args.batch_size]]
+            fb = training_client.forward_backward(batch, "cross_entropy").result()
+            opt = training_client.optim_step(adam, emit_grad_norm_metrics=True).result()
+            progress.step = step
+            metrics = dict(getattr(fb, "metrics", None) or {})
+            tokens = metrics.get("response_tokens") or metrics.get("num_loss_tokens") or 1.0
+            loss = metrics.get("loss:sum", 0.0) / max(float(tokens), 1.0)
+            grad = {k: v for k, v in (getattr(opt, "metrics", None) or {}).items() if "grad" in k}
+            row = {"step": step, "epoch": epoch + 1, "loss": round(loss, 4), **grad}
+            log.write(json.dumps(row) + "\n")
+            print(json.dumps(row), flush=True)
+            if args.dcp_save_interval > 0 and step % args.dcp_save_interval == 0:
+                path = training_client.save_state(f"{CHECKPOINT_PREFIX}{step}").result().path
+                progress.checkpoint, progress.checkpoint_step = path, step
+                saved = {"step": step, "checkpoint": path}
+                log.write(json.dumps(saved) + "\n")
+                print(json.dumps(saved), flush=True)
+    return step
+
+
 def cmd_launch_serverless(args: argparse.Namespace) -> int:
     if not promotion_active() and not args.allow_paid:
         sys.exit("The Muse Glimmer promotion has ended. Re-run with --allow-paid after approving the live rate.")
+    if args.dcp_save_interval < 0:
+        sys.exit("--dcp-save-interval must be 0 (no checkpoints) or a positive number of steps.")
+    progress = _Progress()
+    if args.init_from_checkpoint:
+        progress = _Progress(_checkpoint_step(args.init_from_checkpoint), args.init_from_checkpoint)
     _, account = _connect()
     from fireworks.training import sdk
     from fireworks.training.sdk import FiretitanServiceClient
@@ -589,6 +732,12 @@ def cmd_launch_serverless(args: argparse.Namespace) -> int:
             f"{oversized[:20]}); raise --max-seq-len or remove them before launch."
         )
     datums = [d for d in rendered if d is not None]
+    total_steps = args.epochs * len(range(0, len(datums), args.batch_size))
+    if progress.step > total_steps:
+        sys.exit(
+            f"{args.init_from_checkpoint} was saved at step {progress.step}, past this run's {total_steps} steps; "
+            "resume with the flags the run used."
+        )
     sample = renderer.build_generation_prompt(messages(train_ex[0], False))
     print(
         f"rendered {len(datums)}/{len(train_ex)} train rows; holdout {len(eval_ex)} rows; "
@@ -616,8 +765,8 @@ def cmd_launch_serverless(args: argparse.Namespace) -> int:
 
         per_example: dict[str, list[bool]] = {}
 
-        def evaluate(label: str) -> dict:
-            snapshot = training_client.save_weights_for_sampler(f"starter-{label}").result().path
+        def evaluate(label: str, snapshot: str | None = None) -> dict:
+            snapshot = snapshot or training_client.save_weights_for_sampler(f"starter-{label}").result().path
             sampler = service.create_sampling_client(model_path=snapshot, tokenizer=tokenizer)
             hits: dict[str, int] = {}
             seen: dict[str, int] = {}
@@ -679,31 +828,21 @@ def cmd_launch_serverless(args: argparse.Namespace) -> int:
             print(json.dumps(result), flush=True)
             return result
 
-        base = evaluate("base")
-        adam = sdk.AdamParams(
-            learning_rate=args.learning_rate, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.0, grad_clip_norm=1.0
-        )
-        rng = random.Random(args.seed)
-        step = 0
-        for epoch in range(args.epochs):
-            order = list(range(len(datums)))
-            rng.shuffle(order)
-            for start in range(0, len(order), args.batch_size):
-                batch = [datums[i] for i in order[start : start + args.batch_size]]
-                fb = training_client.forward_backward(batch, "cross_entropy").result()
-                opt = training_client.optim_step(adam, emit_grad_norm_metrics=True).result()
-                step += 1
-                metrics = dict(getattr(fb, "metrics", None) or {})
-                tokens = metrics.get("response_tokens") or metrics.get("num_loss_tokens") or 1.0
-                loss = metrics.get("loss:sum", 0.0) / max(float(tokens), 1.0)
-                grad = {k: v for k, v in (getattr(opt, "metrics", None) or {}).items() if "grad" in k}
-                row = {"step": step, "epoch": epoch + 1, "loss": round(loss, 4), **grad}
-                log.write(json.dumps(row) + "\n")
-                print(json.dumps(row), flush=True)
-        tuned = evaluate("tuned")
-        promoted = None if args.no_promote else _promote_tuned(service, account, args.run_id)
+        # The base snapshot comes from the fresh adapter, so save it before loading a checkpoint.
+        base_snapshot = training_client.save_weights_for_sampler("starter-base").result().path
+        if args.init_from_checkpoint:
+            _resume(training_client, args.init_from_checkpoint, progress, log)
+        try:
+            base = evaluate("base", base_snapshot)
+            step = _train(training_client, datums, args, log, progress)
+            tuned = evaluate("tuned")
+            promoted = None if args.no_promote else _promote_tuned(service, account, args.run_id)
+        except BaseException:
+            print(_stopped_message(args, progress), file=sys.stderr, flush=True)
+            raise
         summary = {
             "steps": step,
+            "resumed_from": args.init_from_checkpoint,
             "base": base,
             "tuned": tuned,
             "promoted_model": promoted,
@@ -722,10 +861,13 @@ def cmd_launch_serverless(args: argparse.Namespace) -> int:
                 "note": "billed separately from training at published " "per-token rates",
             },
         }
+        attempt = " in this attempt" if args.init_from_checkpoint else ""
+        if attempt:
+            summary["cost"]["evaluation_sampling"]["note"] += "; this attempt only, earlier evals are in metrics.jsonl"
         (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
         print(json.dumps(summary, indent=2))
         print(
-            f"cost: training {summary['cost']['training']}; evaluation sampling used {prompt_tokens} prompt + "
+            f"cost: training {summary['cost']['training']}; evaluation sampling{attempt} used {prompt_tokens} prompt + "
             f"{sampled_tokens} sampled tokens, billed separately at published per-token rates",
             flush=True,
         )
@@ -798,6 +940,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "--no-promote",
             action="store_true",
             help="Serverless: keep the tuned adapter session-only instead of promoting it to a model.",
+        )
+        s.add_argument(
+            "--dcp-save-interval",
+            type=int,
+            default=DCP_SAVE_INTERVAL,
+            help="Serverless: save a resumable checkpoint (LoRA weights and optimizer state) every N optimizer "
+            "steps; 0 turns saving off.",
+        )
+        s.add_argument(
+            "--init-from-checkpoint",
+            default=None,
+            help="Serverless: continue a run from a checkpoint reference it printed, with the run's other flags. "
+            "Restores the weights and optimizer state and skips the steps already done.",
         )
         s.add_argument("--job-id", default=None, help="Watch an existing managed job.")
         s.add_argument("--interval", type=int, default=60)

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import signal
 import threading
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import replace
 from typing import Any
 
@@ -19,6 +21,7 @@ from fireworks.training.sdk import (
     ModelDetailsUnavailableError,
     TrainerJobManager,
 )
+from training.utils import fileio
 from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
 from training.tokenizer_identity import is_code_free_model_name
 
@@ -240,6 +243,8 @@ def build_service_client(
     cleanup_deployment_on_close: DeploymentCleanupOnClose | None = None,
     reference_required: bool = False,
     base_model_type: str = "",
+    exit_stack: ExitStack | None = None,
+    log_path: str | None = None,
 ) -> FiretitanServiceClient:
     """Create an SDK-managed service client from cookbook config.
 
@@ -247,11 +252,28 @@ def build_service_client(
     trainer ID is chosen before provisioning starts. An interrupt, timeout or
     failure before ``create_training_client`` returns then deletes that trainer,
     instead of leaving a paid trainer behind that the SDK has not handed back yet.
+
+    With ``exit_stack``, the stack closes the service when it unwinds. A trainer
+    whose ID was chosen here is then deleted only if the stack closes without an
+    exception. If the run raises, the trainer is kept and a warning gives the
+    ``trainer.job_id`` that resumes the run; the trainer's inactivity timeout
+    stops it if nobody does. With ``log_path``, the kept trainer is also recorded
+    there, and a later run with the same ``log_path`` that reattaches to it owns
+    it the same way: deleted when that run finishes, kept again if it stops early.
+    Any other reattached trainer stays the SDK's.
     """
     provisioning_job_id = None
     if cleanup_trainer_on_close and trainer.job_id is None:
         provisioning_job_id = _new_trainer_job_id()
         trainer = replace(trainer, job_id=provisioning_job_id)
+    kept_record = fileio.join(log_path, _KEPT_TRAINER_FILE) if exit_stack is not None and log_path else None
+    resumed_job_id = None
+    if cleanup_trainer_on_close and kept_record is not None and trainer.job_id is not None:
+        if provisioning_job_id is None and _read_kept_trainer(kept_record) == trainer.job_id:
+            resumed_job_id = trainer.job_id
+    # With an exit stack, the stack (not the SDK) deletes a trainer named here or
+    # resumed from log_path, so that a failed run can keep it.
+    keep_trainer_on_error = exit_stack is not None and (provisioning_job_id or resumed_job_id) is not None
     service_kwargs = _firetitan_service_kwargs(
         base_model=base_model,
         tokenizer_model=tokenizer_model,
@@ -262,11 +284,32 @@ def build_service_client(
         trainer=trainer,
         deployment=deployment,
         hotload_timeout_s=hotload_timeout_s,
-        cleanup_trainer_on_close=cleanup_trainer_on_close,
+        cleanup_trainer_on_close=cleanup_trainer_on_close and not keep_trainer_on_error,
         cleanup_deployment_on_close=cleanup_deployment_on_close,
         reference_required=reference_required,
         base_model_type=base_model_type,
     )
+
+    def trainer_manager(job_id: str) -> TrainerJobManager | None:
+        try:
+            return TrainerJobManager(api_key=api_key, base_url=base_url, additional_headers=additional_headers)
+        except Exception:  # noqa: BLE001 - never mask the error that stopped the run
+            logger.warning("Could not delete trainer %s; delete it manually", job_id, exc_info=True)
+            return None
+
+    def settle_trainer(job_id: str, *, finished: bool) -> None:
+        """Delete an owned trainer after a finished run; keep and record it after a failed one."""
+        if finished:
+            manager = trainer_manager(job_id)
+            if manager is not None:
+                logger.info("Run finished; deleting trainer %s", job_id)
+                deleted = _delete_confirmed(manager, job_id)
+                if deleted and job_id == resumed_job_id and kept_record is not None:
+                    _record_kept_trainer(kept_record, None)
+            return
+        recorded = kept_record is not None and _record_kept_trainer(kept_record, job_id)
+        logger.warning("%s", _kept_trainer_message(job_id, full_parameter=not max_lora_rank, recorded=recorded))
+
     if provisioning_job_id is None:
         service = FiretitanServiceClient.from_firetitan_config(
             api_key=api_key,
@@ -275,20 +318,32 @@ def build_service_client(
             additional_headers=additional_headers,
             **service_kwargs,
         )
+        if exit_stack is not None and resumed_job_id is not None:
+            resumed = resumed_job_id
+
+            def close_resumed(exc_type: type[BaseException] | None, exc: BaseException | None, tb: Any) -> None:
+                # Decide from the run's outcome, not from whether close() itself raised.
+                try:
+                    service.close()
+                finally:
+                    settle_trainer(resumed, finished=exc_type is None)
+
+            exit_stack.push(close_resumed)
+        elif exit_stack is not None:
+            exit_stack.callback(service.close)
         _bind_training_metrics(service)
         return service
 
     def delete_trainer() -> None:
-        try:
-            manager = TrainerJobManager(api_key=api_key, base_url=base_url, additional_headers=additional_headers)
-        except Exception:  # noqa: BLE001 - never mask the error that stopped provisioning
-            logger.warning("Could not delete trainer %s; delete it manually", provisioning_job_id, exc_info=True)
+        manager = trainer_manager(provisioning_job_id)
+        if manager is None:
             return
         try:
             exists = manager.try_get(provisioning_job_id) is not None
         except Exception:  # noqa: BLE001 - unknown; the watcher below retries the lookup
             exists = False
         if exists:
+            logger.warning("Provisioning stopped; deleting trainer %s", provisioning_job_id)
             _delete_confirmed(manager, provisioning_job_id)
             return
         # The create request may still be in flight, so the trainer can appear after this check.
@@ -311,17 +366,33 @@ def build_service_client(
     # The SDK may finish provisioning inside create_training_client, so the trainer
     # stays registered for cleanup until that call returns.
     create_training_client = service.create_training_client
+    handed_back = False
 
     def create_training_client_or_clean_up(*args: Any, **kwargs: Any) -> Any:
+        nonlocal handed_back
         try:
             client = create_training_client(*args, **kwargs)
         except BaseException:
             _abandon_provisioning(provisioning_job_id)
             raise
         _PROVISIONING.pop(provisioning_job_id, None)
+        handed_back = True
         return client
 
     service.create_training_client = create_training_client_or_clean_up
+    if exit_stack is not None:
+
+        def close_service(exc_type: type[BaseException] | None, exc: BaseException | None, tb: Any) -> None:
+            # Decide from the run's outcome, not from whether close() itself raised.
+            try:
+                service.close()
+            finally:
+                if not handed_back:
+                    _abandon_provisioning(provisioning_job_id)
+                else:
+                    settle_trainer(provisioning_job_id, finished=exc_type is None)
+
+        exit_stack.push(close_service)
     _bind_training_metrics(service)
     return service
 
@@ -363,6 +434,56 @@ def _bind_training_metrics(service: Any) -> None:
 _PROVISIONING: dict[str, Callable[[], None]] = {}
 
 
+# A run that keeps its trainer records it here, under its log_path, so that a rerun with
+# the same log_path that reattaches to that trainer can delete it when the rerun finishes.
+_KEPT_TRAINER_FILE = "kept_trainer.json"
+
+
+def _read_kept_trainer(path: str) -> str | None:
+    """Return the trainer that a failed run with this log_path kept, if it recorded one."""
+    try:
+        text = fileio.read_text(path)
+        return json.loads(text).get("trainer_job_id") if text.strip() else None
+    except Exception:  # noqa: BLE001 - an unreadable record leaves the trainer to the SDK
+        logger.warning(
+            "Could not read %s, so a reattached trainer is not deleted when the run finishes", path, exc_info=True
+        )
+        return None
+
+
+def _record_kept_trainer(path: str, job_id: str | None) -> bool:
+    """Record the trainer kept for a rerun with this log_path, or clear the record with None."""
+    try:
+        fileio.write_json(path, {"trainer_job_id": job_id})
+    except Exception:  # noqa: BLE001 - never mask the error that stopped the run
+        logger.warning("Could not write %s", path, exc_info=True)
+        return False
+    return True
+
+
+def _kept_trainer_message(job_id: str, *, full_parameter: bool, recorded: bool = False) -> str:
+    """Tell the user how to resume from, or delete, a trainer kept after a failed run."""
+    parts = [
+        f"The run stopped before it finished, so trainer {job_id} was kept.",
+        "To resume from its last saved checkpoint, run again with the same log_path and "
+        f"trainer.job_id={job_id!r}.",
+    ]
+    if recorded:
+        parts.append("That run deletes the trainer when it finishes.")
+    if full_parameter:
+        # A rerun on a running full-parameter trainer starts from the weights it holds,
+        # so without a checkpoint it would not start from the base model.
+        parts.append(
+            "If the log shows no saved DCP checkpoint, delete the trainer and start a new run without "
+            "trainer.job_id: this full-parameter trainer still holds the weights the failed run trained."
+        )
+    parts.append(
+        "The trainer bills until its inactivity timeout stops it (60 minutes by default), and a run that "
+        f"reattaches restarts it. To delete it now: firectl rlor-trainer-job delete {job_id}"
+    )
+    return " ".join(parts)
+
+
 def _new_trainer_job_id() -> str:
     # Same shape as the SDK's own client-generated IDs.
     return f"training-api-service-{uuid.uuid4().hex[:8]}"
@@ -382,7 +503,6 @@ def _delete_confirmed(manager: TrainerJobManager, job_id: str) -> bool:
     ``TrainerJobManager.delete`` logs request failures instead of raising, so success is
     read back from the trainer's state.
     """
-    logger.warning("Provisioning stopped; deleting trainer %s", job_id)
     for attempt in range(_DELETE_ATTEMPTS):
         if attempt:
             time.sleep(_DELETE_RETRY_S)
@@ -439,6 +559,7 @@ def _delete_when_created(manager: TrainerJobManager, job_id: str) -> None:
             logger.debug("Lookup of trainer %s failed; retrying", job_id, exc_info=True)
             lookup_failed = True
             continue
+        logger.warning("Provisioning stopped; deleting trainer %s", job_id)
         _delete_confirmed(manager, job_id)
         return
     if lookup_failed:

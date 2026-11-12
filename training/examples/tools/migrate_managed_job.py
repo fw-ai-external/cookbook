@@ -67,10 +67,12 @@ from training.utils.validation import validate_output_model_id
 
 logger = logging.getLogger(__name__)
 
-# Managed SFT/DPO/ORPO saved a resumable checkpoint every 20 steps, and managed
-# LoRA SFT/DPO also saved resumable + promotable checkpoints every 30 minutes
-# and at each epoch end. The recipe defaults (0) turn both off, so copy them.
-MANAGED_DCP_SAVE_INTERVAL = 20
+# Managed SFT/DPO/ORPO saved a resumable checkpoint every 20 steps. Migrated
+# runs save one every 50 steps, the recipes' default, because a full-parameter
+# save writes the whole model and its optimizer state. Managed LoRA SFT/DPO also
+# saved resumable + promotable checkpoints every 30 minutes and at each epoch
+# end, and migrated LoRA SFT/DPO runs keep that schedule.
+MANAGED_DCP_SAVE_INTERVAL = 50
 MANAGED_CHECKPOINT_INTERVAL_MINUTES = 30.0
 
 # Serverless LoRA hosting accepts adapters up to this rank.

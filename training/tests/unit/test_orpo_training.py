@@ -55,7 +55,12 @@ def orpo_run(
     client.forward_backward_custom.side_effect = forward_backward
     tokenizer = SimpleNamespace(encode=lambda text: list(text.encode("ascii")))
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setattr(orpo_loop, "build_service_client", lambda **kwargs: service)
+    def build_service_client(**kwargs: Any) -> MagicMock:
+        # Like the real builder, the exit stack closes the service.
+        kwargs["exit_stack"].callback(service.close)
+        return service
+
+    monkeypatch.setattr(orpo_loop, "build_service_client", build_service_client)
     monkeypatch.setattr(
         orpo_loop.ReconnectableClient, "from_training_client", lambda *a, **k: client
     )

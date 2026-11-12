@@ -75,7 +75,11 @@ from training.utils import (
     wandb_finish,
     wandb_log,
 )
-from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
+from training.utils.checkpoints import (
+    DEFAULT_DCP_SAVE_INTERVAL,
+    TrainingCheckpoints,
+    validate_warm_start_config,
+)
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.runner_state import (
     start_running,
@@ -168,7 +172,8 @@ class Config:
     See training/utils/runner.py for file format details.
     """
     save_final_checkpoint: bool = True
-    dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
+    dcp_save_interval: int = DEFAULT_DCP_SAVE_INTERVAL
+    """Save a resumable DCP checkpoint every N steps. 0 disables."""
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
 
@@ -323,8 +328,9 @@ def main(
             learning_rate=cfg.learning_rate,
             trainer=cfg.trainer,
             cleanup_trainer_on_close=True,
+            exit_stack=stack,
+            log_path=cfg.log_path,
         )
-        stack.callback(service.close)
         training_client = service.create_training_client(
             cfg.base_model,
             lora_rank=cfg.lora_rank,

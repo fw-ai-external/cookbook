@@ -17,6 +17,7 @@ import training.recipes.dpo_loop as dpo_loop
 import training.recipes.orpo_loop as orpo_loop
 import training.recipes.sft_loop as sft_loop
 from training.examples.tools import migrate_managed_job as mmj
+from training.utils.checkpoints import DEFAULT_DCP_SAVE_INTERVAL
 
 ACCOUNT = "acme"
 SFT_JOB = f"accounts/{ACCOUNT}/supervisedFineTuningJobs/sft-1"
@@ -186,8 +187,8 @@ def test_v2_lora_sft_maps_to_serverless_sft_config(train_file, tmp_path):
     assert cfg.sampler_save_interval == 5
     assert cfg.output_model_id == "new-model"
     assert cfg.log_path == str(tmp_path / "logs")
-    # Managed checkpoint cadence, copied explicitly.
-    assert cfg.dcp_save_interval == 20
+    # The recipes' step cadence, set explicitly; managed jobs saved every 20 steps.
+    assert cfg.dcp_save_interval == mmj.MANAGED_DCP_SAVE_INTERVAL == DEFAULT_DCP_SAVE_INTERVAL == 50
     assert cfg.checkpoint_interval_minutes == 30.0
     # Explicit trainer intent; the region is never copied.
     assert cfg.trainer.use_reservation is False
@@ -215,7 +216,7 @@ def test_full_parameter_sft_runs_dedicated_without_lora_schedule(train_file, tmp
     # No max_context_length on the job: use the model's training context length.
     assert cfg.max_seq_len == 131072
     assert cfg.tokenizer_model == "Qwen/Qwen3.5-9B"
-    assert cfg.dcp_save_interval == 20
+    assert cfg.dcp_save_interval == 50
     assert cfg.checkpoint_interval_minutes == 0.0
     assert plan.fallback_config is None
 
@@ -274,7 +275,7 @@ def test_dpo_lora_maps_to_serverless_dpo_config(train_file, tmp_path):
     assert (cfg.beta, cfg.ref_cache_concurrency, cfg.ref_cache_batch_size) == (0.2, 8, 2)
     assert (cfg.lora_rank, cfg.batch_size, cfg.learning_rate, cfg.max_seq_len) == (8, 4, 0.00001, 8192)
     assert cfg.epochs == dpo_loop.Config(log_path="x").epochs
-    assert cfg.checkpoint_interval_minutes == 30.0 and cfg.dcp_save_interval == 20
+    assert cfg.checkpoint_interval_minutes == 30.0 and cfg.dcp_save_interval == 50
     assert cfg.runner.reference_checkpoint_file == str(tmp_path / "logs" / "reference_checkpoint.json")
     # The held-out dataset is a resource name: warn, don't guess.
     assert cfg.evaluation_dataset == ""
@@ -314,7 +315,7 @@ def test_orpo_maps_to_dedicated_orpo_config(train_file, tmp_path):
     assert cfg.orpo_lambda == 0.5
     assert cfg.lora_rank == 16
     assert cfg.lr_scheduler == ConstantSchedule(warmup_steps=4)
-    assert cfg.dcp_save_interval == 20
+    assert cfg.dcp_save_interval == 50
     assert not hasattr(cfg, "checkpoint_interval_minutes")
     warnings = "\n".join(plan.warnings)
     assert "lora_target_modules" in warnings and "lora_dropout" in warnings

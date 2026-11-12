@@ -94,6 +94,7 @@ from training.utils import (
 )
 from training.utils.checkpoints import (
     TrainingCheckpoints,
+    resolve_checkpoint_cadence,
     timed_checkpoint_due,
     validate_warm_start_config,
 )
@@ -211,11 +212,13 @@ class Config:
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    dcp_save_interval: int = 0
-    """Save DCP checkpoints every N steps. 0 disables."""
+    dcp_save_interval: int | None = None
+    """Save DCP checkpoints every N steps. 0 disables. Unset (None) means 50,
+    except in a LoRA run that also leaves ``checkpoint_interval_minutes``
+    unset: that run uses the timed schedule."""
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
-    checkpoint_interval_minutes: float = 0.0
+    checkpoint_interval_minutes: float | None = None
     """When > 0, save a resumable + promotable checkpoint at every epoch end
     and every ``max(N minutes, estimated run time / 20)`` within an epoch, or
     every ``sampler_save_interval`` steps when that is set. With held-out
@@ -224,7 +227,9 @@ class Config:
     pairs. Rank checkpoints by ``checkpoint_eval/loss``, the held-out DPO loss
     (lower is better), as SFT does; accuracy, margin, chosen/rejected logprob
     and chosen logprob delta are logged for monitoring. Epoch ends also log the
-    full-set ``eval/*``. Replaces ``dcp_save_interval``. 0 disables."""
+    full-set ``eval/*``. Replaces ``dcp_save_interval``. 0 disables. Unset
+    (None) means 30 in a LoRA run that also leaves ``dcp_save_interval``
+    unset, and 0 otherwise."""
     evaluation_dataset: str = ""
     """Path to an explicit held-out preference dataset (JSONL file or directory
     of .jsonl shards). Only its first ``MAX_EVAL_PAIRS`` valid pairs are used.
@@ -252,7 +257,9 @@ class Config:
     save_final_checkpoint: bool = True
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     cleanup_on_exit: bool = True
-    """Clean up SDK-created trainer resources on close."""
+    """Delete the trainer this run created once the run finishes. A run that
+    stops on an error keeps a new trainer so it can resume with
+    ``trainer.job_id``."""
 
     release_reference_after_cache: bool = True
     """Release SDK-owned separate references after reference logprobs are cached.
@@ -616,14 +623,13 @@ async def _train_loop(
     pipe: asyncio.Queue = asyncio.Queue()
     sem = asyncio.Semaphore(cfg.ref_cache_concurrency)
 
-    schedule_on = cfg.checkpoint_interval_minutes > 0
-    if schedule_on and cfg.dcp_save_interval > 0:
-        logger.warning(
-            "dcp_save_interval=%d is ignored because checkpoint_interval_minutes=%s is set",
-            cfg.dcp_save_interval,
-            cfg.checkpoint_interval_minutes,
-        )
-    dcp_save_interval = 0 if schedule_on else cfg.dcp_save_interval
+    cadence = resolve_checkpoint_cadence(
+        dcp_save_interval=cfg.dcp_save_interval,
+        checkpoint_interval_minutes=cfg.checkpoint_interval_minutes,
+        lora_rank=cfg.lora_rank,
+    )
+    schedule_on = cadence.schedule_on
+    dcp_save_interval = cadence.dcp_save_interval
     sampler_save_interval = 0 if schedule_on else cfg.sampler_save_interval
     checkpoint_eval_pairs = eval_pairs[:CHECKPOINT_EVAL_MAX_EXAMPLES]
     schedule_started_at = time.monotonic()
@@ -734,7 +740,7 @@ async def _train_loop(
         else:
             now = time.monotonic()
             save_point_due = timed_checkpoint_due(
-                min_interval_s=cfg.checkpoint_interval_minutes * 60,
+                min_interval_s=cadence.checkpoint_interval_minutes * 60,
                 since_last_save_s=now - last_save_at,
                 elapsed_s=now - schedule_started_at,
                 steps_done=step - step_offset,
@@ -1088,8 +1094,9 @@ def main(
                 trainer=cfg.trainer,
                 reference_required=True,
                 cleanup_trainer_on_close=cfg.cleanup_on_exit,
+                exit_stack=stack,
+                log_path=cfg.log_path,
             )
-            stack.callback(service.close)
             training_client = service.create_training_client(
                 cfg.base_model,
                 lora_rank=cfg.lora_rank,

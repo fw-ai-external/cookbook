@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import json
+import logging
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -1228,3 +1231,198 @@ def test_process_exit_waits_for_an_in_flight_trainer_create(tmp_path):
     subprocess.run([sys.executable, "-c", script], check=True, cwd=repo_root, timeout=60)
 
     assert deleted_file.read_text() == "training-api-service-12345678"
+
+
+class _FakeClosableService(_FakeProvisioningService):
+    """A provisioning service that records close() and can fail it."""
+    def __init__(self, job_id, on_create, close_error=None):
+        super().__init__(job_id, on_create)
+        self.closed = 0
+        self.close_error = close_error
+
+    def close(self):
+        self.closed += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
+def _ready(job_id):
+    _FakeTrainerJobManager.existing.add(job_id)
+    return "training-client"
+
+
+def _closable_service(provisioning, *, sdk_deletes: bool, close_error=None) -> list:
+    """Install a closable fake service; returns the list it appends services to."""
+    services = []
+
+    def from_config(**kwargs):
+        # With an exit stack, the stack (not the SDK) deletes a trainer named here.
+        assert kwargs["cleanup_trainer_on_close"] is sdk_deletes
+        svc = _FakeClosableService(kwargs["trainer_job_id"], _ready, close_error)
+        services.append(svc)
+        return svc
+
+    provisioning(from_config)
+    return services
+
+
+def test_exit_stack_deletes_the_trainer_after_a_finished_run(provisioning):
+    services = _closable_service(provisioning, sdk_deletes=False)
+    with ExitStack() as stack:
+        svc = build_service_client(**_provisioning_kwargs(TrainerConfig()), exit_stack=stack)
+        svc.create_training_client("accounts/acct/models/base")
+
+    assert services[0].closed == 1
+    assert _FakeTrainerJobManager.deleted == [svc.job_id]
+
+
+@pytest.mark.parametrize("error", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_exit_stack_keeps_the_trainer_when_the_run_stops_early(provisioning, caplog, error):
+    services = _closable_service(provisioning, sdk_deletes=False)
+    with caplog.at_level(logging.WARNING, logger=service.logger.name), pytest.raises(error):
+        with ExitStack() as stack:
+            svc = build_service_client(**_provisioning_kwargs(TrainerConfig()), exit_stack=stack)
+            svc.create_training_client("accounts/acct/models/base")
+            raise error()
+
+    assert services[0].closed == 1
+    assert _FakeTrainerJobManager.deleted == []
+    assert f"trainer {svc.job_id} was kept" in caplog.text
+    assert f"trainer.job_id='{svc.job_id}'" in caplog.text
+    assert f"firectl rlor-trainer-job delete {svc.job_id}" in caplog.text
+
+
+@pytest.mark.parametrize("max_lora_rank, full_parameter", [(None, True), (0, True), (16, False)])
+def test_kept_full_parameter_trainer_warns_against_a_rerun_without_a_checkpoint(
+    provisioning, caplog, max_lora_rank, full_parameter
+):
+    """A running full-parameter trainer keeps its trained weights; a LoRA rerun gets a fresh adapter."""
+    _closable_service(provisioning, sdk_deletes=False)
+    kwargs = {**_provisioning_kwargs(TrainerConfig()), "max_lora_rank": max_lora_rank}
+    with caplog.at_level(logging.WARNING, logger=service.logger.name), pytest.raises(RuntimeError):
+        with ExitStack() as stack:
+            svc = build_service_client(**kwargs, exit_stack=stack)
+            svc.create_training_client("accounts/acct/models/base")
+            raise RuntimeError("step failed")
+
+    assert f"trainer.job_id='{svc.job_id}'" in caplog.text
+    assert ("If the log shows no saved DCP checkpoint, delete the trainer" in caplog.text) is full_parameter
+
+
+def test_exit_stack_deletes_after_a_finished_run_even_if_close_fails(provisioning, caplog):
+    services = _closable_service(provisioning, sdk_deletes=False, close_error=RuntimeError("close failed"))
+    with caplog.at_level(logging.WARNING, logger=service.logger.name), pytest.raises(RuntimeError, match="close"):
+        with ExitStack() as stack:
+            svc = build_service_client(**_provisioning_kwargs(TrainerConfig()), exit_stack=stack)
+            svc.create_training_client("accounts/acct/models/base")
+
+    # The run itself finished, so the trainer is not kept for a resume.
+    assert _FakeTrainerJobManager.deleted == [services[0].job_id]
+    assert "was kept" not in caplog.text
+
+
+def test_exit_stack_deletes_a_trainer_that_was_never_handed_back(provisioning):
+    services = _closable_service(provisioning, sdk_deletes=False)
+    with pytest.raises(RuntimeError, match="before training"):
+        with ExitStack() as stack:
+            build_service_client(**_provisioning_kwargs(TrainerConfig()), exit_stack=stack)
+            # The trainer exists, but create_training_client never returned it.
+            _FakeTrainerJobManager.existing.add(services[0].job_id)
+            raise RuntimeError("before training")
+
+    assert _FakeTrainerJobManager.deleted == [services[0].job_id]
+
+
+@pytest.mark.parametrize("trainer, cleanup", [(TrainerConfig(job_id="existing-job"), True), (TrainerConfig(), False)])
+def test_exit_stack_leaves_trainers_it_did_not_name_to_the_sdk(provisioning, caplog, trainer, cleanup):
+    services = _closable_service(provisioning, sdk_deletes=cleanup)
+    with caplog.at_level(logging.WARNING, logger=service.logger.name), pytest.raises(RuntimeError):
+        with ExitStack() as stack:
+            svc = build_service_client(**_provisioning_kwargs(trainer, cleanup=cleanup), exit_stack=stack)
+            svc.create_training_client("accounts/acct/models/base")
+            raise RuntimeError("step failed")
+
+    assert services[0].closed == 1
+    assert _FakeTrainerJobManager.deleted == []
+    assert "was kept" not in caplog.text
+
+
+def _write_kept_record(log_path: Path, content: str) -> None:
+    (log_path / service._KEPT_TRAINER_FILE).write_text(content)
+
+
+def _kept_record(log_path: Path) -> dict:
+    return json.loads((log_path / service._KEPT_TRAINER_FILE).read_text())
+
+
+def test_failed_run_records_its_kept_trainer_in_log_path(provisioning, caplog, tmp_path):
+    _closable_service(provisioning, sdk_deletes=False)
+    with caplog.at_level(logging.WARNING, logger=service.logger.name), pytest.raises(RuntimeError):
+        with ExitStack() as stack:
+            svc = build_service_client(
+                **_provisioning_kwargs(TrainerConfig()), exit_stack=stack, log_path=str(tmp_path)
+            )
+            svc.create_training_client("accounts/acct/models/base")
+            raise RuntimeError("step failed")
+
+    assert _FakeTrainerJobManager.deleted == []
+    assert _kept_record(tmp_path) == {"trainer_job_id": svc.job_id}
+    assert "That run deletes the trainer when it finishes." in caplog.text
+
+
+def test_rerun_on_the_kept_trainer_deletes_it_when_the_run_finishes(provisioning, tmp_path):
+    _write_kept_record(tmp_path, json.dumps({"trainer_job_id": "kept-job"}))
+    # The cookbook owns the kept trainer again, so the SDK is not asked to delete it.
+    services = _closable_service(provisioning, sdk_deletes=False)
+    with ExitStack() as stack:
+        svc = build_service_client(
+            **_provisioning_kwargs(TrainerConfig(job_id="kept-job")), exit_stack=stack, log_path=str(tmp_path)
+        )
+        svc.create_training_client("accounts/acct/models/base")
+
+    assert services[0].closed == 1
+    assert _FakeTrainerJobManager.deleted == ["kept-job"]
+    assert _kept_record(tmp_path) == {"trainer_job_id": None}
+
+
+@pytest.mark.parametrize("error", [RuntimeError, KeyboardInterrupt])
+def test_rerun_on_the_kept_trainer_keeps_it_again_when_it_stops_early(provisioning, caplog, tmp_path, error):
+    _write_kept_record(tmp_path, json.dumps({"trainer_job_id": "kept-job"}))
+    _closable_service(provisioning, sdk_deletes=False)
+    with caplog.at_level(logging.WARNING, logger=service.logger.name), pytest.raises(error):
+        with ExitStack() as stack:
+            svc = build_service_client(
+                **_provisioning_kwargs(TrainerConfig(job_id="kept-job")), exit_stack=stack, log_path=str(tmp_path)
+            )
+            svc.create_training_client("accounts/acct/models/base")
+            raise error()
+
+    assert _FakeTrainerJobManager.deleted == []
+    assert "trainer kept-job was kept" in caplog.text
+    assert _kept_record(tmp_path) == {"trainer_job_id": "kept-job"}
+
+
+@pytest.mark.parametrize(
+    "record, cleanup",
+    [
+        (None, True),
+        ('{"trainer_job_id": "other-job"}', True),
+        ('{"trainer_job_id": null}', True),
+        ("not json", True),
+        ('{"trainer_job_id": "existing-job"}', False),
+    ],
+)
+def test_reattached_trainer_stays_with_the_sdk_unless_log_path_kept_it(provisioning, tmp_path, record, cleanup):
+    if record is not None:
+        _write_kept_record(tmp_path, record)
+    services = _closable_service(provisioning, sdk_deletes=cleanup)
+    with ExitStack() as stack:
+        svc = build_service_client(
+            **_provisioning_kwargs(TrainerConfig(job_id="existing-job"), cleanup=cleanup),
+            exit_stack=stack,
+            log_path=str(tmp_path),
+        )
+        svc.create_training_client("accounts/acct/models/base")
+
+    assert services[0].closed == 1
+    assert _FakeTrainerJobManager.deleted == []
