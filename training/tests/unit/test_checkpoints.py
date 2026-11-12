@@ -1,6 +1,7 @@
 """Unit tests for ``training.utils.checkpoints``."""
 
 import json
+import logging
 import os
 import tempfile
 from types import SimpleNamespace
@@ -12,12 +13,14 @@ from training.utils.runner import UserConfigError
 from training.utils.checkpoints import (
     DATALOADER_BASE_NAME,
     DATALOADER_HISTORY_KEEP,
+    CheckpointCadence,
     ResumeInfo,
     TrainingCheckpoints,
     _logical_name,
     _newest_first,
     _logical_name_for_run,
     _public_logical_name,
+    resolve_checkpoint_cadence,
     timed_checkpoint_due,
     validate_warm_start_config,
 )
@@ -57,6 +60,52 @@ def test_timed_checkpoint_due_disabled_without_interval():
         steps_done=10,
         total_steps=10,
     )
+
+
+@pytest.mark.parametrize(
+    "dcp_save_interval, checkpoint_interval_minutes, lora_rank, expected",
+    [
+        # Unset: LoRA saves on the timed schedule, full-parameter every 50 steps.
+        (None, None, 16, (0, 30.0)),
+        (None, None, 0, (50, 0.0)),
+        # What the managed orchestrator passes: LoRA sends only the schedule,
+        # full-parameter only the step cadence.
+        (None, 30, 16, (0, 30)),
+        (20, None, 0, (20, 0.0)),
+        # An explicit step cadence keeps a LoRA run off the default schedule.
+        (5, None, 16, (5, 0.0)),
+        (0, None, 16, (0, 0.0)),
+        # Turning the schedule off leaves the default step cadence.
+        (None, 0, 16, (50, 0.0)),
+        # Both off.
+        (0, 0, 16, (0, 0.0)),
+        # The schedule replaces an explicit step cadence.
+        (5, 10, 0, (0, 10)),
+    ],
+)
+def test_resolve_checkpoint_cadence_fills_only_unset_fields(
+    dcp_save_interval, checkpoint_interval_minutes, lora_rank, expected
+):
+    cadence = resolve_checkpoint_cadence(
+        dcp_save_interval=dcp_save_interval,
+        checkpoint_interval_minutes=checkpoint_interval_minutes,
+        lora_rank=lora_rank,
+    )
+
+    assert (cadence.dcp_save_interval, cadence.checkpoint_interval_minutes) == expected
+    assert cadence.schedule_on == (expected[1] > 0)
+
+
+def test_resolve_checkpoint_cadence_warns_only_when_both_are_set(caplog):
+    with caplog.at_level(logging.WARNING):
+        resolve_checkpoint_cadence(dcp_save_interval=None, checkpoint_interval_minutes=None, lora_rank=16)
+        resolve_checkpoint_cadence(dcp_save_interval=None, checkpoint_interval_minutes=30, lora_rank=16)
+    assert "is ignored" not in caplog.text
+
+    with caplog.at_level(logging.WARNING):
+        cadence = resolve_checkpoint_cadence(dcp_save_interval=20, checkpoint_interval_minutes=30, lora_rank=16)
+    assert "dcp_save_interval=20 is ignored because checkpoint_interval_minutes=30 is set" in caplog.text
+    assert cadence == CheckpointCadence(dcp_save_interval=0, checkpoint_interval_minutes=30)
 
 
 @pytest.fixture

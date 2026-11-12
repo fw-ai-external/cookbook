@@ -177,6 +177,65 @@ def timed_checkpoint_due(
     return since_last_save_s >= max(min_interval_s, estimated_run_s / TIMED_CHECKPOINTS_PER_RUN)
 
 
+# Periodic checkpoints the SFT, DPO and ORPO recipes save when the cadence
+# fields are left unset, so a run that stops early can resume. A full-parameter
+# save writes the whole model and its optimizer state, so the step cadence is
+# 50 rather than the 20 that managed jobs used.
+DEFAULT_DCP_SAVE_INTERVAL = 50
+DEFAULT_LORA_CHECKPOINT_INTERVAL_MINUTES = 30.0
+
+
+@dataclass(frozen=True)
+class CheckpointCadence:
+    """Periodic checkpoint settings after defaults are applied."""
+
+    dcp_save_interval: int
+    """Steps between resumable checkpoints. 0 or less turns them off."""
+    checkpoint_interval_minutes: float
+    """Minimum minutes between timed save points. 0 turns the schedule off."""
+
+    @property
+    def schedule_on(self) -> bool:
+        return self.checkpoint_interval_minutes > 0
+
+
+def resolve_checkpoint_cadence(
+    *,
+    dcp_save_interval: int | None,
+    checkpoint_interval_minutes: float | None,
+    lora_rank: int,
+) -> CheckpointCadence:
+    """Fill in the periodic checkpoint fields a run left unset (``None``).
+
+    LoRA runs default to the timed schedule
+    (``checkpoint_interval_minutes=30``), whose save points are resumable and
+    promotable. Full-parameter runs default to a resumable checkpoint every 50
+    steps, because a promotable full-parameter save exports the whole model.
+    An explicit value always wins: an explicit ``dcp_save_interval`` keeps a
+    LoRA run on the step cadence, and the schedule replaces the step cadence
+    when both are positive. Set both to 0 to turn periodic checkpoints off.
+    """
+    minutes = checkpoint_interval_minutes
+    if minutes is None:
+        use_schedule = lora_rank > 0 and dcp_save_interval is None
+        minutes = DEFAULT_LORA_CHECKPOINT_INTERVAL_MINUTES if use_schedule else 0.0
+    if minutes > 0:
+        if dcp_save_interval is not None and dcp_save_interval > 0:
+            logger.warning(
+                "dcp_save_interval=%d is ignored because checkpoint_interval_minutes=%s is set",
+                dcp_save_interval,
+                minutes,
+            )
+        logger.info("Periodic checkpoints: each epoch end and at least every %s minutes", minutes)
+        return CheckpointCadence(dcp_save_interval=0, checkpoint_interval_minutes=minutes)
+    steps = DEFAULT_DCP_SAVE_INTERVAL if dcp_save_interval is None else dcp_save_interval
+    if steps > 0:
+        logger.info("Periodic checkpoints: every %d steps", steps)
+    else:
+        logger.info("Periodic checkpoints: off")
+    return CheckpointCadence(dcp_save_interval=steps, checkpoint_interval_minutes=0.0)
+
+
 def _short_name(resource_name: str) -> str:
     """Extract the trailing checkpoint id from a full resource name."""
     return resource_name.rstrip("/").rsplit("/", 1)[-1]

@@ -41,7 +41,8 @@ def test_config_uses_shared_default_weight_decay():
     cfg = module.Config(log_path="/tmp/orpo_test_logs")
 
     assert cfg.weight_decay == pytest.approx(module.DEFAULT_ADAM["weight_decay"])
-    assert cfg.dcp_save_interval == 0
+    # A run that stops early can resume from a checkpoint at most 50 steps old.
+    assert cfg.dcp_save_interval == 50
     assert cfg.sampler_save_interval == 0
 
 
@@ -55,6 +56,8 @@ def test_main_requests_cleanup_for_sdk_created_trainer(monkeypatch, tmp_path):
     kwargs = _build_service_kwargs(monkeypatch, cfg)
 
     assert kwargs["cleanup_trainer_on_close"] is True
+    # The run's exit stack decides whether the trainer survives a failure.
+    assert kwargs["exit_stack"] is not None
 
 
 def test_main_rejects_invalid_base_model(monkeypatch):

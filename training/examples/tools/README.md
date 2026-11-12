@@ -132,11 +132,11 @@ managed job used too.
 | ORPO `orpo.lambda` | `orpo_lambda` | Dedicated only. |
 | Region, accelerator, training shape | Not set | The platform picks the trainer shape and placement. |
 
-Every run also saves a resumable checkpoint every 20 steps
-(`dcp_save_interval=20`), and LoRA SFT and DPO runs save a resumable,
-promotable checkpoint every 30 minutes and at each epoch end
-(`checkpoint_interval_minutes=30`). These are the managed schedules; the
-recipe defaults save neither.
+Full-parameter SFT and DPO runs and ORPO runs save a resumable checkpoint
+every 50 steps (`dcp_save_interval=50`); managed jobs saved one every 20 steps.
+LoRA SFT and DPO runs save a resumable, promotable checkpoint every 30 minutes
+and at each epoch end (`checkpoint_interval_minutes=30`), as managed jobs did.
+Both are the recipe defaults.
 
 ### When the tool stops or warns
 

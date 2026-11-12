@@ -57,7 +57,12 @@ def parse_args():
         default=0,
         help="Deprecated and ignored by DPO; kept for CLI compatibility.",
     )
-    parser.add_argument("--dcp-save-interval", type=int, default=0)
+    parser.add_argument(
+        "--dcp-save-interval",
+        type=int,
+        default=None,
+        help="Save a resumable checkpoint every N steps; 0 disables. Default: the recipe's.",
+    )
 
     # Infrastructure
     parser.add_argument("--training-shape-id", "--training-shape", type=str, default="")

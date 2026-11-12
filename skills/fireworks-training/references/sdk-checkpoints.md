@@ -81,7 +81,7 @@ Bounded to the newest 20 entries. There is no `checkpoints.jsonl` — never has 
   already existed. If that save timed out waiting for its row, there is no such
   fallback. An empty or failed list is retried twice before it raises.
 
-Standalone recipes default all three to `0`, so periodic saves are opt-in outside managed SFT/DPO/ORPO.
+The SFT, DPO and ORPO recipes save periodic checkpoints by default. A LoRA SFT/DPO run that sets neither `dcp_save_interval` nor `checkpoint_interval_minutes` uses the 30-minute schedule, as managed LoRA jobs do. Full-parameter SFT/DPO, ORPO and the decision recipe save a resumable checkpoint every 50 steps. Managed ORPO and full-parameter jobs save every 20 steps, but a full-parameter save writes the whole model and its optimizer state, so the recipes space them further apart. An explicit value wins: a `dcp_save_interval` alone keeps a LoRA run on the step cadence. Set both to `0` to turn periodic saves off. `sampler_save_interval` defaults to `0`, and the RL recipes keep `dcp_save_interval=0`.
 
 Managed job checkpoints are listed through the control-plane parent job APIs:
 
@@ -159,6 +159,25 @@ serverless current-run full resume uses a bare checkpoint name. The local
 `dataloader.json` is cookbook-owned; it must still be present to recover the
 dataset cursor.
 
+A dedicated SFT, DPO or ORPO run keeps the trainer it created when it stops on
+an exception, interrupt or signal after the trainer is ready, and logs the
+`trainer.job_id` to resume with. Rerun with that `trainer.job_id` and the same
+`log_path`: auto-resume loads the newest checkpoint committed to that
+`log_path`, which restores the weights, optimizer and step, and for SFT and DPO
+the dataset cursor. If the run saved no checkpoint, there is nothing to resume.
+A LoRA rerun on the kept trainer then starts at step 0 with a fresh adapter. A
+full-parameter trainer that is still running holds the weights the failed run
+trained, so delete it and start a new run without `trainer.job_id`.
+
+A run that finishes deletes the trainer it created. A run that keeps its trainer
+records it in `kept_trainer.json` under `log_path`, so the rerun with the same
+`log_path` and that `trainer.job_id` deletes the trainer when it finishes, and
+keeps it again if it stops early. A run that reattaches to any other trainer
+never deletes it. A kept trainer bills per GPU-hour until its inactivity timeout
+stops it (60 minutes by default), and a run that reattaches restarts it. To give
+up on a kept trainer, delete it with `TrainerJobManager.delete(<job_id>)`, or
+have the user run `firectl rlor-trainer-job delete <job_id>`.
+
 To initialize a new recipe run from another DCP checkpoint:
 
 - Dedicated: use `init_from_checkpoint=f"{prior_job_id}:step-N"` for a
@@ -215,6 +234,18 @@ explicit checkpoint as a weights-only initialization and resets recipe step
 and cursor, even when current-run preference is enabled. For HF/PEFT adapter
 weights with a fresh optimizer, use `warm_start_from_adapter` on supported
 (non-serverless) recipes.
+
+The Muse Glimmer starter (`training/examples/sft/muse_glimmer_starter.py`) runs
+its own serverless LoRA loop rather than a recipe. Its `launch` saves a
+resumable checkpoint every 20 optimizer steps (`--dcp-save-interval`; `0` turns
+saving off) and prints each `<account>/run-<id>/starter-step-<N>` reference. A
+run that fails or is interrupted prints the `launch` command that continues
+it: the run's flags plus `--init-from-checkpoint <reference>`. After any other
+stop, build that command from the newest printed reference. The resumed run
+restores the adapter and optimizer state, saves it again in its own session,
+and skips the steps already done. A training session expires soon after its
+run stops, and its checkpoints can't be loaded after that, so ask the user to
+approve the resume right away, as for any launch.
 
 ---
 
