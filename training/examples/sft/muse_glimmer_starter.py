@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""Muse Glimmer starter: a first SFT job on the preloaded prompt-router data.
+"""Muse Glimmer starter: a first SFT job on a public Hugging Face example or your data.
 
-Muse Glimmer 30B LoRA SFT is promotional ``$0`` on Managed SFT and on the Serverless
+Muse Glimmer 30B LoRA SFT is promotional ``$0`` on the Serverless
 Training API for jobs started before ``2026-12-01T00:00:00-08:00``.
 Source: https://docs.fireworks.ai/fine-tuning/models. RL, DPO, deployments,
 inference, and Dedicated resources are not covered.
 
-Managed SFT is the easiest path. It trains on the account's preloaded
-``onboarding-prompt-router`` dataset in place and carves out an evaluation split::
+Download the public prompt-routing example at runtime, without a Fireworks dataset::
 
-    python -m examples.sft.muse_glimmer_starter plan
-    python -m examples.sft.muse_glimmer_starter launch --surface managed   # prints a fresh run id
-    python -m examples.sft.muse_glimmer_starter watch --run-id <id>
+    python -m examples.sft.example_datasets --example prompt-router
 
 The Serverless Training API path is code-first and trains on your own chat JSONL.
 It runs a short LoRA loop on the shared pool and compares base and tuned
@@ -52,7 +49,7 @@ PROMOTION_DEADLINE = datetime(2026, 12, 1, tzinfo=timezone(timedelta(hours=-8)))
 PROMOTION_SOURCE = "https://docs.fireworks.ai/fine-tuning/models"
 LORA_ALPHA = 32
 LORA_TARGETS = {"train_mlp": True, "train_attn": True, "train_unembed": True}
-DEFAULT_DATASET = "onboarding-prompt-router"
+DEFAULT_DATASET = ""
 TERMINAL = {
     "JOB_STATE_COMPLETED",
     "JOB_STATE_FAILED",
@@ -142,6 +139,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
         "run_id_note": "pass --run-id to launch to use these resource names; IDs of deleted jobs must not be reused",
         "surface": args.surface,
     }
+    if args.surface == "managed" and not args.dataset:
+        sys.exit("Pass --dataset with your own dataset ID, or use a downloaded example with --surface serverless.")
     if args.surface == "managed":
         try:
             ds = client.datasets.get(args.dataset)
@@ -214,6 +213,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
 
 def cmd_launch_managed(args: argparse.Namespace) -> int:
+    if not args.dataset:
+        sys.exit("Pass --dataset with your own dataset ID, or use a downloaded example with --surface serverless.")
     client, account = _connect()
     names = _names(account, args.run_id)
     if not promotion_active() and not args.allow_paid:
@@ -403,7 +404,7 @@ def _validate_chat_jsonl(path: Path) -> tuple[int, list[str]]:
 
 
 def cmd_upload(args: argparse.Namespace) -> int:
-    if not args.file or args.dataset == DEFAULT_DATASET:
+    if not args.file or not args.dataset:
         sys.exit("Pass --file <chat.jsonl> and a new --dataset <id> for your data.")
     path = Path(args.file)
     rows, problems = _validate_chat_jsonl(path)
@@ -775,7 +776,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             help="Names the job, models, and log dir. plan/prepare/launch generate a fresh one when omitted; "
             "never reuse the ID of a deleted job.",
         )
-        s.add_argument("--dataset", default=DEFAULT_DATASET, help="Account-relative dataset ID (managed).")
+        s.add_argument("--dataset", default=DEFAULT_DATASET, help="Account-relative ID of your own dataset (managed).")
         s.add_argument(
             "--file",
             default=None,

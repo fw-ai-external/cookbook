@@ -71,9 +71,7 @@ and monitors the job. Built-in starters (see
 
 | Starter | Data | Easiest surface |
 |---|---|---|
-| Muse Glimmer prompt-routing SFT | account-relative dataset ID `onboarding-prompt-router` | Managed SFT |
-| Code-first SFT with a base-vs-tuned comparison | your own chat JSONL | Serverless Training API |
-| Muse Glimmer receipt-extraction SFT | account-relative dataset ID `onboarding-cord-receipts` | Managed SFT |
+| Code-first SFT with a base-vs-tuned comparison | your own chat JSONL or a public Hugging Face example | Serverless Training API |
 
 Muse Glimmer 30B LoRA SFT is free for jobs started before `2026-12-01T00:00:00-08:00`
 (Nov 30) on Managed SFT (UI or API) and on the Serverless Training API
@@ -86,10 +84,10 @@ To run it yourself, follow the [Muse Glimmer mini cookbook](../training/examples
 ```bash
 git clone --depth 1 https://github.com/fw-ai-external/cookbook && cd cookbook/training
 python3 -m venv .venv && source .venv/bin/activate && pip install -e .   # needs Python 3.11+: check python3 --version, else use python3.12
-python -m examples.sft.muse_glimmer_starter plan
+python -m examples.sft.example_datasets --example prompt-router
 RUN=router-$(date +%Y%m%d-%H%M%S)   # fresh ID per run
-python -m examples.sft.muse_glimmer_starter launch --surface managed --run-id $RUN
-python -m examples.sft.muse_glimmer_starter watch --run-id $RUN
+python -m examples.sft.muse_glimmer_starter plan --surface serverless --file prompt-router.jsonl --run-id $RUN
+python -m examples.sft.muse_glimmer_starter launch --surface serverless --file prompt-router.jsonl --run-id $RUN
 ```
 
 Other examples:

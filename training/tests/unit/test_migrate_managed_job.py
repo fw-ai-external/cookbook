@@ -521,6 +521,32 @@ def _models(*models):
     return {m["name"]: m for m in models}
 
 
+def test_read_plan_downloads_example_instead_of_missing_fireworks_dataset(train_file, tmp_path, monkeypatch):
+    downloaded = tmp_path / "logs" / "examples" / "prompt-router.jsonl"
+    downloaded.parent.mkdir(parents=True)
+    downloaded.write_text("{}\n")
+
+    def download(example, output):
+        assert example == "prompt-router"
+        assert output == str(downloaded)
+        return str(downloaded)
+
+    monkeypatch.setattr(mmj, "download_example_dataset", download)
+    reader = FakeReader({**V2_LORA_SFT, "dataset": f"accounts/{ACCOUNT}/datasets/onboarding-prompt-router"}, _models(POOL_MODEL))
+    inputs = _inputs(train_file, tmp_path, dataset_path="", hf_example="prompt-router")
+
+    plan = mmj.read_plan(reader, inputs, SFT_JOB)
+
+    assert plan.config.dataset == str(downloaded)
+
+
+def test_example_and_dataset_path_are_mutually_exclusive(train_file, tmp_path, monkeypatch):
+    monkeypatch.setattr(mmj, "download_example_dataset", lambda *_: str(train_file))
+    reader = FakeReader(V2_LORA_SFT, _models(POOL_MODEL))
+    with pytest.raises(mmj.MigrationError, match="either --dataset-path or --hf-example"):
+        mmj.read_plan(reader, _inputs(train_file, tmp_path, hf_example="prompt-router"), SFT_JOB)
+
+
 def test_read_plan_rejects_key_from_another_account(train_file, tmp_path):
     reader = FakeReader(V2_LORA_SFT, _models(POOL_MODEL), account="other")
     with pytest.raises(mmj.MigrationError, match="belongs to account 'other'"):
@@ -532,6 +558,14 @@ def test_read_plan_detects_cmek_dpo_job_from_output_model(train_file, tmp_path):
     reader = FakeReader(DPO_LORA, _models(POOL_MODEL, output))
     with pytest.raises(mmj.MigrationError, match="CMEK"):
         mmj.read_plan(reader, _inputs(train_file, tmp_path), DPO_JOB)
+
+
+def test_read_plan_continues_when_dpo_dataset_no_longer_exists(train_file, tmp_path):
+    reader = FakeReader(DPO_LORA, _models(POOL_MODEL), datasets={})
+
+    plan = mmj.read_plan(reader, _inputs(train_file, tmp_path), DPO_JOB)
+
+    assert plan.config.dataset == str(train_file)
 
 
 def test_read_plan_resolves_warm_start_base_model(train_file, tmp_path):

@@ -1,93 +1,87 @@
 # Muse Glimmer mini cookbook
 
-Fine-tune Muse Glimmer 30B for free on the example datasets, then on your own
-data. "Muse Glimmer 30B SFT is free via UI and Serverless Training API until
-11/30. No credit card required"
-([source](https://docs.fireworks.ai/fine-tuning/models)). The promotion covers
-LoRA SFT jobs started before `2026-12-01T00:00:00-08:00` (end of Nov 30 Pacific); full-parameter SFT, RL, deployments, inference,
-DPO, and Dedicated trainers are not covered. The starter script refuses to launch after
-the deadline unless you pass `--allow-paid`.
+Fine-tune Muse Glimmer 30B on a public Hugging Face example or your own data.
+Muse Glimmer 30B LoRA SFT is free on Serverless Training until November 30,
+2026 ([source](https://docs.fireworks.ai/fine-tuning/models)). The promotion
+covers jobs started before `2026-12-01T00:00:00-08:00`; full-parameter SFT, RL,
+deployments, inference, DPO, and Dedicated trainers are not covered. The starter
+refuses to launch after the deadline unless you pass `--allow-paid`.
 
 | | |
 |---|---|
 | Base model | `accounts/fireworks/models/muse-glimmer-30b` |
 | Tokenizer | `meta-models/Muse-Glimmer-30B` |
 | Renderer | `muse_glimmer` |
-| Example data | `onboarding-prompt-router` (600 rows), `onboarding-cord-receipts` (300 rows), preloaded in eligible accounts |
+| Public examples | [Prompt routing](https://huggingface.co/datasets/SupraLabs/Prompt-Routing-Dataset) and [receipt extraction](https://huggingface.co/datasets/naver-clova-ix/cord-v2) |
 
-## 0. Setup
+## Setup
 
 ```bash
 git clone --depth 1 https://github.com/fw-ai-external/cookbook && cd cookbook/training
-python3 -m venv .venv && source .venv/bin/activate && pip install -e .   # needs Python 3.11+: check python3 --version, else use python3.12
-read -s FIREWORKS_API_KEY && export FIREWORKS_API_KEY   # never paste it into chat
-python -m examples.sft.muse_glimmer_starter plan        # read-only: account, data, promotion, cost
+python3 -m venv .venv && source .venv/bin/activate && pip install -e .  # Python 3.11+
+read -s FIREWORKS_API_KEY && export FIREWORKS_API_KEY  # never paste it into chat
 ```
 
 Create the key at <https://app.fireworks.ai/settings/users/api-keys>, or put
 `FIREWORKS_API_KEY=...` in a gitignored `training/.env`.
 
-## 1. Pick a path
+## Download a public example at runtime
 
-| You want | Path | Command |
-|---|---|---|
-| The quickest first result | Managed SFT | `launch --surface managed` |
-| To see the loop and measure base vs tuned accuracy on your own data | Serverless Training API SFT | `launch --surface serverless --file data.jsonl` |
-| Vision (receipt image → JSON) | Managed SFT | `launch --surface managed --dataset onboarding-cord-receipts --max-context-length 8192` (image tokens count toward context; 8192 leaves headroom) |
-| RL on a verifiable task (paid, not covered) | Serverless Training API RL | DeepMath command in step 4 |
-
-The Managed SFT path is also available in the UI at
-<https://app.fireworks.ai/dashboard/fine-tuning>. Use Dedicated trainers only
-for full-parameter training or long sustained runs; they are not free.
-
-## 2. Text SFT on Managed SFT (about 10 minutes)
+The helper downloads a public Hugging Face dataset, converts it to chat JSONL,
+and caches it locally. It does not read or create a Fireworks account dataset.
+Choose `prompt-router` for classification or `cord-receipts` for vision:
 
 ```bash
-RUN=router-$(date +%Y%m%d-%H%M%S)   # a fresh ID per run; never reuse a deleted job's ID
-python -m examples.sft.muse_glimmer_starter launch --surface managed --run-id $RUN
-python -m examples.sft.muse_glimmer_starter watch --run-id $RUN
+python -m examples.sft.example_datasets --example prompt-router
+python -m examples.sft.example_datasets --example cord-receipts
 ```
 
-Rerunning `launch` with the same run ID reuses that job only if every setting
-matches; otherwise it stops and lists the differences. `watch` prints the state
-and status (percent and epoch) on every poll, a summary of the rendered
-training samples once they are ready, and train and eval loss in the final
-summary when the job finishes. It stops if a running job makes no progress for
-30 minutes. Success looks like eval loss falling below its first value and the job
-reaching `JOB_STATE_COMPLETED`. The output is the LoRA model
-`accounts/<account>/models/muse-starter-$RUN`.
+The 600-row prompt-routing subset, the 300-row receipt subset, and the conversion
+logic match the existing prompt-router and CORD-v2 case-study notebooks. Receipt
+conversion resizes and embeds images as JPEG data URIs. An existing output file
+is reused; replace it explicitly to fetch a fresh copy.
 
-## 3. Your data on the Serverless Training API, with a behavioral eval
+## SFT with a base-versus-tuned evaluation
 
-The Serverless Training path trains on a local chat JSONL file (format in
-step 5), runs the loop in your process, and compares base and tuned on rows it
-holds out.
+The starter runs on Serverless Training and compares base and tuned adapters on
+held-out rows. `plan` is read-only. `prepare` is local and free: it validates
+the input without rewriting it, holds out 40 rows, writes the train and holdout
+splits, and renders one example for inspection.
 
 ```bash
-RUN=tickets-$(date +%Y%m%d-%H%M%S)
-python -m examples.sft.muse_glimmer_starter prepare --file data.jsonl --run-id $RUN
-python -m examples.sft.muse_glimmer_starter launch --surface serverless --file data.jsonl --run-id $RUN
+RUN=tickets-$(date +%Y%m%d-%H%M%S)  # use a fresh ID for every run
+python -m examples.sft.example_datasets --example prompt-router
+python -m examples.sft.muse_glimmer_starter prepare --file prompt-router.jsonl --run-id $RUN
+python -m examples.sft.muse_glimmer_starter plan --surface serverless --file prompt-router.jsonl
+python -m examples.sft.muse_glimmer_starter launch --surface serverless --file prompt-router.jsonl --run-id $RUN
 ```
 
-`prepare` is local and free. It validates the file (refusing malformed rows
-and listing them), holds out 40 rows (`--n-eval`), writes `train.jsonl` and
-`holdout.jsonl` to `muse_starter_logs/$RUN/`, and prints one rendered example
-with its token count. Read the example before launching. `launch` refuses rows
-longer than `--max-seq-len` (2,048), then samples the base and tuned adapters
-on the holdout in the same session. It writes
-`muse_starter_logs/$RUN/metrics.jsonl` (loss and gradient norm per step) and
-`muse_starter_logs/$RUN/summary.json` (exact match, per-key accuracy when the
-answers are JSON, and a paired test, base vs tuned). Sampling in-session needs no deployment (Muse public serverless
-inference was retired on 2026-09-25), but it is billed per token separately
-from the free training; `launch` ends with a cost line giving the sampled token
-counts. Before the session closes, the tuned adapter is saved
-as `accounts/<account>/models/muse-starter-sl-$RUN`; pass `--no-promote` to skip.
+Inspect the rendered example before launching. The script rejects rows longer
+than `--max-seq-len` (2,048) and runs one epoch of cross-entropy training. It
+writes metrics, base and tuned predictions, and a comparison summary to
+`muse_starter_logs/$RUN/`. Per-key JSON accuracy and exact match are included.
 
-## 4. RL on DeepMath (Serverless Training API, paid)
+In-session sampling does not require a deployment but is billed per token
+separately from free training. The run reports its sampled token counts. The
+tuned checkpoint is promoted to
+`accounts/<account>/models/muse-starter-sl-$RUN`; pass `--no-promote` to skip.
 
-RL is not covered by the promotion; price the run before launching it. The
-DeepMath example defaults to a different model; pass the Muse settings and
-keep the first run small:
+## Your chat data
+
+Supply a local JSONL file in this format instead of the public example:
+
+```json
+{"messages": [{"role": "system", "content": "Classify this request."}, {"role": "user", "content": "My invoice is wrong."}, {"role": "assistant", "content": "{\"category\":\"billing\"}"}]}
+```
+
+Do not silently drop or rewrite malformed rows. If corrections are needed, make
+a separate copy with the data owner's approval. A few hundred clean rows are
+enough for a first signal.
+
+## RL on DeepMath (paid)
+
+RL is not covered by the promotion. Price a run before launching it, and keep
+its first run small:
 
 ```bash
 python -m examples.rl.deepmath.train_deepmath_serverless \
@@ -97,46 +91,22 @@ python -m examples.rl.deepmath.train_deepmath_serverless \
   --max-completion-tokens 4096 --max-seq-len 8192 --lora-rank 8
 ```
 
-Watch the verifier reward and the eval score every five steps; a rising
-reward with stable gradient norms is the success signal.
+Watch verifier reward, evaluation score, and gradient norms. RL mutations need
+the same plan review and approval as any other paid training run.
 
-## 5. Your own data
-
-Managed SFT takes chat JSONL, one example per line:
-
-```json
-{"messages": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
-```
-
-Before uploading, quarantine rows with empty or missing assistant replies,
-report them, and fix or exclude them only with the user's approval; never
-silently rewrite or drop user data. Check that every remaining row parses.
-Then validate and upload in one step, and run step 2 on it:
-
-```bash
-python -m examples.sft.muse_glimmer_starter upload --file data/train.clean.jsonl --dataset my-tickets-v1
-RUN=tickets-$(date +%Y%m%d-%H%M%S)
-python -m examples.sft.muse_glimmer_starter launch --surface managed --run-id $RUN --dataset my-tickets-v1
-python -m examples.sft.muse_glimmer_starter watch --run-id $RUN
-```
-
-`upload` refuses a file with empty or malformed rows and lists them; it never
-drops rows itself. A few hundred clean rows are
-enough for a first signal.
-
-## 6. Clean up
+## Cleanup
 
 ```bash
 python -m examples.sft.muse_glimmer_starter cleanup --run-id $RUN
 ```
 
-This deletes the run's Managed SFT job, its output model, and the saved
-serverless model, if they exist. Serverless runs close their session when the
-script exits. Nothing in steps 2–4 keeps billing after it finishes; step 4 (RL)
-and deploying a tuned model are separate, paid steps.
+This deletes the saved serverless model if it exists. Serverless Training
+sessions close when the script exits. Deleting a model or deploying a tuned
+model is a separate action; deployments are billed per GPU-hour.
 
 ## With a coding agent
 
-Install the skills ([Getting started](../../../skills/GETTING-STARTED.md)) and ask *"Is there
-something free I can run right now?"*. The agent runs these same commands for
-you through the SDK, shows one plan to approve, and reports results.
+Install the cookbook skills ([Getting started](../../../skills/GETTING-STARTED.md))
+and ask for the prompt-router or receipt-extraction example. The agent downloads
+the chosen data locally with the helper above, shows the training plan and cost,
+waits for your approval, then runs and reports the job.

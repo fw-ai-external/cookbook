@@ -56,6 +56,8 @@ from fireworks.training.sdk.training_spec import (
     LRSchedulerSpec,
 )
 
+from training.examples.sft.example_datasets import HF_EXAMPLES, download_example_dataset
+
 import training.recipes.dpo_loop as dpo_loop
 import training.recipes.orpo_loop as orpo_loop
 import training.recipes.sft_loop as sft_loop
@@ -358,6 +360,7 @@ class MigrationInputs:
     output_model_id: str
     log_path: str
     mode: str = "auto"
+    hf_example: str = ""
     eval_dataset_path: str = ""
     tokenizer_model: str = ""
     max_seq_len: int = 0
@@ -802,6 +805,13 @@ def _is_cmek(resource: dict[str, Any] | None) -> bool:
 
 def read_plan(reader: FireworksReader, inputs: MigrationInputs, job_name: str) -> MigrationPlan:
     job_ref = parse_job_name(job_name)
+    if inputs.hf_example:
+        if inputs.hf_example not in HF_EXAMPLES:
+            raise MigrationError(f"--hf-example must be one of {', '.join(HF_EXAMPLES)}.")
+        if inputs.dataset_path:
+            raise MigrationError("Pass either --dataset-path or --hf-example, not both.")
+        output = os.path.join(inputs.log_path, "examples", f"{inputs.hf_example}.jsonl")
+        inputs = dataclasses.replace(inputs, dataset_path=download_example_dataset(inputs.hf_example, output))
     key_account_id = reader.key_account_id()
     if key_account_id != job_ref.account_id:
         raise MigrationError(
@@ -1042,6 +1052,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Rerun a managed SFT, DPO or ORPO job on the Training API.")
     p.add_argument("--job", required=True, help="accounts/<account>/supervisedFineTuningJobs/<id> or accounts/<account>/dpoJobs/<id>")
     p.add_argument("--dataset-path", default="", help="Your copy of the job's training data: a local JSONL file or directory, or a gs:// path.")
+    p.add_argument("--hf-example", choices=HF_EXAMPLES, default="", help="Download a public Hugging Face example at runtime instead of using your own dataset.")
     p.add_argument("--output-model-id", required=True, help="ID for the new model. The managed job's output model already exists.")
     p.add_argument("--mode", choices=["auto", "serverless", "dedicated"], default="auto")
     p.add_argument("--eval-dataset-path", default="", help="Local copy of the job's evaluation dataset, if it had one.")
@@ -1069,6 +1080,7 @@ def main(argv: list[str] | None = None) -> Any:
             log_path=log_path,
             mode=args.mode,
             eval_dataset_path=args.eval_dataset_path,
+            hf_example=args.hf_example,
             tokenizer_model=args.tokenizer_model,
             max_seq_len=args.max_seq_len,
             init_from_checkpoint=args.init_from_checkpoint,

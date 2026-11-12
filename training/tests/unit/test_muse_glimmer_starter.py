@@ -22,7 +22,7 @@ def test_muse_configuration_matches_skill():
     assert starter.BASE_MODEL == "accounts/fireworks/models/muse-glimmer-30b"
     assert starter.TOKENIZER_MODEL == "meta-models/Muse-Glimmer-30B"
     assert starter.RENDERER_NAME == "muse_glimmer"
-    assert starter.DEFAULT_DATASET == "onboarding-prompt-router"
+    assert starter.DEFAULT_DATASET == ""
 
 
 def test_defaults_are_a_small_first_run():
@@ -30,6 +30,11 @@ def test_defaults_are_a_small_first_run():
     assert args.surface == "managed"
     assert args.epochs == 1
     assert args.lora_rank == 8
+
+
+def test_managed_launch_requires_a_user_dataset():
+    with pytest.raises(SystemExit, match="Pass --dataset"):
+        starter.cmd_launch_managed(starter.parse_args(["launch"]))
 
 
 def test_serverless_plan_prints_every_resolved_training_default(monkeypatch, capsys):
@@ -52,7 +57,7 @@ def test_serverless_plan_prints_every_resolved_training_default(monkeypatch, cap
 
 
 def test_managed_launch_refuses_to_reuse_a_job_with_different_settings(monkeypatch, capsys):
-    args = starter.parse_args(["launch", "--run-id", "r1", "--lora-rank", "16"])
+    args = starter.parse_args(["launch", "--run-id", "r1", "--lora-rank", "16", "--dataset", "user-data"])
     existing = SimpleNamespace(
         name="accounts/acme/supervisedFineTuningJobs/muse-starter-r1", state="JOB_STATE_COMPLETED",
         base_model=starter.BASE_MODEL, dataset=f"accounts/acme/datasets/{args.dataset}",

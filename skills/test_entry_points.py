@@ -87,18 +87,16 @@ def test_starter_jobs_are_linked() -> None:
     path_intake = read(SKILLS_DIR / "configure" / "references" / "path-intake.md")
     assert "starter-jobs.md" in getting_started
     assert "starter-jobs.md" in research
-    assert "onboarding-prompt-router" in starters
-    assert "onboarding-cord-receipts" in starters
+    assert "onboarding-prompt-router" not in starters
+    assert "onboarding-cord-receipts" not in starters
     assert not re.search(r"accounts/(?!<current-account>)[^/\s]+/datasets/onboarding-", starters)
     assert "2026-12-01T00:00:00-08:00" in starters
     assert "https://docs.fireworks.ai/fine-tuning/models" in starters
-    assert "**Managed LoRA SFT**" in starters
     assert "**Serverless Training API LoRA SFT.**" in starters
     assert "RL (on any surface)" in starters
     assert "muse_glimmer_starter.py" in starters
     assert "Do not add a separate readiness-package or handoff question" in starters
     assert "Muse Glimmer verifiable math RL smoke" not in starters
-    assert "execution-notes.md" in starters
     assert "renderSamplesSignedUrl" in read(
         SKILLS_DIR / "fireworks-training" / "references" / "execution-notes.md"
     )
