@@ -25,6 +25,13 @@ compatibility on a local sample, correct the config, and rerun preflight before
 training. Treat authentication/download failures separately; never guess from a
 model basename. If identity cannot be verified, report the missing repo/files/access.
 
+SDK and Cookbook tokenizer loaders preserve a declared `fix_mistral_regex` flag,
+including save/reload, on Transformers 5.0–5.3 via an installed compatibility backport;
+do not remove the metadata flag or enable checkpoint Python to work around that error.
+Removal task: delete `patch_duplicate_mistral_regex_kwarg` from both
+`fireworks.training.sdk.tokenizer_compat` and `training.tokenizer_compat`, and remove
+their call sites together, once both supported dependency minima are at least 5.4.
+
 ## "Reference loop" means these files
 
 They are the canonical wiring of `FiretitanServiceClient` + `FiretitanTrainingClient` + `TrainingCheckpoints` + deployment sampler hotload. Do not rewrite — fork.
