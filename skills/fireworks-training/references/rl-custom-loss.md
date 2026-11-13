@@ -91,6 +91,9 @@ with a nonzero gradient, so clipping is inactive and its gradient matches
 REINFORCE with the same weights. Keep the objective's existing normalization;
 MIS rejection must not shrink its denominator. Separate auxiliaries are unweighted.
 
+The trainer reports how many tokens TIS clipped or MIS masked; steps log them as
+`train/clip_*` and `train/mask_*` ([`step-metrics.md`](step-metrics.md#server-tismis-clipping)).
+
 ## Score-centering paths
 
 Both client-side and server-side SC are supported; neither is selected by default.

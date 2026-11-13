@@ -531,6 +531,24 @@ def test_main_logs_one_record_per_step_from_metric_helpers(monkeypatch) -> None:
     assert metrics["rollout/truncated_ratio"] == 0.5
 
 
+def test_main_logs_server_mis_counters_as_train_metrics(monkeypatch) -> None:
+    events: list[str] = []
+    logged: list[tuple[int, dict[str, Any]]] = []
+
+    class Policy(_Policy):
+        def forward_backward(self, data, loss_fn, loss_fn_config=None):
+            result = super().forward_backward(data, loss_fn, loss_fn_config)
+            result.metrics.update({"mask_cnt:sum": 1.0, "mask_frac:mean": 0.25})
+            return result
+
+    _run_loop(monkeypatch, policy=Policy(events), events=events, rows=[{"id": 0}], logged=logged)
+
+    [(_step, metrics)] = [record for record in logged if record[0] == 1 and "train/step" in record[1]]
+    assert metrics["train/mask_cnt:sum"] == 1.0
+    assert metrics["train/mask_frac:mean"] == 0.25
+    assert "train/ppo_clip_frac" in metrics
+
+
 def test_prepare_batch_fn_rewrites_the_batch_before_the_update(monkeypatch) -> None:
     events: list[str] = []
     policy = _Policy(events)

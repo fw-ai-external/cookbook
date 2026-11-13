@@ -57,7 +57,7 @@ class TestForwardBackwardMetrics:
                         "total_tokens:sum": 9,
                         "step_id": 3,
                         "loss_is_finite:last": 1.0,
-                        "loss:mean": 1.0,
+                        "seed:hash_unordered": 7.0,
                         "entropy": math.nan,
                     }
                 )
@@ -88,6 +88,50 @@ class TestForwardBackwardMetrics:
             "perf/trainer_fwd_bwd_time": 2.0,
             "perf/trainer_busy_walltime_pct": 55.0,
         }
+
+    def test_mean_averages_by_datum_count_over_reporting_chunks(self):
+        chunks = [
+            SimpleNamespace(metrics={"clip_frac:mean": 0.1, "clip_cnt:sum": 1.0}, loss_fn_outputs=[{}] * 3),
+            SimpleNamespace(metrics={"clip_frac:mean": 0.5, "clip_cnt:sum": 3.0}, loss_fn_outputs=[{}]),
+            SimpleNamespace(metrics={"loss:sum": 1.0}, loss_fn_outputs=[{}] * 4),
+        ]
+
+        metrics = forward_backward_metrics(chunks)
+
+        assert metrics["train/clip_frac:mean"] == pytest.approx((3 * 0.1 + 1 * 0.5) / 4)
+        assert metrics["train/clip_cnt:sum"] == 4.0
+
+    @pytest.mark.parametrize(
+        ("weighting_metrics", "expected"),
+        [
+            (
+                {
+                    "clip_cnt:sum": 5.0,
+                    "clip_high_cnt:sum": 3.0,
+                    "clip_low_cnt:sum": 2.0,
+                    "clip_frac:mean": 0.25,
+                    "clip_high_frac:mean": 0.15,
+                    "clip_low_frac:mean": 0.1,
+                },
+                {
+                    "train/clip_cnt:sum": 5.0,
+                    "train/clip_high_cnt:sum": 3.0,
+                    "train/clip_low_cnt:sum": 2.0,
+                    "train/clip_frac:mean": 0.25,
+                    "train/clip_high_frac:mean": 0.15,
+                    "train/clip_low_frac:mean": 0.1,
+                },
+            ),
+            ({"mask_cnt:sum": 4.0, "mask_frac:mean": 0.2}, {"train/mask_cnt:sum": 4.0, "train/mask_frac:mean": 0.2}),
+            # weighting="none", or a trainer that predates the counters.
+            ({}, {}),
+        ],
+        ids=["tis", "mis", "none"],
+    )
+    def test_server_tis_mis_counters(self, weighting_metrics, expected):
+        metrics = forward_backward_metrics([_result(**{"loss:sum": 1.0, "ppo_clip_frac": 0.4, **weighting_metrics})])
+
+        assert metrics == {"train/loss:sum": 1.0, "train/ppo_clip_frac": 0.4, **expected}
 
     def test_mask_ratio_from_summed_token_counts(self):
         metrics = forward_backward_metrics(

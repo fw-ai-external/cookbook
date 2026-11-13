@@ -1,13 +1,19 @@
-"""REINFORCE with a direct importance ratio ``p_theta / q`` (client loss only).
+"""REINFORCE with a direct importance ratio ``p_theta / q``, as a client loss.
 
 Per-token loss for sample *i* at response position *t*::
 
     L_it = (-A_i * exp(log pi - log q) + kl_beta * (log pi - log pi_ref)) * mask(t)
 
-``q`` is the rollout (sampling) distribution. The trainer has no built-in
-REINFORCE, so this module has no ``LOSS_FN``:
+``q`` is the rollout (sampling) distribution. This module computes the loss on
+the client, so it has no ``LOSS_FN``:
 ``policy.forward_backward_custom(build_datums(batch, config), make_loss_fn(batch, config))``. Pair it with a
 mean-only ``advantage_fn`` for group-centered rewards.
+
+The trainer also has a built-in REINFORCE, ``loss_fn="reinforce"``. Instead of
+this untruncated ratio it applies the detached token weighting set by
+``loss_fn_config["weighting"]``: ``"none"``, ``"tis"`` or ``"mis"``. With TIS
+or MIS the step logs its clipping counters (``train/clip_frac:mean`` and so
+on). See ``skills/fireworks-training/references/rl-custom-loss.md``.
 """
 
 from __future__ import annotations
