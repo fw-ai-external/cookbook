@@ -436,7 +436,7 @@ def build_launch_spec(
         bundle_digest=bundle.digest,
         inference_base_url=setup.inference_base_url,
         api_key=setup.api_key,
-        model=setup.model,
+        model=getattr(setup.sampler, "model", setup.model),
         renderer_name=settings.renderer_name,
         prompt_mode=settings.prompt_mode,
         max_context_tokens=max_context_tokens,
