@@ -640,6 +640,7 @@ class TrainingCheckpoints:
         warm_start_from_adapter: str | None = None,
         restore_optimizer: bool = True,
         prefer_current_run: bool = False,
+        strict_resume: bool = False,
     ) -> ResumeInfo | None:
         """Determine resume state and load weights into the live client.
 
@@ -659,6 +660,13 @@ class TrainingCheckpoints:
         ``prefer_current_run=True`` opts managed continuation into using newer
         current-run recovery points instead of its previous-attempt reference.
         It has no effect on weights-only initialization.
+
+        Auto-resume fails if checkpoint listing fails: that says nothing about
+        whether recovery state exists. When ``dataloader.json`` holds committed
+        recovery state but the current trainer has no resumable checkpoint (the
+        usual case for a re-run with the same ``log_path`` and a new trainer),
+        ``strict_resume=True`` fails rather than discard that progress; by
+        default the run starts fresh with a warning.
         """
         validate_warm_start_config(
             warm_start_from_adapter=warm_start_from_adapter,
@@ -684,6 +692,8 @@ class TrainingCheckpoints:
             # A replacement run should continue from its own checkpoints once
             # any exist. The explicit cross-run ref is only the previous attempt.
             client_states, manifest_is_versioned = self._read_all_dataloader()
+            # A newer run can overwrite the same logical manifest key, so its
+            # cursor cannot prove that the older explicit ref is safe to load.
             latest = self._latest_resumable(
                 committed_names=set(client_states) if manifest_is_versioned else None,
                 raise_if_uncommitted=False,
@@ -790,6 +800,21 @@ class TrainingCheckpoints:
                 step=state.step if state is not None else _step_from_name(logical),
                 data_consumed=state.data_consumed if state is not None else 0,
                 source_job_id=None if self._serverless else self._trainer_id,
+            )
+
+        if client_states:
+            if strict_resume:
+                raise UserConfigError(
+                    "Client recovery state exists in dataloader.json, but the current "
+                    "trainer has no resumable checkpoint. Reattach the original trainer "
+                    "or choose an explicit initialization checkpoint; use a new log_path "
+                    "for an intentional fresh run."
+                )
+            logger.warning(
+                "dataloader.json under %s holds recovery state from an earlier run, but this "
+                "trainer has no resumable checkpoint; starting fresh. Use a new log_path to "
+                "keep runs apart, or strict_resume=True to fail instead.",
+                self._log_path,
             )
 
         if warm_start_from_adapter:
@@ -1020,22 +1045,18 @@ class TrainingCheckpoints:
         return None
 
     def _latest_resumable(
-        self, *, committed_names: set[str] | None = None,
+        self,
+        *,
+        committed_names: set[str] | None = None,
         raise_if_uncommitted: bool = True,
     ) -> dict | None:
-        try:
-            rows = [
-                r
-                for r in self._list_checkpoints()
-                if _is_resumable_row(r) and self._row_matches_current_run(r)
-            ]
-        except Exception as e:
-            logger.warning(
-                "Control-plane list_checkpoints failed (%s); treating as fresh start. "
-                "Override with init_from_checkpoint if this is wrong.",
-                e,
-            )
-            return None
+        # A failed lookup says nothing about whether recovery state exists.
+        # Preserve the error instead of silently restarting the recipe at zero.
+        rows = [
+            r
+            for r in self._list_checkpoints()
+            if _is_resumable_row(r) and self._row_matches_current_run(r)
+        ]
         rows = _newest_first(rows)
         if committed_names is not None:
             committed_rows = [
