@@ -429,7 +429,8 @@ class TestResume:
         )
         client.load_state_with_optimizer.assert_called_once_with("path://self/step-5")
 
-    def test_init_from_checkpoint_takes_priority(self, log_dir):
+    @pytest.mark.parametrize("list_unavailable", [False, True])
+    def test_init_from_checkpoint_takes_priority(self, log_dir, list_unavailable):
         rows = [
             _row(
                 "step-50",
@@ -438,7 +439,9 @@ class TestResume:
                 create_time="2026-04-02T00:00:00Z",
             ),
         ]
-        ckpt, client, _ = _make(log_dir, fw_rows=rows)
+        ckpt, client, fw = _make(log_dir, fw_rows=rows)
+        if list_unavailable:
+            fw.list_checkpoints.side_effect = RuntimeError("503 Service Unavailable")
         info = ckpt.resume(init_from_checkpoint="other-job:step-3")
         assert info == ResumeInfo(step=0, data_consumed=0, source_job_id="other-job")
         client.load_state_with_optimizer.assert_called_once_with(
@@ -611,6 +614,70 @@ class TestResume:
         if not prefer_current_run:
             fw.list_checkpoints.assert_not_called()
 
+    @pytest.mark.parametrize("prefer_current_run", [False, True])
+    def test_explicit_continuation_listing_failure(self, log_dir, prefer_current_run):
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"schema_version": 1, "checkpoints": {
+                "step-5": {"step": 5, "data_consumed": 40},
+            }}, f)
+        ckpt, client, fw = _make(log_dir, serverless=True)
+        error = RuntimeError("503 Service Unavailable")
+        fw.list_checkpoints.side_effect = error
+        ref = "test-account-id/run-0123456789abcdef0123456789abcdef/step-5"
+        if prefer_current_run:
+            with pytest.raises(RuntimeError, match="503") as raised:
+                ckpt.resume(init_from_checkpoint=ref, prefer_current_run=True)
+            assert raised.value is error
+            client.load_state_with_optimizer.assert_not_called()
+        else:
+            info = ckpt.resume(init_from_checkpoint=ref)
+            client.load_state_with_optimizer.assert_called_once_with(f"path://self/{ref}")
+            assert info.step == 5 and info.data_consumed == 40
+            fw.list_checkpoints.assert_not_called()
+
+    def test_preferred_continuation_does_not_pair_old_weights_with_replaced_cursor(self, log_dir):
+        source_run = "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        current_run = "run-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        source, _, _ = _make(
+            log_dir, serverless=True, current_run_id=source_run,
+            save_state_renames_to=f"{source_run}-step-5",
+        )
+        source.save("step-5", resumable=True, promotable=False, data_consumed=40)
+        ref = f"test-account-id/{source_run}/step-5"
+
+        current, _, _ = _make(
+            log_dir, serverless=True, current_run_id=current_run,
+            save_state_renames_to=f"{current_run}-step-5",
+        )
+        assert current.resume(init_from_checkpoint=ref) == ResumeInfo(step=5, data_consumed=40)
+        # The trainer's checkpoint name can differ from the recipe step. A
+        # current-run save then replaces the old run's logical manifest key.
+        current.save("step-9", resumable=True, promotable=False, data_consumed=72)
+        assert _read_checkpoint_states(log_dir) == {"step-5": {"step": 9, "data_consumed": 72}}
+
+        restarted, client, fw = _make(log_dir, serverless=True, current_run_id=current_run)
+        error = RuntimeError("503 Service Unavailable")
+        fw.list_checkpoints.side_effect = error
+        with pytest.raises(RuntimeError, match="503") as raised:
+            restarted.resume(init_from_checkpoint=ref, prefer_current_run=True, strict_resume=True)
+
+        assert raised.value is error
+        client.load_state_with_optimizer.assert_not_called()
+
+    def test_preferred_continuation_with_committed_state_fails_when_listing_fails(self, log_dir):
+        run_id = "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"schema_version": 1, "checkpoints": {
+                "step-5": {"step": 5, "data_consumed": 40},
+                "step-9": {"step": 9, "data_consumed": 72},
+            }}, f)
+        ckpt, client, fw = _make(log_dir, serverless=True, current_run_id=run_id)
+        fw.list_checkpoints.side_effect = RuntimeError("503 Service Unavailable")
+        ref = "test-account-id/run-0123456789abcdef0123456789abcdef/step-5"
+        with pytest.raises(RuntimeError, match="503"):
+            ckpt.resume(init_from_checkpoint=ref, prefer_current_run=True)
+        client.load_state_with_optimizer.assert_not_called()
+
     def test_managed_cross_run_resume_ignores_uncommitted_current_save(self, log_dir):
         run_id = "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         rows = [_row(f"{run_id}-step-6", ctype="CHECKPOINT_TYPE_TRAINING_LORA",
@@ -684,11 +751,70 @@ class TestResume:
         assert info == ResumeInfo(step=0, data_consumed=0, source_job_id=None)
         client.load_adapter.assert_called_once_with("hf/adapter")
 
-    def test_list_failure_treated_as_fresh_start(self, log_dir):
+    @pytest.mark.parametrize("committed_checkpoint", [False, True])
+    def test_list_failure_aborts_resume(self, log_dir, committed_checkpoint):
+        if committed_checkpoint:
+            with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+                json.dump(
+                    {
+                        "schema_version": 1,
+                        "checkpoints": {"step-25": {"step": 25, "data_consumed": 800}},
+                    },
+                    f,
+                )
         ckpt, client, fw = _make(log_dir)
-        fw.list_checkpoints.side_effect = RuntimeError("503 Service Unavailable")
-        info = ckpt.resume()
-        assert info is None
+        error = RuntimeError("503 Service Unavailable")
+        fw.list_checkpoints.side_effect = error
+
+        with pytest.raises(RuntimeError, match="503 Service Unavailable") as raised:
+            ckpt.resume()
+
+        assert raised.value is error
+        client.load_state_with_optimizer.assert_not_called()
+
+    @pytest.mark.parametrize("legacy_manifest", [False, True])
+    def test_strict_resume_with_committed_state_without_checkpoint_fails(
+        self, log_dir, legacy_manifest
+    ):
+        manifest = (
+            {"step-25": 800}
+            if legacy_manifest
+            else {
+                "schema_version": 1,
+                "checkpoints": {"step-25": {"step": 25, "data_consumed": 800}},
+            }
+        )
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump(manifest, f)
+        ckpt, client, _ = _make(log_dir, fw_rows=[])
+
+        with pytest.raises(
+            UserConfigError, match="current trainer has no resumable checkpoint"
+        ):
+            ckpt.resume(strict_resume=True)
+
+        client.load_state_with_optimizer.assert_not_called()
+
+    def test_a_rerun_with_the_same_log_path_starts_fresh_by_default(self, log_dir, caplog):
+        # The recipes' own __main__ blocks use a fixed log_path, so running one
+        # twice must keep working: the second run's new trainer has no
+        # checkpoints, and it starts over with a warning.
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"schema_version": 1, "checkpoints": {"step-25": {"step": 25, "data_consumed": 800}}}, f)
+        ckpt, client, _ = _make(log_dir, fw_rows=[])
+
+        with caplog.at_level("WARNING"):
+            assert ckpt.resume() is None
+
+        assert "starting fresh" in caplog.text
+        client.load_state_with_optimizer.assert_not_called()
+
+    def test_empty_manifest_allows_fresh_start(self, log_dir):
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"schema_version": 1, "checkpoints": {}}, f)
+        ckpt, client, _ = _make(log_dir, fw_rows=[])
+
+        assert ckpt.resume() is None
         client.load_state_with_optimizer.assert_not_called()
 
 
