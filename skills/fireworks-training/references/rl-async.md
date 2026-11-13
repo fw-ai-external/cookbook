@@ -121,6 +121,13 @@ and inference share an R3 store. Older peers use inline routing. Parquet R3
 files expire six hours after creation by default; override retention with
 `r3_ttl_seconds` in sampling kwargs when needed.
 
+Sampler wrappers must expose the underlying sampler's `routing_matrix_format`
+and `r3_store_id`, including after snapshot replacement. Harbor reads these
+and the current `model` from `RolloutSetup.sampler` together when launching a
+TITO sidecar, so a new R3 binding is not paired with an old snapshot. Samplers
+without `model` retain `RolloutSetup.model`. Omitting the R3 properties silently
+falls back to inline routing even when the SDK negotiated Parquet.
+
 The rollout may optionally declare any of these keyword parameters when it
 needs dataset position context: `cursor_index`, `row_index`, `epoch`,
 `rollout_idx`, `sample_index`, `end_of_epoch`, and `evaluation`. Training calls

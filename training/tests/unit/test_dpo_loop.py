@@ -1721,7 +1721,7 @@ def test_serverless_main_freezes_reference_and_finalizes_policy(monkeypatch, tmp
         ckpt.resume.assert_called_once_with(
             init_from_checkpoint=None,
             warm_start_from_adapter=None,
-            prefer_current_run=False,
+            prefer_current_run=False, strict_resume=False,
         )
         if failure == "training":
             raise RuntimeError("training failed")

@@ -141,6 +141,20 @@ Priority inside `TrainingCheckpoints.resume` (highest first):
 3. `warm_start_from_adapter` — fresh start with adapter weights.
 4. None — fresh start from `base_model`.
 
+Auto-resume propagates checkpoint-listing failures; retry after the API recovers.
+When `dataloader.json` contains committed recovery state but the current trainer
+has no resumable checkpoint, the run starts fresh with a warning, or fails with
+`strict_resume=True` (recipe config `strict_resume`), which supervised
+continuation uses so progress is never reset silently. Explicit
+`init_from_checkpoint` keeps the priority above.
+
+With `prefer_current_run=True` (recipe config `prefer_current_run_checkpoint`),
+listing failures also stop a cross-run continuation, even when an explicit
+checkpoint is provided. A newer run can replace the same logical key in
+`dataloader.json`, so its cursor cannot establish that the older checkpoint is
+safe to load. Retry after listing recovers. Explicit initialization without
+this preference does not list checkpoints.
+
 **Constraints (enforced by `validate_warm_start_config`):**
 
 - `warm_start_from_adapter` and `init_from_checkpoint` are mutually exclusive.
@@ -150,7 +164,11 @@ Exposed by `sft_loop`, `dpo_loop`, `orpo_loop`, `rl_loop` and `async_rl_loop`.
 
 ## Cross-run resume
 
-Auto-resume (priority 2) is **scoped to one trainer job**. If you re-run with the same `log_path` but provision a fresh trainer, the new trainer's `list_checkpoints` is empty and resume falls through to fresh start.
+Auto-resume (priority 2) is **scoped to one trainer job**. If you re-run with the
+same `log_path` but provision a fresh trainer, the new trainer's `list_checkpoints`
+is empty and resume falls through to a fresh start (with a warning), or fails
+under `strict_resume=True`. Reattach the original trainer, or explicitly
+initialize from a checkpoint, to continue instead.
 
 For a full continuation, pin both invocations to the same trainer via
 `cfg.trainer.job_id`, keep the same `log_path`, and use auto-resume. An explicit

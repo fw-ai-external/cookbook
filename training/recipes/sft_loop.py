@@ -827,6 +827,13 @@ class Config:
     disables. Unset (None) means 30 in a LoRA run that also leaves
     ``dcp_save_interval`` unset, and 0 otherwise."""
 
+    strict_resume: bool = False
+    """Fail instead of starting over when ``dataloader.json`` under ``log_path``
+    holds committed recovery state the current trainer cannot resume. For
+    supervised continuation (managed and customer-hosted jobs), where a fresh
+    start would silently discard progress. Off by default: re-running a recipe
+    with the same ``log_path`` and a new trainer starts fresh."""
+
     prefer_current_run_checkpoint: bool = False
     """Prefer this run's checkpoints over a previous-attempt reference on resume.
     Opt-in for managed continuation; explicit initialization otherwise wins."""
@@ -1276,6 +1283,7 @@ def main(
             init_from_checkpoint=cfg.init_from_checkpoint,
             warm_start_from_adapter=cfg.warm_start_from_adapter,
             prefer_current_run=cfg.prefer_current_run_checkpoint,
+            strict_resume=cfg.strict_resume,
         )
         step = resume_info.step if resume_info else 0
         total_raw_rows = training_count * cfg.epochs

@@ -171,6 +171,15 @@ class ServerlessSampler:
     def tokenizer(self) -> Any:
         return self._require_client().deployment_sampler.tokenizer
 
+    @property
+    def routing_matrix_format(self) -> str:
+        # Harbor reads the negotiated R3 binding from this rollout-facing handle.
+        return getattr(self._require_client().deployment_sampler, "routing_matrix_format", "base64_inline")
+
+    @property
+    def r3_store_id(self) -> str | None:
+        return getattr(self._require_client().deployment_sampler, "r3_store_id", None)
+
     async def sample_with_prompt_tokens(self, *args: Any, **kwargs: Any) -> Any:
         async with self._lock:
             client = self._require_client()

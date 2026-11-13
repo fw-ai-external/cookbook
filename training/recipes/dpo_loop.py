@@ -244,6 +244,13 @@ class Config:
     seed: int = 0
     """Seed for eval carve-out membership, so a resumed run holds out the same rows."""
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
+    strict_resume: bool = False
+    """Fail instead of starting over when ``dataloader.json`` under ``log_path``
+    holds committed recovery state the current trainer cannot resume. For
+    supervised continuation (managed and customer-hosted jobs), where a fresh
+    start would silently discard progress. Off by default: re-running a recipe
+    with the same ``log_path`` and a new trainer starts fresh."""
+
     prefer_current_run_checkpoint: bool = False
     """Prefer this run's checkpoints over a previous-attempt reference on resume.
     Opt-in for managed continuation; explicit initialization otherwise wins."""
@@ -1147,6 +1154,7 @@ def main(
             init_from_checkpoint=cfg.init_from_checkpoint,
             warm_start_from_adapter=cfg.warm_start_from_adapter,
             prefer_current_run=cfg.prefer_current_run_checkpoint,
+            strict_resume=cfg.strict_resume,
         )
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)

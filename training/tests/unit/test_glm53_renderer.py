@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -14,6 +15,7 @@ from PIL import Image
 from training.renderer import RendererError, get_renderer
 from training.renderer.base import TrainOnWhat
 from training.renderer.glm5 import Glm53FlashImageTokenCounter, GLM53Renderer
+from training.tests.unit.renderer_multimodal_contract import MultimodalRendererContractTests
 from training.utils.rl.rollout.renderer import (
     build_multimodal_completions_prompt_token_ids,
 )
@@ -662,3 +664,24 @@ def test_reasoning_effort_overrides_initial_prompt_line(tokenizer):
 def test_reasoning_effort_rejects_unknown_tier(tokenizer):
     with pytest.raises(ValueError, match="unknown reasoning_effort"):
         GLM53Renderer(tokenizer, reasoning_effort="ultra")
+
+
+class TestGlm53FlashMultimodalContracts(MultimodalRendererContractTests):
+    cases = [SimpleNamespace(renderer="glm53_flash")]
+    image_fixtures = [((224, 224), 64), ((128, 64), 18), ((14, 14), 16)]
+
+    def load_image_renderer(self, case):
+        tokenizer = _load_tokenizer(_FLASH_TOKENIZER, _FLASH_TOKENIZER_REVISION, path_env="GLM53_FLASH_TOKENIZER_PATH")
+        try:
+            config, _ = transformers.PretrainedConfig.get_config_dict(
+                _FLASH_TOKENIZER, revision=_FLASH_TOKENIZER_REVISION
+            )
+        except OSError:
+            tokenizer = None
+        if tokenizer is None:
+            pytest.skip("GLM-5.3-Flash tokenizer or config not available")
+        renderer = get_renderer(case.renderer, tokenizer, image_processor=Glm53FlashImageTokenCounter())
+        # FireTitan synthesizes no BOI/EOI when the renderer writes the checkpoint's own boundary IDs.
+        boundaries = (renderer._begin_of_image_token_id, renderer._end_of_image_token_id)
+        assert boundaries == (config["image_start_token_id"], config["image_end_token_id"])
+        return tokenizer, renderer, config["image_token_id"]
