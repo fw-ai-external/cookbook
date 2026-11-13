@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from fireworks.training import sdk
@@ -20,6 +21,7 @@ from training.renderer.muse_glimmer import (
     _render_atem,
     _render_tool_defs,
 )
+from training.tests.unit.renderer_multimodal_contract import MultimodalRendererContractTests
 from training.utils.rl.agent.openai import CookbookTurnRenderer
 from training.utils.rl.rollout.renderer import (
     build_multimodal_completions_prompt_token_ids,
@@ -630,3 +632,12 @@ def test_rl_openai_adapter_correlates_sampled_tool_result_name() -> None:
     )
     prompt = renderer.tokenizer.decode(tokens)
     assert '<|start|>tool weather.get<|message|><tool_output name="weather.get">\nsunny' in prompt
+
+
+class TestMuseGlimmerMultimodalContracts(MultimodalRendererContractTests):
+    cases = [SimpleNamespace(renderer="muse_glimmer")]
+    image_fixtures = [((56, 56), 4), ((84, 56), 6), ((28, 28), 1)]
+
+    def load_image_renderer(self, case):
+        renderer = MuseGlimmerRenderer(_Tokenizer(), image_processor=MuseGlimmerImageTokenCounter())
+        return renderer.tokenizer, renderer, _Tokenizer._special["<|patch|>"]
