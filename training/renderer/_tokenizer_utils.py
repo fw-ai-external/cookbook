@@ -16,6 +16,10 @@ from training.tokenizer_identity import (
     is_code_free_model_name,
     is_kimi_k3_k31_model_name,
     is_kimi_k3_k31_tokenizer_source,
+    is_minimax_m2_model_name,
+    is_minimax_m2_tokenizer_source,
+    is_standard_tokenizer_model_name,
+    is_standard_tokenizer_renderer_name,
     requires_code_free_tokenizer_loading,
 )
 
@@ -160,11 +164,18 @@ def _get_hf_tokenizer(
             from training.utils.kimi_native_tokenizer import load_native_tokenizer
 
             return load_native_tokenizer(model_name)
+        if is_minimax_m2_tokenizer_source(model_name) or any(
+            is_minimax_m2_model_name(name) for name in (base_model, renderer_name)
+        ):
+            return _load_minimax_tokenizer_json(model_name)
         return AutoTokenizer.from_pretrained(
             model_name,
             trust_remote_code=(
                 not is_code_free_model_name(renderer_name)
                 and not is_code_free_model_name(base_model)
+                and not is_standard_tokenizer_renderer_name(renderer_name)
+                and not is_standard_tokenizer_model_name(base_model)
+                and not is_standard_tokenizer_model_name(model_name)
                 and not requires_code_free_tokenizer_loading(model_name)
             ),
         )
@@ -197,6 +208,9 @@ def _get_hf_tokenizer(
     code_free = (
         is_code_free_model_name(renderer_name)
         or is_code_free_model_name(base_model)
+        or is_standard_tokenizer_renderer_name(renderer_name)
+        or is_standard_tokenizer_model_name(base_model)
+        or is_standard_tokenizer_model_name(model_name)
         or requires_code_free_tokenizer_loading(model_name, revision=revision)
     )
     if not code_free and model_name.startswith("moonshotai/Kimi-K2"):
@@ -212,4 +226,27 @@ def _get_hf_tokenizer(
         # checkpoint-staged Python for it.
         kwargs["trust_remote_code"] = False
 
+    if is_minimax_m2_tokenizer_source(model_name) or any(
+        is_minimax_m2_model_name(name) for name in (base_model, renderer_name)
+    ):
+        return _load_minimax_tokenizer_json(model_name, **kwargs)
     return AutoTokenizer.from_pretrained(model_name, **kwargs)
+
+
+def _load_minimax_tokenizer_json(model_name: str, **kwargs: Any) -> Tokenizer:
+    """Preserve the serialized pre-tokenizer and declared BOS/EOS without code."""
+    # lazy: Transformers is optional and expensive at renderer module import.
+    import transformers
+    from transformers.models.auto.tokenization_auto import AutoTokenizer, get_tokenizer_config
+
+    kwargs["trust_remote_code"] = False
+    tokenizer_backend = getattr(transformers, "TokenizersBackend", None)
+    if tokenizer_backend is None:
+        # Preserve the prior installed-code reader when this optional backend is absent.
+        return AutoTokenizer.from_pretrained(model_name, **kwargs)
+    config = get_tokenizer_config(model_name, **kwargs)
+    declared_flags = {key: config[key] for key in ("add_bos_token", "add_eos_token") if key in config}
+    tokenizer = tokenizer_backend.from_pretrained(model_name, **{**declared_flags, **kwargs})
+    # The generic installed reader needs no checkpoint-code map on export.
+    tokenizer.init_kwargs.pop("auto_map", None)
+    return tokenizer

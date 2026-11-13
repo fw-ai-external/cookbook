@@ -38,6 +38,19 @@ data-based renderer decision needs an explicit `renderer_name`; renaming the
 directory does not select a model family. Copying a familiar catalog basename
 into another namespace does not establish the same identity.
 
+An independently selected Qwen, MiniMax, Gemma or Nemotron base-model context
+keeps tokenizer loading on installed code even with a tokenizer override or
+remote-code opt-in. The SDK, recipe loader and renderer preserve this restriction;
+a reviewed exact model ID or declared model type only restricts execution and does not certify arbitrary
+artifacts as compatible. Pass the independently known `base_model` to Cookbook
+loaders rather than trusting a mutable tokenizer directory's name.
+MiniMax M2/M2.1/M2.5/M2.7 uses the serialized `tokenizer.json` pre-tokenizer and declared
+BOS/EOS flags instead of rebuilding it through the GPT2 class declaration.
+Opaque local directories use their exact `minimax_m2` config model type, not
+their basename. Saving this installed generic reader omits stale checkpoint
+`auto_map` pointers; token IDs and special-token behavior remain unchanged.
+Other variants and multimodal processors require their own verification.
+
 ## "Reference loop" means these files
 
 They are the canonical wiring of `FiretitanServiceClient` + `FiretitanTrainingClient` + `TrainingCheckpoints` + deployment sampler hotload. Do not rewrite — fork.

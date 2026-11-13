@@ -25,6 +25,7 @@ import torch
 from fireworks.training import sdk
 from training.tokenizer_identity import (
     is_code_free_model_name,
+    is_standard_tokenizer_renderer_name,
     is_deepseek_v4_model_name,
     is_deepseek_v4_tokenizer_source,
     requires_code_free_tokenizer_loading,
@@ -420,7 +421,9 @@ def populate_render_worker_state(
     tokenizer = load_tokenizer(
         tokenizer_model,
         tokenizer_revision,
-        False if is_code_free_model_name(renderer_name) else tokenizer_trust_remote_code,
+        False
+        if is_code_free_model_name(renderer_name) or is_standard_tokenizer_renderer_name(renderer_name)
+        else tokenizer_trust_remote_code,
         base_model=base_model,
     )
     renderer = (
