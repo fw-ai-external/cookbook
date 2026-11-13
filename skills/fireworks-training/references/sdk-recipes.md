@@ -32,6 +32,12 @@ Removal task: delete `patch_duplicate_mistral_regex_kwarg` from both
 `fireworks.training.sdk.tokenizer_compat` and `training.tokenizer_compat`, and remove
 their call sites together, once both supported dependency minima are at least 5.4.
 
+Renderer auto-selection uses exact registered model identifiers, not substrings
+or folder names. A custom/local tokenizer directory without an unambiguous
+data-based renderer decision needs an explicit `renderer_name`; renaming the
+directory does not select a model family. Copying a familiar catalog basename
+into another namespace does not establish the same identity.
+
 ## "Reference loop" means these files
 
 They are the canonical wiring of `FiretitanServiceClient` + `FiretitanTrainingClient` + `TrainingCheckpoints` + deployment sampler hotload. Do not rewrite — fork.

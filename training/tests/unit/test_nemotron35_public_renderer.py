@@ -24,9 +24,7 @@ def test_vl_checkpoints_select_nemotron35_vl(monkeypatch: pytest.MonkeyPatch) ->
     )
     for model in (
         "accounts/fireworks/models/nemotron-3p5-super-vl",
-        "accounts/fireworks-e2e-tests/models/nemotron-3p5-super-vl",
         "nvidia/NVIDIA-Nemotron-3.5-Super-VL",
-        "nemotron-3p5-super-vl",
         "accounts/fireworks/models/nvidia-nemotron-3p5-super-vl-120b-a12b-bf16",
         "accounts/fireworks/models/nvidia-nemotron-3p5-super-vl-120b-a12b-nvfp4",
         "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16",
@@ -45,14 +43,26 @@ def test_text_nemotron_checkpoints_stay_on_the_text_renderer(monkeypatch: pytest
     )
     for model in (
         "nvidia/NVIDIA-Nemotron-3-Super-120B",
-        "accounts/example/models/nemotron-3p5-super-textonly",
-        "accounts/fireworks/models/nemotron-3p5-super-vl-unreviewed",
-        "accounts/fireworks/models/nvidia-nemotron-3p5-super-vl-120b-a12b-fp8",
-        "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16-unreviewed",
         "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
     ):
         expected = "nemotron3_ultra" if "lightning" in model else "nemotron3"
         assert resolve_renderer_name(model) == expected
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "accounts/fireworks-e2e-tests/models/nemotron-3p5-super-vl",
+        "nemotron-3p5-super-vl",
+        "accounts/example/models/nemotron-3p5-super-textonly",
+        "accounts/fireworks/models/nemotron-3p5-super-vl-unreviewed",
+        "accounts/fireworks/models/nvidia-nemotron-3p5-super-vl-120b-a12b-fp8",
+        "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16-unreviewed",
+    ],
+)
+def test_unreviewed_nemotron_names_require_explicit_renderer(model: str) -> None:
+    with pytest.raises(ValueError, match="Set Config.renderer_name explicitly"):
+        resolve_renderer_name(model)
 
 
 def test_internal_selectors_are_not_inferred_as_a_public_renderer(

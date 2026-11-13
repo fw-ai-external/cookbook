@@ -12,7 +12,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-_POLICY_CAPABILITY = "deepseek-v4-v41+kimi-k3-k31-tokenizer-identity/saved-native-profiles-v3"
+_POLICY_CAPABILITY = "deepseek-v4-v41+kimi-k3-k31+glm5-tokenizer-identity/code-free-v4"
 _SDK_IDENTITY_MODULE = "fireworks.training.sdk.tokenizer_identity"
 
 # Which backend supplied the identity implementation: "sdk" (delegation) or
@@ -60,8 +60,9 @@ DEEPSEEK_V41_TOKENIZER_JSON_SHA256 = _identity.DEEPSEEK_V41_TOKENIZER_JSON_SHA25
 
 
 def is_code_free_model_name(model_name: str | None) -> bool:
-    """Recognize restrictive V4/V4.1 context without selecting a renderer."""
+    """Recognize restrictive V4/V4.1/GLM context without selecting a renderer."""
     return _identity.is_code_free_model_name(model_name)
+
 
 KIMI_K3_MODEL_TYPE = _identity.KIMI_K3_MODEL_TYPE
 KIMI_K31_MODEL_TYPE = _identity.KIMI_K31_MODEL_TYPE
@@ -79,6 +80,11 @@ KIMI_K3_K31_MODEL_NAMES = _identity.KIMI_K3_K31_MODEL_NAMES
 def is_deepseek_v4_model_name(model_name: str | None) -> bool:
     """Recognize the V4 family in an independently selected model name."""
     return _identity.is_deepseek_v4_model_name(model_name)
+
+
+def is_glm5_model_name(model_name: str | None) -> bool:
+    """Restrict selected GLM context without changing renderer identity."""
+    return _identity.is_glm5_model_name(model_name)
 
 
 def is_kimi_k3_k31_model_name(model_name: str | None) -> bool:

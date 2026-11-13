@@ -120,7 +120,13 @@ def test_other_family_shared_tokenizer_does_not_select_v4_renderer(
     directory.mkdir(parents=True)
     (directory / "config.json").write_text(json.dumps({"model_type": model_type}))
     (directory / "tokenizer.json").write_bytes(official_tokenizer_forms[form])
-    assert resolve_renderer_name(source) == renderer
+    if model_type == "deepseek_v41":
+        assert resolve_renderer_name(source) == renderer
+    else:
+        # A shared model_type does not establish chat-vs-Base semantics.
+        with pytest.raises(ValueError, match="Set Config.renderer_name explicitly"):
+            resolve_renderer_name(source)
+        assert resolve_renderer_name(source, renderer) == renderer
     assert not is_deepseek_v4_tokenizer_source(str(directory))
     assert requires_code_free_tokenizer_loading(str(directory))
 

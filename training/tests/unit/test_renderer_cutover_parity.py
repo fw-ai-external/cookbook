@@ -13,6 +13,7 @@ import training.renderer as fireworks_renderers
 import training.renderer._model_info as native_model_info
 import training.renderer._registry as native_renderers
 import training.renderer.model_info as fireworks_model_info
+from training.renderer.glm5 import GLM5ReleaseRenderer, GLM5Renderer
 
 
 class _CharacterTokenizer:
@@ -37,6 +38,8 @@ _BASELINE_CUSTOM_RENDERERS = (
     "deepseek_v41",
     "gemma4",
     "gemma4_thinking",
+    # Additive original GLM-5 profile; legacy glm5 still means GLM-5.1.
+    "glm5_release",
     "glm5",
     "glm5_interleaved",
     "glm5_preserve_thinking",
@@ -114,6 +117,19 @@ _BASELINE_CUSTOM_RENDERERS = (
 
 def test_custom_registry_matches_pre_cutover_snapshot() -> None:
     assert tuple(fireworks_renderers.get_registered_renderer_names()) == _BASELINE_CUSTOM_RENDERERS
+
+
+def test_glm_release_registry_does_not_rebind_glm51_contract() -> None:
+    tokenizer = _CharacterTokenizer()
+    release = fireworks_renderers.get_renderer("glm5_release", tokenizer)
+    legacy = fireworks_renderers.get_renderer("glm5", tokenizer)
+
+    assert type(release) is GLM5ReleaseRenderer
+    assert type(legacy) is GLM5Renderer
+    assert release._renderer_name == "glm5_release"
+    assert legacy._renderer_name == "glm5"
+    assert release._honor_source_reasoning_fields is True
+    assert legacy._honor_source_reasoning_fields is False
 
 
 def test_role_colon_runtime_contract() -> None:

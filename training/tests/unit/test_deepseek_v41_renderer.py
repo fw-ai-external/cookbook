@@ -90,13 +90,17 @@ def _text(model_input: sdk.ModelInput) -> str:
     "model",
     [
         "deepseek-ai/DeepSeek-V4.1-Flash",
-        "DeepSeekV4.1",
-        "custom/deepseekv41-finetune",
         "accounts/fireworks/models/deepseek-v41-flash",
     ],
 )
 def test_v41_aliases_route_before_v4(model: str) -> None:
     assert resolve_renderer_name(model) == "deepseek_v41"
+
+
+@pytest.mark.parametrize("model", ["DeepSeekV4.1", "custom/deepseekv41-finetune"])
+def test_unreviewed_v41_names_require_explicit_renderer(model: str) -> None:
+    with pytest.raises(ValueError, match="Set Config.renderer_name explicitly"):
+        resolve_renderer_name(model)
 
 
 def test_default_effort_initial_and_mid_system_match_publisher() -> None:

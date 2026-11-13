@@ -1579,7 +1579,8 @@ def test_resolve_renderer_name_prefers_qwen3_6() -> None:
     """Qwen3.6 models should resolve to the qwen3_6 renderer (alias of qwen3_5)."""
     assert resolve_renderer_name("Qwen/Qwen3.6-27B") == "qwen3_6"
     assert resolve_renderer_name("Qwen/Qwen3.6-9B") == "qwen3_6"
-    assert resolve_renderer_name("custom/qwen3_6-finetune") == "qwen3_6"
+    with pytest.raises(ValueError, match="Set Config.renderer_name explicitly"):
+        resolve_renderer_name("custom/qwen3_6-finetune")
 
 
 def test_resolve_renderer_name_prefers_qwen3_8_27b() -> None:
@@ -1619,7 +1620,8 @@ def test_resolve_renderer_name_prefers_deepseek_v41_over_v4() -> None:
     """V4.1 contains the V4 substring and must not inherit the V4 encoder."""
     assert resolve_renderer_name("deepseek-ai/DeepSeek-V4.1-Flash") == "deepseek_v41"
     assert resolve_renderer_name("accounts/fireworks/models/deepseek-v41-flash") == "deepseek_v41"
-    assert resolve_renderer_name("custom/DeepSeekV41-finetune") == "deepseek_v41"
+    with pytest.raises(ValueError, match="Set Config.renderer_name explicitly"):
+        resolve_renderer_name("custom/DeepSeekV41-finetune")
     assert resolve_renderer_name("deepseek-ai/DeepSeek-V4-Flash") == "deepseek_v4"
 
 
@@ -1629,10 +1631,12 @@ def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
     assert resolve_renderer_name("zai-org/GLM-5.1-FP8") == "glm5"
     assert resolve_renderer_name("zai-org/GLM-5.2") == "glm_moe_dsa"
     assert resolve_renderer_name("zai-org/GLM-5.2-FP8") == "glm_moe_dsa"
-    assert resolve_renderer_name("custom/glm-5p2-finetune") == "glm_moe_dsa"
+    with pytest.raises(ValueError, match="Set Config.renderer_name explicitly"):
+        resolve_renderer_name("custom/glm-5p2-finetune")
     assert resolve_renderer_name("zai-org/GLM-5.3") == "glm53"
     assert resolve_renderer_name("accounts/fireworks/models/glm-5p3") == "glm53"
-    assert resolve_renderer_name("custom/glm-5p3-finetune") == "glm53"
+    with pytest.raises(ValueError, match="Set Config.renderer_name explicitly"):
+        resolve_renderer_name("custom/glm-5p3-finetune")
     assert resolve_renderer_name("zai-org/GLM-5.3-Flash") == "glm53_flash"
     assert resolve_renderer_name("accounts/fireworks/models/glm-5p3-flash") == "glm53_flash"
 

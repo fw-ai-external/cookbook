@@ -17,7 +17,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
@@ -25,7 +24,6 @@ import numpy as np
 import torch
 from fireworks.training import sdk
 from training.tokenizer_identity import (
-    DEEPSEEK_V41_MODEL_RE as _DEEPSEEK_V41_MODEL_RE,
     is_code_free_model_name,
     is_deepseek_v4_model_name,
     is_deepseek_v4_tokenizer_source,
@@ -61,6 +59,7 @@ from training.renderer.message_weights import (
     without_trainable_flags,
 )
 from training.renderer.model_info import get_recommended_renderer_name
+from training.renderer.model_selection import local_declared_renderer, resolve_exact_model_renderer
 from training.renderer.plugins import (
     renderer_image_processor_loader,
     renderer_plugin_supports_images,
@@ -81,11 +80,6 @@ from training.renderer.thinking_trace import (
 )
 from training.utils.runner import DatasetError
 from training.utils.tokenizers import load_tokenizer
-
-_NEMOTRON35_VL_MODEL_RE = re.compile(
-    r"(?:^|[/_.-])(?:nemotron-3p5-super-vl|nemotron-3\.5-super-vl|nemotron3\.5-super-vl)"
-    r"(?:-120b-a12b(?:-base)?-(?:bf16|nvfp4))?$"
-)
 
 
 @dataclass(frozen=True)
@@ -227,198 +221,26 @@ def resolve_renderer_name(
     """Choose the existing/default renderer for message -> token rendering."""
     if renderer_name:
         return renderer_name
-    if plugin_renderer_name := resolve_renderer_name_from_plugins(tokenizer_model):
-        return plugin_renderer_name
-    # DeepSeek-V4 ships a custom non-Jinja encoder (see encoding_dsv4.py
-    # upstream) with thinking blocks and DSML tool calls. Recognize it before
-    # the name-based family heuristics: an existing local directory is
-    # identified from its artifact data (config model_type / tokenizer
-    # digest), never its basename -- a real V4 checkpoint keeps this renderer
-    # under any dirname, and a canonical-looking dirname without V4 data does
-    # not get it. Non-directory inputs may also carry an exact reviewed
-    # model ID or the explicit architecture tag used by existing callers.
+    # Local artifact declarations precede model-ID tables and plugin selectors.
+    # A local directory named like a canonical repository is still local data.
     if os.path.isdir(tokenizer_model):
         if is_deepseek_v4_tokenizer_source(tokenizer_model):
             return "deepseek_v4"
+        if declared_renderer := local_declared_renderer(tokenizer_model):
+            return declared_renderer
+        raise ValueError(
+            f"Could not infer a renderer from local artifact data for tokenizer_model={tokenizer_model!r}. "
+            "Set Config.renderer_name explicitly."
+        )
     elif is_deepseek_v4_model_name(tokenizer_model):
         return "deepseek_v4"
-    normalized_model_name = tokenizer_model.lower()
-    if normalized_model_name in {
-        "reflection/beam-1.0-501b-a23b",
-        "reflection/beam-1.0-501b-a23b-nvfp4",
-        "accounts/fireworks/models/beam-1p0-501b-a23b-nvfp4",
-    }:
-        return "beam"
-    if normalized_model_name in {
-        "qwen/qwen2.5-32b-instruct",
-        "accounts/fireworks/models/qwen2p5-32b-instruct",
-    }:
-        # This targeted model predates Managed Training V2. Its production
-        # tokenizer carries an observable V1 tool-template override, so keep it
-        # on the dedicated renderer rather than inheriting Qwen3 semantics or
-        # falling through to the public-HF recommendation table.
-        return "qwen2_5"
-    # Kimi K3.1 (``moonshotai/Kimi-K3.1-Pro``, ``kimi-k3p1-pro``, ``kimi_k31``)
-    # ships a newer XTML encoder than K3 (a ``medium`` thinking tier, literal
-    # tool-argument bytes) and no ``tokenizer.json``, so it has its own renderer.
-    if re.search(
-        r"(?:^|[/_.-])kimi[-_]k3(?:\.1|p1|_?1)(?:$|[/_.-])",
-        normalized_model_name,
-    ):
-        return "kimi_k31"
-    if re.search(
-        r"(?:^|[/_.-])kimi[-_]k3(?:$|[/_.-])",
-        normalized_model_name,
-    ):
-        return "kimi_k3"
-    if "moonshotai/kimi-k2.5" in normalized_model_name or "kimi-k2p5" in normalized_model_name:
-        return "kimi_k25"
-    # Preserve the legacy direct/default alias. Explicit semantic mode
-    # resolution uses the capability registry's dedicated K2.6 names instead.
-    if "moonshotai/kimi-k2.6" in normalized_model_name or "kimi-k2p6" in normalized_model_name:
-        return "kimi_k25"
-    # Kimi-K2.7-Code keeps the K2.6 tokenizer/vocab/tool format, but flips the
-    # HF chat-template default to preserve historical thinking and no longer
-    # injects Kimi's default system prompt when none is provided.
-    if "moonshotai/kimi-k2.7-code" in normalized_model_name or "kimi-k2p7-code" in normalized_model_name:
-        return "kimi_k27_code"
-    if any(
-        model_alias in normalized_model_name
-        for model_alias in (
-            "nemotron-3-ultra",
-            "nemotron3-ultra",
-            "nemotron-3.5-lightning",
-            "nemotron-lightning-3p5",
-        )
-    ):
-        # Ultra and 3.5 Lightning use the same compact think wrapping, which
-        # differs from Super/Nano around the closing </think> boundary.
-        return "nemotron3_ultra"
-    # Nemotron 3.5 Super VL selects nemotron35_vl. The internal snapshot stays
-    # on the control-plane private selector and is not inferred here.
-    if "fireworks-internal/" not in normalized_model_name and _NEMOTRON35_VL_MODEL_RE.search(normalized_model_name):
-        return "nemotron35_vl"
-    if "nemotron" in normalized_model_name and "fireworks-internal/" not in normalized_model_name:
-        # Route the Nemotron family to the Nemotron-3
-        # renderer ("nemotron3"), which restores the prompt-prefilled <think>
-        # in parse_response via _normalize_response_tokens. The retired
-        # cookbook "nemotron" renderer inherited Qwen3Renderer's identity
-        # normalize and left the prefilled think unrestored, so sampled
-        # completions (which start inside the think block: </think> with no
-        # opening <think>) were graded with the reasoning still attached.
-        return "nemotron3"
-    if "minimax-m2" in normalized_model_name or "minimax_m2" in normalized_model_name:
-        return "minimax_m2"
-    # The released MiniMax-M3 tokenizer uses its own BOD/BOS role protocol,
-    # thinking tags, and XML tool-call format; it is not M2-compatible.
-    if "minimax-m3" in normalized_model_name or "minimax_m3" in normalized_model_name:
-        return "minimax_m3"
-    # The open checkpoint uses the public ATEM renderer. Match only its
-    # reviewed identities; older private Muse Spark models keep their selectors.
-    if normalized_model_name in {
-        "meta-models/muse-spark-1.2-816b-a42b-nvfp4-open",
-        "https://huggingface.co/meta-models/muse-spark-1.2-816b-a42b-nvfp4-open",
-        "accounts/fireworks/models/muse-spark-open-nvfp4",
-    }:
-        return "muse_spark"
-    if "muse-glimmer" in normalized_model_name or "muse_glimmer" in normalized_model_name:
-        return "muse_glimmer"
-    if "qwen3-vl" in normalized_model_name:
-        return "qwen3_vl_instruct"
-    if normalized_model_name == "qwen/qwen3-235b-a22b-instruct-2507-fp8":
-        # The FP8 weights repository reuses the canonical Instruct-2507
-        # tokenizer and chat template, but the model registry uses the
-        # canonical non-suffixed HF identity. This alias is renderer-only:
-        # checkpoint precision and training-shape eligibility remain separate
-        # control-plane contracts and must not be canonicalized here.
-        return "qwen3_instruct"
-    # Qwen3.8-27B (dense VL). Do not match qwen3p8-max / qwen3p8-plus: those
-    # are different checkpoints. HF default preserve_thinking is true, so the
-    # cookbook default renderer keeps historical thinking.
-    if (
-        "qwen3.8-27b" in normalized_model_name
-        or "qwen3_8-27b" in normalized_model_name
-        or "qwen3_8_27b" in normalized_model_name
-        or "qwen3p8-27b" in normalized_model_name
-    ):
-        return "qwen3_8"
-    # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only
-    # adds an opt-in `preserve_thinking` flag (renders historical thinking
-    # for ALL assistant turns when true). Default invocation produces output
-    # byte-identical to Qwen3.5's template, so the qwen3_5 renderer family
-    # is correct for INTERLEAVED-history workflows on Qwen3.6 checkpoints.
-    # Same alias pattern as the kimi-k25 → Kimi-K2.6 case above.
-    if "qwen3.6" in normalized_model_name or "qwen3_6" in normalized_model_name or "qwen3p6" in normalized_model_name:
-        return "qwen3_6"
-    if "qwen3.5" in normalized_model_name or "qwen3_5" in normalized_model_name or "qwen3p5" in normalized_model_name:
-        return "qwen3_5"
-    if "gemma-4" in normalized_model_name or "gemma4" in normalized_model_name:
-        return "gemma4"
-    # V4.1 keeps its own renderer. The earlier V4 recognition never claims
-    # V4.1: V4.1 configs declare model_type "deepseek_v41" and V4.1 names are
-    # outside the exact V4 ID set, so V4.1 inputs reach this regex.
-    if _DEEPSEEK_V41_MODEL_RE.search(normalized_model_name):
-        return "deepseek_v41"
-    # GLM-5.3-Flash shares GLM-5.3's text/tool contract but replaces the
-    # text-only model's unsupported-media reminder with real image/video/audio
-    # branches. Resolve it first so image capability cannot leak to GLM-5.3.
-    if "glm-5p3-flash" in normalized_model_name or "glm-5.3-flash" in normalized_model_name:
-        return "glm53_flash"
-    # GLM-5.3 keeps the GLM-5.2 wire format but changes the default thinking
-    # history policy and adds ID-aware tool-result ordering. Keep it on a
-    # dedicated text-only renderer so new aliases cannot silently inherit 5.2
-    # semantics or Flash's multimodal behavior.
-    if "glm-5p3" in normalized_model_name or "glm-5.3" in normalized_model_name:
-        return "glm53"
-    # ZhipuAI GLM-5.2 keeps GLM-5 role/tool tags, but its shipped template
-    # adds a default Reasoning Effort system prefix and slightly different
-    # stripped-thinking blocks. Route it to the dedicated variant.
-    if "glm-5p2" in normalized_model_name or "glm-5.2" in normalized_model_name:
-        return "glm_moe_dsa"
-    # ZhipuAI GLM-5.1 chat template (`[gMASK]<sop>`, `<|user|>`,
-    # `<|assistant|>`, `<think>...</think>`, `<|endoftext|>`).
-    if "glm-5p1" in normalized_model_name or "glm-5.1" in normalized_model_name or "glm5" in normalized_model_name:
-        return "glm5"
-    # Mistral / Ministral Tekken-style chat (`[SYSTEM_PROMPT]`, `[INST]…[/INST]`,
-    # `[TOOL_CALLS]…[ARGS]…`, `[TOOL_RESULTS]…[/TOOL_RESULTS]`). Covers
-    # Ministral 3 / 8B, Mistral 7B Instruct v0.3+, Mistral Small 3 Instruct, and
-    # any other ``mistralai/...`` checkpoint that ships the same template.
-    # Validated end-to-end via SFT training on Ministral-3-3B-Instruct-2512.
-    if (
-        normalized_model_name.startswith("mistralai/")
-        or "ministral-" in normalized_model_name
-        or "mistral-7b-instruct-v0.3" in normalized_model_name
-        or "mistral-7b-instruct-v0.4" in normalized_model_name
-        or "mistral-small" in normalized_model_name
-    ):
-        return "mistral"
+    if plugin_renderer_name := resolve_renderer_name_from_plugins(tokenizer_model):
+        return plugin_renderer_name
+    if exact_renderer_name := resolve_exact_model_renderer(tokenizer_model):
+        return exact_renderer_name
     try:
         return get_recommended_renderer_name(tokenizer_model)
     except Exception as exc:  # pragma: no cover - message only
-        # The model registry includes a limited set of validated Qwen3
-        # checkpoints. Keep these compatibility fallbacks exact so unknown
-        # Base/Instruct variants fail closed instead of silently using the
-        # wrong format.
-        if normalized_model_name == "qwen/qwen3-0.6b" or re.fullmatch(
-            r"accounts/[a-z0-9-]+/models/qwen3-0p6b",
-            normalized_model_name,
-        ):
-            return "qwen3"
-        if normalized_model_name == "qwen/qwen3-1.7b" or re.fullmatch(
-            r"accounts/[a-z0-9-]+/models/qwen3-1p7b",
-            normalized_model_name,
-        ):
-            return "qwen3"
-        if normalized_model_name == "qwen/qwen3-4b" or re.fullmatch(
-            r"accounts/[a-z0-9-]+/models/qwen3-4b",
-            normalized_model_name,
-        ):
-            return "qwen3"
-        if normalized_model_name == "qwen/qwen3-14b" or re.fullmatch(
-            r"accounts/[a-z0-9-]+/models/qwen3-14b",
-            normalized_model_name,
-        ):
-            return "qwen3"
         raise ValueError(
             f"Could not infer a renderer for tokenizer_model={tokenizer_model!r}. "
             "Set Config.renderer_name explicitly."

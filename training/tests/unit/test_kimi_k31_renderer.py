@@ -338,13 +338,17 @@ def test_renderer_resolution_selects_kimi_k31() -> None:
         "moonshotai/Kimi-K3.1-Pro",
         "https://huggingface.co/moonshotai/Kimi-K3.1-Pro",
         "accounts/fireworks/models/kimi-k3p1-pro",
-        "accounts/example/models/kimi-k3p1-finetune",
-        "/trusted/local/kimi_k31_release",
-        "/trusted/local/Kimi-K3.1",
     ):
         assert resolve_renderer_name(model) == "kimi_k31", model
     assert resolve_renderer_name("moonshotai/Kimi-K3") == "kimi_k3"
     assert resolve_renderer_name("accounts/fireworks/models/kimi-k3") == "kimi_k3"
+    for unreviewed in (
+        "accounts/example/models/kimi-k3p1-finetune",
+        "/trusted/local/kimi_k31_release",
+        "/trusted/local/Kimi-K3.1",
+    ):
+        with pytest.raises(ValueError, match="Could not infer a renderer"):
+            resolve_renderer_name(unreviewed)
     with pytest.raises(ValueError, match="Could not infer a renderer"):
         resolve_renderer_name("accounts/example/models/kimi-k30")
     with pytest.raises(ValueError, match="Could not infer a renderer"):

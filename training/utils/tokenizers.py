@@ -29,7 +29,6 @@ def resolve_tokenizer_base_model(base_model: str, base_model_type: str = "") -> 
 
 
 _HTTP_STATUS_PATTERN = re.compile(r"\b([45]\d\d)\b")
-_MISTRAL_TOKENIZER_NAME_PARTS = ("mistral", "ministral")
 
 # A repo file that simply is not there answers the backend question ("no
 # declaration, use AutoTokenizer"). Any other failure does not: it means we
@@ -78,8 +77,18 @@ def _is_generic_config_missing_max_position_embeddings(exc: AttributeError) -> b
 def needs_mistral_regex_fix(tokenizer_model: str | None) -> bool:
     if tokenizer_model is None:
         return False
-    normalized_model = tokenizer_model.casefold()
-    return any(part in normalized_model for part in _MISTRAL_TOKENIZER_NAME_PARTS)
+    if Path(tokenizer_model).is_dir():
+        config = _read_repo_json(tokenizer_model, "config.json", revision=None, local_files_only=True) or {}
+        tokenizer_config = (
+            _read_repo_json(tokenizer_model, "tokenizer_config.json", revision=None, local_files_only=True) or {}
+        )
+        if isinstance(tokenizer_config.get("fix_mistral_regex"), bool):
+            return tokenizer_config["fix_mistral_regex"]
+        return config.get("model_type") in {"mistral", "mistral3", "ministral3", "mixtral"}
+    # lazy: avoid importing the renderer package during tokenizer module initialization.
+    from training.renderer.model_selection import is_exact_mistral_tokenizer_model
+
+    return is_exact_mistral_tokenizer_model(tokenizer_model)
 
 
 def _read_repo_json(

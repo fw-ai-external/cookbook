@@ -54,9 +54,9 @@ from training.utils.supervised import render_messages_to_datums
 # The QA matrix already binds most renderers to their canonical tokenizer.
 _MATRIX_TOKENIZERS = {case.renderer: case.resolved_tokenizer_model() for case in RENDERER_MATRIX}
 # Extra aliases of a matrix tokenizer must use the same certified checkpoint.
-_MATRIX_TOKENIZER_REVISIONS = {
-    case.resolved_tokenizer_model(): case.resolved_tokenizer_revision()
-    for case in RENDERER_MATRIX
+_TOKENIZER_REVISIONS = {
+    **{case.resolved_tokenizer_model(): case.resolved_tokenizer_revision() for case in RENDERER_MATRIX},
+    "zai-org/GLM-5": "c183ef8c61faee82855eca1ed9bb3a9a7ce3b0b2",
 }
 
 # Renderers the QA matrix does not carry a row for yet. The invariant below
@@ -94,6 +94,7 @@ _EXTRA_TOKENIZERS = {
     "gpt_oss_high_reasoning": "openai/gpt-oss-120b",
     "gpt_oss_no_sysprompt": "openai/gpt-oss-120b",
     "mistral": "mistralai/Ministral-3-3B-Instruct-2512",
+    "glm5_release": "zai-org/GLM-5",
     "glm5": "zai-org/GLM-5.1",
     "glm_moe_dsa": "zai-org/GLM-5.2",
     "glm53_interleaved": "zai-org/GLM-5.3",
@@ -180,7 +181,7 @@ def _load_tokenizer(model_id: str):
     try:
         with _tokenizer_load_timeout():
             return transformers.AutoTokenizer.from_pretrained(
-                model_id, revision=_MATRIX_TOKENIZER_REVISIONS.get(model_id), trust_remote_code=True
+                model_id, revision=_TOKENIZER_REVISIONS.get(model_id), trust_remote_code=True
             )
     except _TokenizerLoadTimeout:
         return None
@@ -931,6 +932,12 @@ def test_multi_turn_gap_is_weight_independent():
         _tokenizer, renderer = _resolve_renderer(name)
         with pytest.raises(NotImplementedError):
             _render(renderer, _without_weights(_MULTI_TURN_ALL_TRAINED))
+
+
+def test_glm5_release_keeps_its_original_tokenizer_pin() -> None:
+    assert _TOKENIZER_FOR_RENDERER["glm5_release"] == "zai-org/GLM-5"
+    assert _TOKENIZER_REVISIONS["zai-org/GLM-5"] == "c183ef8c61faee82855eca1ed9bb3a9a7ce3b0b2"
+    assert "glm5_release" not in _UNCOVERED_RENDERERS
 
 
 def test_every_registered_renderer_is_covered_or_excluded():
