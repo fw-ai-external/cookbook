@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import transformers
+from training.tokenizer_compat import patch_duplicate_mistral_regex_kwarg
 from training.tokenizer_identity import (
     is_code_free_model_name,
     is_kimi_k3_k31_model_name,
@@ -344,6 +345,7 @@ def load_tokenizer(
     ``local_files_only`` supports callers that attempt a cache-only load
     before allowing network access.
     """
+    patch_duplicate_mistral_regex_kwarg()
     if is_kimi_k3_k31_model_name(base_model) or is_kimi_k3_k31_tokenizer_source(
         tokenizer_model,
         revision=tokenizer_revision or None,

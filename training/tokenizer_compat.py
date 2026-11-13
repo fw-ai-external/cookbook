@@ -8,6 +8,7 @@ import transformers
 from packaging.version import Version
 
 
+# TEMPORARY DUPLICATION: standalone clients share this backport until their Transformers minimum is at least 5.4.
 def patch_duplicate_mistral_regex_kwarg() -> None:
     """Backport the 5.4 duplicate-keyword fix without changing tokenizer bytes.
 

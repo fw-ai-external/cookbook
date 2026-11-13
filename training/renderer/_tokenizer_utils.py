@@ -142,7 +142,11 @@ _KIMI_TOKENIZER_REVISIONS: dict[str, str] = {
 def _get_hf_tokenizer(
     model_name: str, *, renderer_name: str | None = None, base_model: str | None = None
 ) -> Tokenizer:
+    # lazy: tokenizer dependencies and their compatibility backport are optional.
     from transformers.models.auto.tokenization_auto import AutoTokenizer
+    from training.tokenizer_compat import patch_duplicate_mistral_regex_kwarg
+
+    patch_duplicate_mistral_regex_kwarg()
 
     model_name = model_name.split(":")[0]
 
