@@ -56,9 +56,10 @@ the sampler and weight-sync helpers.
 ### Trainer results
 
 Tinker result keys use `name:reduction`. `:sum`, `:min` and `:max` reduce
-across chunks as named and keep their suffix (`train/loss:sum`). Unsuffixed
-diagnostics average over the chunks that reported them. `:last` values describe
-one call and are dropped, except `trainer_busy_walltime_pct`.
+across chunks as named, and `:mean` averages weighted by each chunk's datum
+count; all keep their suffix (`train/loss:sum`). Unsuffixed diagnostics average
+over the chunks that reported them. `:last` values describe one call and are
+dropped, except `trainer_busy_walltime_pct`.
 
 When the trainer reports its own execution time, compare it with the client
 wall time of the same phase:
@@ -101,6 +102,45 @@ rollout logprobs unless a fork recomputes them). A client-side loss
 (`make_loss_fn`) reports the same `{prefix}_*` names, plus extras such as
 `train/mean_loss` and `train/ref_kl` with reference KL. With sampling-support
 replay, skip `inference_drift_metrics`: serving logprobs are full-vocabulary.
+
+### Server TIS/MIS clipping
+
+A built-in policy loss (`reinforce`, `ppo`, ...) whose
+`loss_fn_config["weighting"]` is `"tis"` or `"mis"` reports how many tokens its
+importance weights clipped or masked. The trainer returns them with the
+forward/backward result, and `forward_backward_metrics` logs them with their
+suffix; no extra call is needed. The trainer's own logs use the same names
+without the suffix (`train/clip_frac`).
+
+| Metric | Weighting | Tokens counted |
+|---|---|---|
+| `train/clip_high_cnt:sum`, `train/clip_high_frac:mean` | TIS | `ratio > weight_high` |
+| `train/clip_low_cnt:sum`, `train/clip_low_frac:mean` | TIS | `ratio < weight_low` |
+| `train/clip_cnt:sum`, `train/clip_frac:mean` | TIS | Both bands: `clip_high_cnt + clip_low_cnt` |
+| `train/mask_cnt:sum`, `train/mask_frac:mean` | MIS | Ratio outside `[weight_low, weight_high]`; these tokens get weight 0 |
+
+The trainer counts response tokens (the response mask, or a nonzero advantage
+when there is no mask) that have a real target label; prompt and padding
+positions are excluded. For each counted token,
+`ratio = exp(trainer_logprob - sampler_logprob)`. A `_frac` is its count divided
+by the counted tokens, computed on the trainer; the cookbook does not recompute
+it. `train/mask_frac:mean` is unrelated to `train/mask_ratio`, the share of
+response tokens the loss mask trains. Nothing is reported with
+`weighting="none"` or by a trainer that predates these metrics.
+
+The client-side metrics with similar names measure something else:
+
+| Metric | Ratio | Clipped when | Averaged |
+|---|---|---|---|
+| Server `train/clip_frac:mean` | Current trainer policy / sampler | Above `weight_high` or below `weight_low` | Over every counted token in the call |
+| `train/{prefix}_clip_frac` | Policy / `batch.anchor_logprobs` | Outside the objective's trust region | Per datum, computed by the cookbook |
+| `train/tis_clip_frac` | Recomputed anchor / rollout (`apply_tis`) | Above `cap` | Per response |
+
+When the SDK splits one call into several requests (more than 1024 datums, or
+about 5 MB), it adds the `:sum` counts exactly but averages the `:mean`
+fractions weighted by datum count. Fractions are then approximate; counts stay
+exact. The async recipes send a step as several requests, and
+`forward_backward_metrics` combines them the same way.
 
 ### Sampler
 

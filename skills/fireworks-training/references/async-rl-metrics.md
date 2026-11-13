@@ -110,9 +110,12 @@ The GRPO train step adds `train/ppo_ratio_mean`, `train/ppo_clip_frac` and
 (`train/inference_k1`, `train/inference_k3`,
 `train/raw_inference_logprob_coverage`) are optional: when the sampler does not
 return the distinct raw model-logprob field, they are absent rather than
-reported as a misleading constant zero. Other optional metrics follow the same
-rule; an unsupported capability does not produce a sentinel or constant-zero
-series.
+reported as a misleading constant zero. The server TIS/MIS counters
+(`train/clip_*`, `train/mask_*`; see
+[`step-metrics.md`](step-metrics.md#server-tismis-clipping)) appear only when
+the loss config sets `weighting` to `"tis"` or `"mis"`. Other optional metrics
+follow the same rule; an unsupported capability does not produce a sentinel or
+constant-zero series.
 
 Optimizer telemetry keeps `train/grad_norm` and `train/grad_norm_rms`.
 `train/grad_norm_post_clip` appears only when clipping changes the norm. API

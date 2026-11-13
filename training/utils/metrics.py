@@ -95,10 +95,11 @@ def forward_backward_metrics(results: Sequence[Any]) -> dict[str, float]:
     """Reduce the ``metrics`` of one step's forward/backward results.
 
     Keys follow Tinker's ``name:reduction`` convention. ``:sum``, ``:min`` and
-    ``:max`` reduce across chunks as named; unsuffixed values average over the
-    chunks that reported them, so an optional diagnostic is never diluted by
-    chunks without it. ``:last`` values describe one call and are dropped,
-    except the trainer's busy wall-time percentage.
+    ``:max`` reduce across chunks as named, and ``:mean`` averages weighted by
+    each chunk's datum count, as the SDK combines a split call. Unsuffixed
+    values average over the chunks that reported them, so an optional
+    diagnostic is never diluted by chunks without it. ``:last`` values describe
+    one call and are dropped, except the trainer's busy wall-time percentage.
     """
     totals: dict[str, float] = {}
     counts: dict[str, int] = {}
@@ -106,6 +107,8 @@ def forward_backward_metrics(results: Sequence[Any]) -> dict[str, float]:
     trainer_time: dict[str, float] = {}
     trainer_busy: float | None = None
     for result in results:
+        # ``:mean`` weight: the chunk's datums; a result without outputs counts once.
+        datums = len(getattr(result, "loss_fn_outputs", None) or ()) or 1
         for key, raw in (getattr(result, "metrics", None) or {}).items():
             value = _finite(raw)
             if value is None:
@@ -120,20 +123,21 @@ def forward_backward_metrics(results: Sequence[Any]) -> dict[str, float]:
                 continue
             if base in _SKIPPED_RESULT_KEYS or reducer == "last":
                 continue
-            if separator and reducer not in {"sum", "min", "max"}:
+            if separator and reducer not in {"sum", "min", "max", "mean"}:
                 continue
             reducers[key] = reducer
+            weight = datums if reducer == "mean" else 1
             if reducer == "min":
                 totals[key] = min(totals.get(key, value), value)
             elif reducer == "max":
                 totals[key] = max(totals.get(key, value), value)
             else:
-                totals[key] = totals.get(key, 0.0) + value
-            counts[key] = counts.get(key, 0) + 1
+                totals[key] = totals.get(key, 0.0) + weight * value
+            counts[key] = counts.get(key, 0) + weight
 
     metrics: dict[str, float] = {}
     for key, total in totals.items():
-        additive = key.partition(":")[0] in _SUMMED_RESULT_KEYS or reducers[key]
+        additive = key.partition(":")[0] in _SUMMED_RESULT_KEYS or reducers[key] in {"sum", "min", "max"}
         metrics[f"train/{key}"] = total if additive else total / counts[key]
     active = metrics.get("train/active_tokens")
     response = metrics.get("train/total_resp_tokens")
