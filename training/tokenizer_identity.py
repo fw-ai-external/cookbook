@@ -12,7 +12,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-_POLICY_CAPABILITY = "deepseek-v4-v41+kimi-k3-k31+glm5-tokenizer-identity/code-free-v4"
+_POLICY_CAPABILITY = "deepseek-v4-v41+kimi-k3-k31+glm5-tokenizer-identity/exact-standard-context-v8"
 _SDK_IDENTITY_MODULE = "fireworks.training.sdk.tokenizer_identity"
 
 # Which backend supplied the identity implementation: "sdk" (delegation) or
@@ -62,6 +62,26 @@ DEEPSEEK_V41_TOKENIZER_JSON_SHA256 = _identity.DEEPSEEK_V41_TOKENIZER_JSON_SHA25
 def is_code_free_model_name(model_name: str | None) -> bool:
     """Recognize restrictive V4/V4.1/GLM context without selecting a renderer."""
     return _identity.is_code_free_model_name(model_name)
+
+
+def is_standard_tokenizer_model_name(model_name: str | None) -> bool:
+    """Restrict standard-family context without asserting artifact compatibility."""
+    return _identity.is_standard_tokenizer_model_name(model_name)
+
+
+def is_standard_tokenizer_renderer_name(renderer_name: str | None) -> bool:
+    """Restrict an explicit renderer without treating it as a local path."""
+    return _identity.is_standard_tokenizer_renderer_name(renderer_name)
+
+
+def is_minimax_m2_model_name(model_name: str | None) -> bool:
+    """Select only the exact supported MiniMax literal-JSON contexts."""
+    return _identity.is_minimax_m2_model_name(model_name)
+
+
+def is_minimax_m2_tokenizer_source(tokenizer_model: str | None) -> bool:
+    """Select literal JSON from exact context or local config, never directory names."""
+    return _identity.is_minimax_m2_tokenizer_source(tokenizer_model)
 
 
 KIMI_K3_MODEL_TYPE = _identity.KIMI_K3_MODEL_TYPE

@@ -16,6 +16,9 @@ from training.tokenizer_identity import (
     is_code_free_model_name,
     is_kimi_k3_k31_model_name,
     is_kimi_k3_k31_tokenizer_source,
+    is_minimax_m2_model_name,
+    is_minimax_m2_tokenizer_source,
+    is_standard_tokenizer_model_name,
     requires_code_free_tokenizer_loading,
 )
 from huggingface_hub import errors as hf_errors
@@ -25,7 +28,11 @@ logger = logging.getLogger(__name__)
 
 def resolve_tokenizer_base_model(base_model: str, base_model_type: str = "") -> str:
     """Keep independently known V4 context without replacing the model identity."""
-    return base_model_type if is_code_free_model_name(base_model_type) else base_model
+    return (
+        base_model_type
+        if is_code_free_model_name(base_model_type) or is_standard_tokenizer_model_name(base_model_type)
+        else base_model
+    )
 
 
 _HTTP_STATUS_PATTERN = re.compile(r"\b([45]\d\d)\b")
@@ -351,6 +358,8 @@ def load_tokenizer(
     only a tiktoken vocabulary behind a remote-code class, so the load
     builds the id-identical native fast tokenizer from reviewed installed
     code and never touches ``AutoTokenizer`` or ``auto_map``.
+    Independent Qwen, MiniMax, Gemma and Nemotron context also restricts
+    loading to installed code even under explicit or ambient opt-in.
     ``local_files_only`` supports callers that attempt a cache-only load
     before allowing network access.
     """
@@ -373,10 +382,15 @@ def load_tokenizer(
             revision=tokenizer_revision or None,
             local_files_only=local_files_only,
         )
-    if is_code_free_model_name(base_model) or requires_code_free_tokenizer_loading(
-        tokenizer_model,
-        revision=tokenizer_revision or None,
-        local_files_only=local_files_only,
+    if (
+        is_code_free_model_name(base_model)
+        or is_standard_tokenizer_model_name(base_model)
+        or is_standard_tokenizer_model_name(tokenizer_model)
+        or requires_code_free_tokenizer_loading(
+            tokenizer_model,
+            revision=tokenizer_revision or None,
+            local_files_only=local_files_only,
+        )
     ):
         resolved_trust_remote_code = False
     else:
@@ -401,6 +415,15 @@ def load_tokenizer(
             revision=kwargs["revision"],
             local_files_only=local_files_only,
         )
+        if is_minimax_m2_model_name(base_model) or is_minimax_m2_tokenizer_source(tokenizer_model):
+            # The GPT2 declaration would replace MiniMax's published pre-tokenizer.
+            tokenizer = transformers.TokenizersBackend.from_pretrained(
+                tokenizer_model,
+                **{**kwargs, **_declared_post_processor_kwargs(tokenizer_config or {}), "trust_remote_code": False},
+            )
+            # Do not export a checkpoint-code map from an installed generic reader.
+            tokenizer.init_kwargs.pop("auto_map", None)
+            return tokenizer
         if tokenizer_config is not None and _tokenizer_selection_is_ambiguous(
             tokenizer_model,
             tokenizer_config,

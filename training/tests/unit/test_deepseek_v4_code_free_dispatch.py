@@ -200,7 +200,7 @@ def test_env_opt_in_cannot_reopen_recognized_hub_id(monkeypatch: pytest.MonkeyPa
         ("moonshotai/Kimi-K2.6", "b5aabbfb20227ed42becbf5541dbffd213942c58"),
     ],
 )
-@pytest.mark.parametrize("base_model", [V4_REPOSITORY, "Qwen/Qwen3-8B"])
+@pytest.mark.parametrize("base_model", [V4_REPOSITORY, "Qwen/Qwen3-8B", "acme/unrelated"])
 def test_base_model_policy_precedes_kimi_dynamic_import(
     monkeypatch: pytest.MonkeyPatch,
     model_name: str,
@@ -222,7 +222,7 @@ def test_base_model_policy_precedes_kimi_dynamic_import(
         return sentinel
 
     def dynamic_load(class_reference: str, model: str, **kwargs: Any) -> Any:
-        assert base_model != V4_REPOSITORY, "V4 base context must block the direct dynamic import"
+        assert base_model == "acme/unrelated", "code-free base context must block the direct dynamic import"
         dynamic_calls.append((class_reference, model, kwargs))
         return SimpleNamespace(from_pretrained=class_load)
 
@@ -233,7 +233,7 @@ def test_base_model_policy_precedes_kimi_dynamic_import(
         assert _tokenizer_utils.get_tokenizer(model_name, base_model=base_model) is sentinel
     finally:
         _tokenizer_utils._get_hf_tokenizer.cache_clear()
-    if base_model == V4_REPOSITORY:
+    if base_model != "acme/unrelated":
         assert auto_calls == [(model_name, {"trust_remote_code": False})]
         assert not dynamic_calls
         assert not class_loads

@@ -20,6 +20,10 @@ _PUBLIC = (
     "is_deepseek_v4_model_name",
     "is_deepseek_v4_tokenizer_source",
     "requires_code_free_tokenizer_loading",
+    "is_standard_tokenizer_model_name",
+    "is_standard_tokenizer_renderer_name",
+    "is_minimax_m2_model_name",
+    "is_minimax_m2_tokenizer_source",
 )
 
 
@@ -67,6 +71,11 @@ def test_missing_module_guard(monkeypatch: pytest.MonkeyPatch, missing_name: str
         "deepseek-v4-tokenizer-identity/exact-id-and-data-only-rule",
         "deepseek-v4-tokenizer-identity/exact-id-data-v41-isolation",
         "deepseek-v4-tokenizer-identity/explicit-family-before-digest",
+        "deepseek-v4-v41+kimi-k3-k31-tokenizer-identity/saved-native-profiles-v3",
+        "deepseek-v4-v41+kimi-k3-k31-tokenizer-identity/standard-context-v4",
+        "deepseek-v4-v41+kimi-k3-k31-tokenizer-identity/exact-standard-context-v6",
+        "deepseek-v4-v41+kimi-k3-k31-tokenizer-identity/exact-standard-context-v7",
+        "deepseek-v4-v41+kimi-k3-k31+glm5-tokenizer-identity/code-free-v4",
         identity._POLICY_CAPABILITY,
     ],
 )
@@ -86,7 +95,14 @@ def test_capability_selects_only_matching_sdk(monkeypatch: pytest.MonkeyPatch, c
 def test_wrappers_forward_source_and_download_options(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = Mock()
     monkeypatch.setattr(identity, "_identity", backend)
-    for name in ("is_deepseek_v4_model_name", "is_code_free_model_name"):
+    for name in (
+        "is_deepseek_v4_model_name",
+        "is_code_free_model_name",
+        "is_standard_tokenizer_model_name",
+        "is_standard_tokenizer_renderer_name",
+        "is_minimax_m2_model_name",
+        "is_minimax_m2_tokenizer_source",
+    ):
         method = getattr(backend, name)
         assert getattr(identity, name)("model") is method.return_value
         method.assert_called_once_with("model")
