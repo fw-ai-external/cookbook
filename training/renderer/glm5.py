@@ -1043,6 +1043,42 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         return assistant_message, True
 
 
+class GLM5ReleaseRenderer(GLM5Renderer):
+    """Original GLM-5 contract; do not silently use GLM-5.1 empty thinking."""
+
+    _preserve_has_extension_property = True
+
+    def _assistant_think_block(
+        self,
+        *,
+        before_last_user: bool,
+        reasoning: str,
+        user_turn_has_explicit_reasoning: bool,
+    ) -> str:
+        del user_turn_has_explicit_reasoning
+        if reasoning and (not before_last_user or not self._clear_thinking):
+            return f"<think>{reasoning.strip()}</think>"
+        return "</think>"
+
+    def create_conversation_prefix_with_tools(
+        self,
+        tools: list[ToolSpec],
+        system_prompt: str = "",
+    ) -> list[Message]:
+        declarations = "\n".join(
+            json.dumps({"type": "function", "function": tool}, ensure_ascii=False) for tool in tools
+        )
+        messages = [
+            Message(
+                role="system",
+                content=_TOOL_DECLARATION_PREFIX + declarations + "\n" + _TOOL_DECLARATION_SUFFIX,
+            )
+        ]
+        if system_prompt:
+            messages.append(Message(role="system", content=system_prompt))
+        return messages
+
+
 class GLMMoeDsaRenderer(GLM5Renderer):
     """Renderer for GLM-5.2 / ``glm_moe_dsa`` chat-template differences."""
 
@@ -1268,6 +1304,11 @@ class GLM53FlashRenderer(GLM53Renderer):
         )
 
 
+def _glm5_release_factory(tokenizer: Tokenizer, image_processor=None) -> GLM5ReleaseRenderer:
+    del image_processor
+    return GLM5ReleaseRenderer(tokenizer, honor_source_reasoning_fields=True)
+
+
 def _glm5_factory(tokenizer: Tokenizer, image_processor=None) -> GLM5Renderer:
     del image_processor
     return GLM5Renderer(tokenizer)
@@ -1376,6 +1417,7 @@ def _glm53_flash_preserve_thinking_factory(
     )
 
 
+register_renderer("glm5_release", _glm5_release_factory)
 register_renderer("glm5", _glm5_factory)
 # Keep the existing concrete names above available for legacy direct callers.
 # Managed semantic modes materialize the new names below, so future

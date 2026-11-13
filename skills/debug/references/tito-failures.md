@@ -135,6 +135,16 @@ persistent discards can leave no usable training samples.
 Replay offline with the recorded renderer/certification/tokenizer fingerprint,
 exact request, completion token IDs, and finish reason. The primary parser is
 the only entry point; legacy artifact `parser_fallback` fields remain readable.
+
+For GLM-5, GLM-5.3 and GLM-5.3-Flash, keep tokenizer/processor loading in
+installed code even when `HF_TRUST_REMOTE_CODE` is set. Use the normal recipe
+tokenizer loader and pass the selected base-model context for an opaque
+tokenizer override. Shared vocabulary is not a shared chat contract:
+`zai-org/GLM-5` selects `glm5_release`, GLM-5.3 selects `glm53`, and Flash selects
+`glm53_flash` with the existing data-only image counter. Existing `glm5` remains
+the GLM-5.1 renderer; do not use it as an alias for the original GLM-5 release.
+None of these choices enables checkpoint Python or changes trainer kernels.
+
 For DeepSeek V4.1, use the recipe tokenizer loader with the certification's
 pinned revision. Its declared BOS/EOS post-processor is part of the fingerprint;
 loading the raw backend without those settings produces a different contract.

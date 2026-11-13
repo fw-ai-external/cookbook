@@ -482,8 +482,10 @@ def test_renderer_prompt_matches_python_template(tokenizer, renderer) -> None:
 
 
 def test_renderer_resolution_selects_kimi_k3() -> None:
-    assert resolve_renderer_name("accounts/example/models/kimi-k3") == "kimi_k3"
-    assert resolve_renderer_name("/trusted/local/KIMI_K3_release") == "kimi_k3"
+    assert resolve_renderer_name("moonshotai/Kimi-K3") == "kimi_k3"
+    for unreviewed in ("accounts/example/models/kimi-k3", "/trusted/local/KIMI_K3_release"):
+        with pytest.raises(ValueError, match="Could not infer a renderer"):
+            resolve_renderer_name(unreviewed)
     with pytest.raises(ValueError, match="Could not infer a renderer"):
         resolve_renderer_name("accounts/example/models/kimi-k30")
     with pytest.raises(ValueError, match="Could not infer a renderer"):
