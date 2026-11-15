@@ -24,7 +24,7 @@ be released after epoch 0).
 from __future__ import annotations
 
 import bisect
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from dataclasses import dataclass
 import functools
 import json
@@ -495,6 +495,10 @@ class JsonlRenderDataset(torch_data.Dataset):
     def num_underlying_rows(self) -> int:
         return self._shard_starts[-1]
 
+    def row_indices(self) -> List[int]:
+        """The 0-based dataset row index of each item in this view."""
+        return list(self._index_map)
+
     def approx_row_sizes(self) -> List[int]:
         """Return a cheap per-item size proxy: raw JSONL byte length.
 
@@ -684,6 +688,10 @@ class GcsJsonlRenderDataset(torch_data.Dataset):
     def num_underlying_rows(self) -> int:
         return self._shard_starts[-1]
 
+    def row_indices(self) -> List[int]:
+        """The 0-based dataset row index of each item in this view."""
+        return list(self._index_map)
+
     def approx_row_sizes(self) -> List[int]:
         full_sizes: List[int] = []
         for lengths in self._shard_lengths:
@@ -777,6 +785,138 @@ class LengthGroupedBatchSampler(torch_data.Sampler):
 
 def _drop_none_collate(batch: List[Any]) -> List[Any]:
     return [d for d in batch if d is not None]
+
+
+DROP_TOO_LONG = "too_long"
+DROP_TOO_SHORT = "too_short"
+DROP_NO_MESSAGES = "no_messages"
+DROP_NO_TRAINABLE_TOKENS = "no_trainable_tokens"
+DROP_NOT_A_PREFERENCE_PAIR = "not_a_preference_pair"
+DROP_UNRENDERABLE_PAIR = "unrenderable_pair"
+
+_DROP_REASON_TEXT = {
+    DROP_TOO_LONG: "longer than max_seq_len",
+    DROP_TOO_SHORT: "shorter than 2 tokens",
+    DROP_NO_MESSAGES: "no messages",
+    DROP_NO_TRAINABLE_TOKENS: "no tokens to train on (for example, no assistant turn)",
+    DROP_NOT_A_PREFERENCE_PAIR: "not a recognized preference row (needs a chosen and a rejected side)",
+    DROP_UNRENDERABLE_PAIR: "a side has no messages or text, or is shorter than 2 tokens",
+}
+
+
+@dataclass(frozen=True)
+class DroppedRow:
+    """Returned by a render function for a row it leaves out of training.
+
+    Unlike ``None``, it carries the reason from the worker process to the
+    training loop, which counts the reasons with :func:`take_dropped_rows`.
+    """
+
+    reason: str
+    row_index: int | None = None
+    """The row's 0-based index in the dataset, when the dataset attaches one."""
+
+
+def take_dropped_rows(
+    batch: List[Any],
+    counts: Counter | None = None,
+    rows: dict[int, str] | None = None,
+) -> List[Any]:
+    """Return ``batch`` without its :class:`DroppedRow` markers.
+
+    Their reasons are added to ``counts``; ``rows`` maps each dropped row's
+    index to its reason.
+    """
+    kept: List[Any] = []
+    for item in batch:
+        if isinstance(item, DroppedRow):
+            if counts is not None:
+                counts[item.reason] += 1
+            if rows is not None and item.row_index is not None:
+                rows[item.row_index] = item.reason
+        else:
+            kept.append(item)
+    return kept
+
+
+ROW_USAGE_FILE = "row_usage.json"
+
+
+def write_row_usage(
+    log_path: str,
+    *,
+    dataset_path: str,
+    dataset: Any,
+    left_out: dict[int, str],
+    counts: Counter,
+    max_rows: int | None = None,
+    trained: List[int] | None = None,
+) -> str | None:
+    """Record what one pass over the training data did with each dataset row.
+
+    Writes ``row_usage.json`` under ``log_path`` so a run can be reproduced
+    from the same file: the rows held out of training (evaluation or
+    generation holdout), the rows left out with the reason for each, and the
+    rows the pass never reached. Every other row of the first ``rows_offered``
+    was trained on. Rows are numbered from 0 over the dataset's non-blank
+    lines.
+
+    ``dataset`` is the training view; ``max_rows`` is the cap the dataset was
+    opened with. ``trained`` lists the rows trained on when the pass can stop
+    early; without it every row of the view that was not left out counts as
+    trained. Returns the file path, or None when the rows cannot be identified
+    (the dataset has no row indices, or a dropped row came without one).
+    """
+    if not log_path or not hasattr(dataset, "row_indices") or sum(counts.values()) != len(left_out):
+        return None
+    view = dataset.row_indices()
+    offered = dataset.num_underlying_rows if max_rows is None else min(max_rows, dataset.num_underlying_rows)
+    in_view = set(view)
+    not_reached: List[int] = []
+    if trained is not None:
+        done = set(trained)
+        not_reached = [row for row in view if row not in done and row not in left_out]
+    usage = {
+        "dataset": dataset_path,
+        "row_numbering": "0-based, counting non-blank lines",
+        "rows_offered": offered,
+        "rows_trained": len(view) - len(left_out) - len(not_reached),
+        "held_out": [row for row in range(offered) if row not in in_view],
+        "left_out": [{"row": row, "reason": left_out[row]} for row in sorted(left_out)],
+        "not_reached": not_reached,
+    }
+    path = os.path.join(log_path, ROW_USAGE_FILE)
+    try:
+        os.makedirs(log_path, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(usage, f)
+    except OSError as exc:
+        logger.warning("Could not write %s: %s", path, exc)
+        return None
+    return path
+
+
+def describe_dropped_rows(counts: Counter, *, max_seq_len: int | None = None) -> str:
+    """One line listing each drop reason and its row count, most common first."""
+    parts = []
+    for reason, count in counts.most_common():
+        text = _DROP_REASON_TEXT.get(reason, reason)
+        if reason == DROP_TOO_LONG and max_seq_len is not None:
+            text = f"{text} of {max_seq_len} tokens"
+        parts.append(f"{reason}={count} ({text})")
+    return "; ".join(parts)
+
+
+def dropped_row_metrics(counts: Counter, *, total_rows: int, reasons: tuple[str, ...]) -> dict[str, int]:
+    """``data/*`` metrics for one pass over the dataset: rows seen, rows left out, and the count per reason.
+
+    Every reason in ``reasons`` is reported, zero included, so a run that left
+    nothing out says so.
+    """
+    metrics = {"data/rows_total": total_rows, "data/rows_left_out": sum(counts.values())}
+    for reason in dict.fromkeys((*reasons, *counts)):
+        metrics[f"data/rows_left_out_{reason}"] = counts.get(reason, 0)
+    return metrics
 
 
 def dataset_error_for_rendered_row(row: dict, exc: BaseException) -> DatasetError:

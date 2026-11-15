@@ -38,7 +38,7 @@ import random
 import signal
 import tempfile
 import time
-from collections import deque
+from collections import Counter, deque
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from itertools import islice
@@ -106,8 +106,17 @@ from training.utils.sft_generation_eval import (
     write_skipped_generation_eval,
 )
 from training.utils.streaming import (
+    DROP_NO_MESSAGES,
+    DROP_NO_TRAINABLE_TOKENS,
+    DROP_TOO_LONG,
+    DROP_TOO_SHORT,
+    DroppedRow,
     dataset_error_for_rendered_row,
+    describe_dropped_rows,
+    dropped_row_metrics,
     raise_rendered_dataset_errors,
+    take_dropped_rows,
+    write_row_usage,
 )
 from training.utils.termination import TerminatedBySignal
 from training.utils.timer import flush_timing, timer
@@ -506,10 +515,22 @@ def _resolved_renderer_name(
     )
 
 
+def _drop_reason(rendered_examples: list[Any], max_seq_len: int) -> str:
+    """Why none of a row's rendered examples can be trained on."""
+    if any(len(rendered.token_ids) > max_seq_len for rendered in rendered_examples):
+        return DROP_TOO_LONG
+    if any(len(rendered.token_ids) >= 2 for rendered in rendered_examples):
+        return DROP_NO_TRAINABLE_TOKENS
+    return DROP_TOO_SHORT if rendered_examples else DROP_NO_TRAINABLE_TOKENS
+
+
 def _render_one_worker(
     row: dict,
-) -> sdk.Datum | list[sdk.Datum] | DatasetError | None:
+) -> sdk.Datum | list[sdk.Datum] | DatasetError | DroppedRow:
     """Render a chat row to one or more Datums, dropping empty / long sequences.
+
+    A row with no usable example comes back as a :class:`DroppedRow` naming
+    the reason.
 
     Reads renderer / train_on_what / max_seq_len from the per-process
     ``_worker_state`` populated by ``_init_render_worker``. Top-level
@@ -520,7 +541,7 @@ def _render_one_worker(
     """
     messages = row.get("messages", [])
     if not messages:
-        return None
+        return DroppedRow(DROP_NO_MESSAGES, row.get(JSONL_ROW_INDEX_KEY))
     tools = row.get("tools")
     try:
         rendered_examples = render_messages_to_datums(
@@ -542,7 +563,10 @@ def _render_one_worker(
     _write_render_samples(row, valid_rendered_examples)
     datums = [rendered.datum for rendered in valid_rendered_examples]
     if not datums:
-        return None
+        return DroppedRow(
+            _drop_reason(rendered_examples, _worker_state["max_seq_len"]),
+            row.get(JSONL_ROW_INDEX_KEY),
+        )
     if len(datums) == 1:
         return datums[0]
     return datums
@@ -557,6 +581,7 @@ DEFAULT_MAX_EVAL_SEQS = 20
 GENERATION_EVAL_HOLDOUT_RATIO = 0.2
 CHECKPOINT_EVAL_MAX_EXAMPLES = 128
 CHECKPOINT_EVAL_METRIC_PREFIX = "checkpoint_eval"
+SFT_DROP_REASONS = (DROP_TOO_LONG, DROP_NO_TRAINABLE_TOKENS, DROP_NO_MESSAGES, DROP_TOO_SHORT)
 
 
 def compute_eval_carveout(
@@ -575,10 +600,10 @@ def _render_eagerly(
     ds: JsonlRenderDataset | GcsJsonlRenderDataset,
     n: int,
 ) -> List[sdk.Datum]:
-    """Render the first ``n`` rows of ``ds`` in-process, dropping Nones."""
+    """Render the first ``n`` rows of ``ds`` in-process, dropping left-out rows."""
     datums: List[sdk.Datum] = []
     for item in (ds[i] for i in range(n)):
-        if item is None:
+        if item is None or isinstance(item, DroppedRow):
             continue
         raise_rendered_dataset_errors([item])
         if isinstance(item, list):
@@ -623,11 +648,18 @@ def _make_jsonl_dataset(
 
 
 def _flatten_rendered_batch(
-    batch: list[sdk.Datum | list[sdk.Datum] | DatasetError],
+    batch: list[sdk.Datum | list[sdk.Datum] | DatasetError | DroppedRow],
+    dropped: Counter | None = None,
+    dropped_rows: dict[int, str] | None = None,
 ) -> list[sdk.Datum]:
+    """Flatten a loader batch to datums.
+
+    Left-out rows are counted by reason in ``dropped``; ``dropped_rows`` maps
+    each one's dataset row index to its reason.
+    """
     raise_rendered_dataset_errors(batch)
     datums: list[sdk.Datum] = []
-    for item in batch:
+    for item in take_dropped_rows(batch, dropped, dropped_rows):
         if isinstance(item, list):
             datums.extend(item)
         else:
@@ -1368,6 +1400,7 @@ def main(
         in_flight: deque = deque()
         pipe_started = time.time()
         pipe_total_tokens = 0
+        current_epoch = completed_epochs
         # Track previous fb/opt completion times in pipeline mode   .
         last_t_fb_done: float | None = None
         last_t_opt_done: float | None = None
@@ -1379,7 +1412,8 @@ def main(
             data_consumed: int,
         ) -> int:
             """Submit one fwd_bwd + optim_step pair (non-blocking). Returns updated step."""
-            tokens = sum(len(c.tokens) for d in batch for c in d.model_input.chunks if hasattr(c, "tokens"))
+            seq_lens = [sum(len(c.tokens) for c in d.model_input.chunks if hasattr(c, "tokens")) for d in batch]
+            tokens = sum(seq_lens)
             loss_weight = _batch_loss_weight(batch)
             step += 1
             adam = sdk.AdamParams(learning_rate=_current_lr(step), **adam_kwargs)
@@ -1388,6 +1422,7 @@ def main(
                 (
                     step,
                     tokens,
+                    (len(seq_lens), max(seq_lens, default=0)),
                     loss_weight,
                     data_consumed,
                     t_submit,
@@ -1406,6 +1441,7 @@ def main(
             (
                 s,
                 tokens,
+                (batch_examples, seq_len_max),
                 loss_weight,
                 data_consumed,
                 t_submit,
@@ -1460,6 +1496,10 @@ def main(
 
             step_metrics["train/total_tokens"] = tokens
             step_metrics["train/tokens_per_sec"] = tps
+            step_metrics["train/epoch"] = current_epoch + 1
+            step_metrics["train/batch_examples"] = batch_examples
+            step_metrics["train/seq_len_mean"] = tokens / max(1, batch_examples)
+            step_metrics["train/seq_len_max"] = seq_len_max
 
             if loss_weight > 0:
                 avg_loss = loss_sum / loss_weight
@@ -1505,6 +1545,9 @@ def main(
 
         try:
             for epoch in range(completed_epochs, cfg.epochs):
+                # Every in-flight step is collected before the epoch ends, so
+                # this is the epoch of the step being collected.
+                current_epoch = epoch
                 loader_generator.manual_seed(cfg.seed + epoch)
                 batch_iter = iter(loader)
                 epoch_start_batch = start_batch if epoch == completed_epochs else 0
@@ -1512,15 +1555,17 @@ def main(
                     batch_iter = islice(batch_iter, epoch_start_batch, None)
 
                 epoch_valid_examples = 0
+                epoch_dropped: Counter = Counter()
+                epoch_dropped_rows: dict[int, str] = {}
                 for raw_batch_idx, batch in enumerate(batch_iter, start=epoch_start_batch):
                     raw_batch_size = min(
                         effective_batch_size,
                         training_count - raw_batch_idx * effective_batch_size,
                     )
                     cursor.record(raw_batch_size)
-                    batch = _flatten_rendered_batch(batch)
+                    batch = _flatten_rendered_batch(batch, epoch_dropped, epoch_dropped_rows)
                     if not batch:
-                        continue  # entire batch was filtered (None render); skip
+                        continue  # every row in the batch was left out; skip
                     epoch_valid_examples += len(batch)
                     step = _pipe_submit(batch, step, cursor.value)
                     checkpoint_step = (dcp_save_interval > 0 and step % dcp_save_interval == 0) or (
@@ -1571,6 +1616,23 @@ def main(
                             filtered_count,
                             training_count,
                         )
+                    if epoch_dropped:
+                        logger.info(
+                            "Rows left out by reason: %s",
+                            describe_dropped_rows(epoch_dropped, max_seq_len=max_seq_len),
+                        )
+                    wandb_log(
+                        dropped_row_metrics(epoch_dropped, total_rows=training_count, reasons=SFT_DROP_REASONS),
+                        step,
+                    )
+                    write_row_usage(
+                        cfg.log_path,
+                        dataset_path=cfg.dataset,
+                        dataset=training_dataset,
+                        left_out=epoch_dropped_rows,
+                        counts=epoch_dropped,
+                        max_rows=cfg.max_examples,
+                    )
                     if epoch_valid_examples == 0:
                         raise DatasetError(NO_VALID_TRAINING_EXAMPLES_MESSAGE)
 

@@ -35,6 +35,7 @@ import training.recipes.dpo_loop as module
 from fireworks.training import sdk
 from training.utils import AppendOnlyPickleLog, JsonlRenderDataset, RawRowCursor
 from training.utils import supervised as supervised_utils
+from training.utils.streaming import DroppedRow
 from training.utils.data import iter_preference_examples, load_preference_dataset
 
 
@@ -70,7 +71,8 @@ def test_make_pair_dataset_stream_uses_gcs_dataset(monkeypatch, tmp_path):
     calls: list[tuple[str, object]] = []
 
     class _FakeGcsDataset:
-        def __init__(self, path, render_fn):
+        def __init__(self, path, render_fn, row_index_key=None):
+            assert row_index_key == module.JSONL_ROW_INDEX_KEY
             calls.append((path, render_fn))
 
     monkeypatch.setattr(module, "GcsJsonlRenderDataset", _FakeGcsDataset)
@@ -306,16 +308,17 @@ class TestRenderPairWorker:
         assert captured["kwargs"]["max_seq_len"] == 4096
         assert captured["kwargs"]["renderer_name_is_resolved"] is True
 
-    def test_returns_none_when_schema_unrecognized(self, monkeypatch):
+    def test_drops_with_reason_when_schema_unrecognized(self, monkeypatch):
         _setup_pair_worker(monkeypatch)
-        assert module._render_pair_worker({"unknown": "schema"}) is None
+        assert module._render_pair_worker({"unknown": "schema"}) == DroppedRow("not_a_preference_pair")
 
-    def test_returns_none_when_render_fails(self, monkeypatch):
+    def test_drops_with_reason_when_render_fails(self, monkeypatch):
         _setup_pair_worker(monkeypatch)
         monkeypatch.setattr(module, "render_preference_pair", lambda *a, **k: None)
-        assert module._render_pair_worker({"chosen": {"messages": []}, "rejected": {"messages": []}}) is None
+        row = {"chosen": {"messages": []}, "rejected": {"messages": []}}
+        assert module._render_pair_worker(row) == DroppedRow("unrenderable_pair")
 
-    def test_returns_none_when_too_long(self, monkeypatch):
+    def test_drops_with_reason_when_too_long(self, monkeypatch):
         _setup_pair_worker(monkeypatch)
         long_pair = SimpleNamespace(
             chosen_tokens=[1] * 9,
@@ -325,7 +328,7 @@ class TestRenderPairWorker:
             rejected_datum={"kind": "rejected"},
         )
         monkeypatch.setattr(module, "render_preference_pair", lambda *a, **k: long_pair)
-        assert module._render_pair_worker({"chosen": {}, "rejected": {}}) is None
+        assert module._render_pair_worker({"chosen": {}, "rejected": {}}) == DroppedRow("too_long")
 
     def test_returns_dict_with_lengths_only(self, monkeypatch):
         """Stored dict carries lengths, not token lists -- saves O(N*L) RAM."""
@@ -345,6 +348,7 @@ class TestRenderPairWorker:
             "response_start": 2,
             "chosen_datum": {"kind": "chosen"},
             "rejected_datum": {"kind": "rejected"},
+            "row_index": None,
         }
         assert "chosen_tokens" not in result
         assert "rejected_tokens" not in result
@@ -557,6 +561,12 @@ def _test_render_pair(row: dict) -> dict:
     return _make_pair(row["i"])
 
 
+def _test_render_pair_dropping_odd_rows(row: dict) -> dict | DroppedRow:
+    """Render fn that leaves out every odd row as too long."""
+    row_index = row[module.JSONL_ROW_INDEX_KEY]
+    return DroppedRow("too_long", row_index) if row["i"] % 2 else {**_make_pair(row["i"]), "row_index": row_index}
+
+
 def _make_pair_dataset(tmp_path, n: int) -> JsonlRenderDataset:
     path = tmp_path / "pairs.jsonl"
     with open(path, "w") as f:
@@ -611,6 +621,122 @@ def _stub_train_step_deps(monkeypatch, events: dict):
 
 
 class TestTrainLoop:
+    def test_logs_grad_norm_reward_split_lengths_and_left_out_rows(self, tmp_path, monkeypatch, caplog):
+        events: dict = {}
+        _stub_train_step_deps(monkeypatch, events)
+        monkeypatch.setattr(
+            module,
+            "_forward_backward_pairs",
+            lambda batch, policy, beta: SimpleNamespace(
+                metrics={
+                    "dpo_loss": 1.5,
+                    "margin": 0.25,
+                    "accuracy": 0.75,
+                    "chosen_reward": 0.5,
+                    "rejected_reward": -0.25,
+                }
+            ),
+        )
+        logged: list[tuple[int, dict]] = []
+        monkeypatch.setattr(module, "wandb_log", lambda metrics, step: logged.append((step, dict(metrics))))
+
+        class Policy(_FakePolicy):
+            def optim_step(self, params, **kwargs):
+                self.kwargs = kwargs
+                return SimpleNamespace(
+                    metrics={
+                        "grad_norm:last": 2.0,
+                        "grad_norm_post_clip": 2.0,
+                        "grad_norm_post_clip:last": 2.0,
+                        "optimizer/lr": 1e-4,
+                    }
+                )
+
+        path = tmp_path / "pairs.jsonl"
+        path.write_text("".join(json.dumps({"i": i}) + "\n" for i in range(4)))
+        ds = JsonlRenderDataset(
+            str(path), _test_render_pair_dropping_odd_rows, row_index_key=module.JSONL_ROW_INDEX_KEY
+        )
+        policy = Policy()
+        cfg = module.Config(log_path=str(tmp_path), epochs=1, batch_size=2, render_workers=0)
+        with caplog.at_level(logging.INFO, logger=module.logger.name):
+            step = asyncio.run(
+                module._train_loop(
+                    ds,
+                    None,
+                    _FakeReference(),
+                    policy,
+                    adam_params=_adam_params(),
+                    cfg=cfg,
+                    step_offset=0,
+                    cursor=_new_cursor(max_rows=4),
+                )
+            )
+
+        assert step == 1
+        assert policy.kwargs == {"emit_grad_norm_metrics": "basic"}
+        train = next(metrics for _, metrics in logged if "train/dpo_loss" in metrics)
+        assert train["train/grad_norm"] == 2.0
+        # Raw gradient-norm keys are not logged a second time, and a post-clip
+        # norm equal to the norm (no clipping) is left out.
+        assert [key for key in train if "grad_norm" in key] == ["train/grad_norm"]
+        assert train["train/optimizer/lr"] == 1e-4
+        assert train["train/chosen_reward"] == 0.5
+        assert train["train/rejected_reward"] == -0.25
+        assert train["train/batch_pairs"] == 2
+        pairs = [_make_pair(0), _make_pair(2)]
+        lengths = [n for p in pairs for n in (p["chosen_tokens_len"], p["rejected_tokens_len"])]
+        assert train["train/seq_len_max"] == max(lengths)
+        assert train["train/seq_len_mean"] == pytest.approx(sum(lengths) / len(lengths))
+        data = next(metrics for _, metrics in logged if "data/rows_total" in metrics)
+        assert data == {
+            "data/rows_total": 4,
+            "data/rows_left_out": 2,
+            "data/rows_left_out_too_long": 2,
+            "data/rows_left_out_not_a_preference_pair": 0,
+            "data/rows_left_out_unrenderable_pair": 0,
+        }
+        assert "Seq-length / format filter: 2/4 raw rows filtered" in caplog.text
+        assert "Rows left out by reason: too_long=2 (longer than max_seq_len" in caplog.text
+        usage = json.loads((tmp_path / "row_usage.json").read_text())
+        assert usage["rows_offered"] == 4
+        assert usage["rows_trained"] == 2
+        assert usage["left_out"] == [{"row": 1, "reason": "too_long"}, {"row": 3, "reason": "too_long"}]
+        assert usage["held_out"] == usage["not_reached"] == []
+
+    def test_row_usage_lists_rows_a_pair_cap_never_reached(self, tmp_path, monkeypatch):
+        _stub_train_step_deps(monkeypatch, {})
+        path = tmp_path / "pairs.jsonl"
+        path.write_text("".join(json.dumps({"i": i}) + "\n" for i in range(8)))
+        ds = JsonlRenderDataset(
+            str(path), _test_render_pair_dropping_odd_rows, row_index_key=module.JSONL_ROW_INDEX_KEY
+        )
+        cfg = module.Config(log_path=str(tmp_path), epochs=1, batch_size=2, render_workers=0, max_pairs=2)
+        asyncio.run(
+            module._train_loop(
+                ds,
+                None,
+                _FakeReference(),
+                _FakePolicy(),
+                adam_params=_adam_params(),
+                cfg=cfg,
+                step_offset=0,
+                cursor=_new_cursor(max_rows=8),
+            )
+        )
+
+        usage = json.loads((tmp_path / "row_usage.json").read_text())
+        trained = set(range(8)) - {entry["row"] for entry in usage["left_out"]} - set(usage["not_reached"])
+        assert usage["rows_trained"] == len(trained) == 2
+        assert trained <= {0, 2, 4, 6}
+        assert {entry["row"] for entry in usage["left_out"]} <= {1, 3, 5, 7}
+        assert usage["not_reached"]
+
+    def test_rejects_unknown_grad_norm_metrics(self, tmp_path):
+        cfg = module.Config(log_path=str(tmp_path), grad_norm_metrics="everything")
+        with pytest.raises(ValueError, match="grad_norm_metrics"):
+            module.main(cfg)
+
     def test_auto_sizes_render_workers(self, tmp_path, monkeypatch):
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
@@ -1705,7 +1831,7 @@ def test_serverless_main_freezes_reference_and_finalizes_policy(monkeypatch, tmp
         module, "setup_serverless_training", lambda *args, **kwargs: (service, policy, ckpt, "ts-policy", 512)
     )
     monkeypatch.setattr(module, "build_service_client", Mock(side_effect=AssertionError("dedicated provisioning")))
-    monkeypatch.setattr(module, "JsonlRenderDataset", lambda *args: ["pair"])
+    monkeypatch.setattr(module, "JsonlRenderDataset", lambda *args, **kwargs: ["pair"])
     ckpt.resume.return_value = None
     runner = Mock()
     runner.persisted_reference_checkpoint.return_value = None
@@ -2244,7 +2370,7 @@ def test_main_caches_eval_reference_logprobs_before_training(monkeypatch, tmp_pa
     monkeypatch.setattr(
         module, "setup_serverless_training", lambda *args, **kwargs: (service, policy, ckpt, "ts-policy", 512)
     )
-    monkeypatch.setattr(module, "JsonlRenderDataset", lambda *args: ["pair"])
+    monkeypatch.setattr(module, "JsonlRenderDataset", lambda *args, **kwargs: ["pair"])
     held_out = _make_pair(9)
     monkeypatch.setattr(module, "_prepare_eval_pairs", lambda cfg, ds: (ds, [held_out]))
     order: list = []
