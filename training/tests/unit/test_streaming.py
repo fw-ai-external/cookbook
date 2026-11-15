@@ -981,3 +981,39 @@ def test_dataset_multi_shard_pickles_for_spawn_workers(tmp_path):
     ds = JsonlRenderDataset(_write_shard_dataset(tmp_path), _identity_render)
     clone = pickle.loads(pickle.dumps(ds))
     assert [clone[i]["id"] for i in range(len(clone))] == [0, 1, 2, 3, 4]
+
+
+def test_take_dropped_rows_counts_reasons_and_keeps_the_rest():
+    from collections import Counter
+
+    counts: Counter = Counter()
+    batch = ["a", streaming.DroppedRow("too_long"), "b", streaming.DroppedRow("too_long")]
+
+    assert streaming.take_dropped_rows(batch, counts) == ["a", "b"]
+    assert streaming.take_dropped_rows([streaming.DroppedRow("no_messages")], counts) == []
+    assert counts == {"too_long": 2, "no_messages": 1}
+    assert streaming.take_dropped_rows(batch) == ["a", "b"]
+
+
+def test_dropped_rows_cross_the_dataloader_and_are_described(tmp_path):
+    from collections import Counter
+
+    ds = JsonlRenderDataset(_write_shard_dataset(tmp_path), _drop_even_rows)
+    loader = make_render_dataloader(ds, batch_size=5, num_workers=0, shuffle=False)
+    counts: Counter = Counter()
+    kept = [row for batch in loader for row in streaming.take_dropped_rows(batch, counts)]
+
+    assert [row["i"] for row in kept] == [1, 3]
+    assert streaming.describe_dropped_rows(counts, max_seq_len=512) == (
+        "too_long=3 (longer than max_seq_len of 512 tokens)"
+    )
+    assert streaming.dropped_row_metrics(counts, total_rows=5, reasons=("too_long", "too_short")) == {
+        "data/rows_total": 5,
+        "data/rows_left_out": 3,
+        "data/rows_left_out_too_long": 3,
+        "data/rows_left_out_too_short": 0,
+    }
+
+
+def _drop_even_rows(row: dict):
+    return streaming.DroppedRow("too_long") if row["i"] % 2 == 0 else row

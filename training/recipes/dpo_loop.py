@@ -42,9 +42,10 @@ import random
 import signal
 import tempfile
 import time
+from collections import Counter
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Literal, Sequence
 
 import torch
 from fireworks.training import sdk
@@ -103,15 +104,25 @@ from training.utils.rl.reference import SamplerReference
 from training.utils.runner import UserConfigError
 from training.utils.runner_state import write_completed, write_running_step
 from training.utils.serverless import setup_serverless_training
+from training.utils.metrics import optimizer_metrics
 from training.utils.streaming import (
+    DROP_NOT_A_PREFERENCE_PAIR,
+    DROP_TOO_LONG,
+    DROP_UNRENDERABLE_PAIR,
+    DroppedRow,
     dataset_error_for_rendered_row,
+    describe_dropped_rows,
+    dropped_row_metrics,
     raise_rendered_dataset_errors,
+    take_dropped_rows,
 )
 from training.utils.termination import TerminatedBySignal
 from training.utils.timer import flush_timing, timer
 from training.utils.tokenizers import resolve_tokenizer_base_model
 
 logger = logging.getLogger(__name__)
+
+DPO_DROP_REASONS = (DROP_TOO_LONG, DROP_NOT_A_PREFERENCE_PAIR, DROP_UNRENDERABLE_PAIR)
 
 # Fixed seed for the length-grouped batch order. DPO builds the ref cache in
 # producer order in epoch 0 and replays it in epochs 1+, and epoch-0 resume
@@ -209,6 +220,9 @@ class Config:
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
+
+    grad_norm_metrics: Literal["off", "basic", "detailed"] = "basic"
+    """Trainer-side grad-norm telemetry emitted by ``optim_step``."""
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -316,16 +330,16 @@ def _init_pair_worker(
     )
 
 
-def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | DatasetError | None:
-    """Render one JSONL row to a Datum-pair dict, or ``None`` to drop.
+def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | DatasetError | DroppedRow:
+    """Render one JSONL row to a Datum-pair dict, or a :class:`DroppedRow` to drop.
 
     Combines schema normalisation (chosen / rejected / samples / OpenAI),
-    rendering, and over-length filtering. Returning ``None`` covers all
-    drop reasons; the DataLoader's collate filters Nones out of each batch.
+    rendering, and over-length filtering. A dropped row names its reason so
+    the training loop can report why rows were left out.
     """
     pair = normalize_preference_row(row)
     if pair is None:
-        return None
+        return DroppedRow(DROP_NOT_A_PREFERENCE_PAIR)
     try:
         rendered = render_preference_pair(
             pair["chosen"],
@@ -336,10 +350,10 @@ def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | DatasetError | 
     except DatasetError as exc:
         return dataset_error_for_rendered_row(row, exc)
     if rendered is None:
-        return None
+        return DroppedRow(DROP_UNRENDERABLE_PAIR)
     max_seq_len = _pair_worker_state["max_seq_len"]
     if len(rendered.chosen_tokens) > max_seq_len or len(rendered.rejected_tokens) > max_seq_len:
-        return None
+        return DroppedRow(DROP_TOO_LONG)
     return {
         "chosen_tokens_len": len(rendered.chosen_tokens),
         "rejected_tokens_len": len(rendered.rejected_tokens),
@@ -469,7 +483,7 @@ def _render_pairs_eagerly(
             logger.warning("Eval set capped at the first %d valid pairs; ignoring rows from %d on", max_pairs, i)
             break
         item = ds[i]
-        if item is None:
+        if item is None or isinstance(item, DroppedRow):
             continue
         raise_rendered_dataset_errors([item])
         pairs.append(item)
@@ -615,6 +629,7 @@ async def _train_loop(
     raw_rows_consumed = 0
     rendered_pairs = 0
     pairs_per_epoch = 0
+    dropped_rows: Counter = Counter()
 
     if runner is None:
         runner = RunnerIO()
@@ -710,14 +725,19 @@ async def _train_loop(
             total_steps=total_steps,
         )
         step_adam_params = sdk.AdamParams(learning_rate=step_lr, **adam_kwargs)
-        optim_result = policy.optim_step(step_adam_params)
+        optim_result = policy.optim_step(step_adam_params, emit_grad_norm_metrics=cfg.grad_norm_metrics)
         step += 1
         last_data_consumed = cursor.value if data_consumed is None else data_consumed
 
         step_metrics: dict[str, Any] = {}
+        # Gradient norms under their plain names, as SFT logs them; anything
+        # else the trainer returned keeps its raw name.
+        named_metrics = optimizer_metrics(optim_result)
         if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
             for k, v in optim_result.metrics.items():
-                step_metrics[f"train/{k}"] = v
+                if not k.startswith("grad_norm"):
+                    step_metrics[f"train/{k}"] = v
+        step_metrics.update(named_metrics)
 
         dcp_due = dcp_save_interval > 0 and step % dcp_save_interval == 0
         sampler_due = sampler_save_interval > 0 and step % sampler_save_interval == 0
@@ -788,8 +808,19 @@ async def _train_loop(
                 "train/step_tokens": step_tokens,
                 "train/ref_tokens": ref_tokens,
                 "train/total_tokens": total_tokens,
+                "train/batch_pairs": len(step_pairs),
+                "train/seq_len_mean": step_tokens / max(1, 2 * len(step_pairs)),
+                "train/seq_len_max": max(
+                    (max(p["chosen_tokens_len"], p["rejected_tokens_len"]) for p in step_pairs), default=0
+                ),
             }
         )
+        # beta * margin = chosen_reward - rejected_reward: the two halves show
+        # whether the margin grows because the chosen response became more
+        # likely or only because the rejected one became less likely.
+        for name in ("chosen_reward", "rejected_reward"):
+            if name in fwd_metrics:
+                step_metrics[f"train/{name}"] = fwd_metrics[name]
         step_metrics["train/lr"] = current_lr
         wandb_log(step_metrics, step)
         write_running_step(
@@ -858,6 +889,7 @@ async def _train_loop(
             if batch is sentinel:
                 break
             raise_rendered_dataset_errors(batch)
+            batch = take_dropped_rows(batch, dropped_rows)
             batches_consumed += 1
             delta = min(batch_size, total_raw_rows - raw_rows_consumed)
             raw_rows_consumed += delta
@@ -871,7 +903,7 @@ async def _train_loop(
                     label="rendering/ref cache",
                 )
             rendered_pairs += len(batch)
-            if not batch:  # all rows in this DataLoader batch rendered to None
+            if not batch:  # every row in this DataLoader batch was left out
                 continue
             if cfg.max_pairs is not None:
                 remaining = cfg.max_pairs - pairs_per_epoch - len(pending_pairs)
@@ -930,6 +962,15 @@ async def _train_loop(
             filtered_count,
             raw_rows_consumed,
         )
+    if dropped_rows:
+        logger.info(
+            "Rows left out by reason: %s",
+            describe_dropped_rows(dropped_rows, max_seq_len=_pair_worker_state.get("max_seq_len")),
+        )
+    wandb_log(
+        dropped_row_metrics(dropped_rows, total_rows=raw_rows_consumed, reasons=DPO_DROP_REASONS),
+        step,
+    )
     if rendered_pairs == 0 or pairs_per_epoch == 0:
         raise DatasetError(NO_VALID_PREFERENCE_PAIRS_MESSAGE)
 
@@ -1006,6 +1047,8 @@ def main(
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
+    if cfg.grad_norm_metrics not in {"off", "basic", "detailed"}:
+        raise ValueError("grad_norm_metrics must be 'off', 'basic', or 'detailed'; got " f"{cfg.grad_norm_metrics!r}.")
     validate_config(
         cfg.base_model,
         cfg.dataset,

@@ -24,7 +24,7 @@ be released after epoch 0).
 from __future__ import annotations
 
 import bisect
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from dataclasses import dataclass
 import functools
 import json
@@ -777,6 +777,69 @@ class LengthGroupedBatchSampler(torch_data.Sampler):
 
 def _drop_none_collate(batch: List[Any]) -> List[Any]:
     return [d for d in batch if d is not None]
+
+
+DROP_TOO_LONG = "too_long"
+DROP_TOO_SHORT = "too_short"
+DROP_NO_MESSAGES = "no_messages"
+DROP_NO_TRAINABLE_TOKENS = "no_trainable_tokens"
+DROP_NOT_A_PREFERENCE_PAIR = "not_a_preference_pair"
+DROP_UNRENDERABLE_PAIR = "unrenderable_pair"
+
+_DROP_REASON_TEXT = {
+    DROP_TOO_LONG: "longer than max_seq_len",
+    DROP_TOO_SHORT: "shorter than 2 tokens",
+    DROP_NO_MESSAGES: "no messages",
+    DROP_NO_TRAINABLE_TOKENS: "no tokens to train on (for example, no assistant turn)",
+    DROP_NOT_A_PREFERENCE_PAIR: "not a recognized preference row (needs a chosen and a rejected side)",
+    DROP_UNRENDERABLE_PAIR: "a side has no messages or text, or is shorter than 2 tokens",
+}
+
+
+@dataclass(frozen=True)
+class DroppedRow:
+    """Returned by a render function for a row it leaves out of training.
+
+    Unlike ``None``, it carries the reason from the worker process to the
+    training loop, which counts the reasons with :func:`take_dropped_rows`.
+    """
+
+    reason: str
+
+
+def take_dropped_rows(batch: List[Any], counts: Counter | None = None) -> List[Any]:
+    """Return ``batch`` without its :class:`DroppedRow` markers, adding their reasons to ``counts``."""
+    kept: List[Any] = []
+    for item in batch:
+        if isinstance(item, DroppedRow):
+            if counts is not None:
+                counts[item.reason] += 1
+        else:
+            kept.append(item)
+    return kept
+
+
+def describe_dropped_rows(counts: Counter, *, max_seq_len: int | None = None) -> str:
+    """One line listing each drop reason and its row count, most common first."""
+    parts = []
+    for reason, count in counts.most_common():
+        text = _DROP_REASON_TEXT.get(reason, reason)
+        if reason == DROP_TOO_LONG and max_seq_len is not None:
+            text = f"{text} of {max_seq_len} tokens"
+        parts.append(f"{reason}={count} ({text})")
+    return "; ".join(parts)
+
+
+def dropped_row_metrics(counts: Counter, *, total_rows: int, reasons: tuple[str, ...]) -> dict[str, int]:
+    """``data/*`` metrics for one pass over the dataset: rows seen, rows left out, and the count per reason.
+
+    Every reason in ``reasons`` is reported, zero included, so a run that left
+    nothing out says so.
+    """
+    metrics = {"data/rows_total": total_rows, "data/rows_left_out": sum(counts.values())}
+    for reason in dict.fromkeys((*reasons, *counts)):
+        metrics[f"data/rows_left_out_{reason}"] = counts.get(reason, 0)
+    return metrics
 
 
 def dataset_error_for_rendered_row(row: dict, exc: BaseException) -> DatasetError:

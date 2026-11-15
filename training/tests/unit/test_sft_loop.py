@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections import Counter
 import random
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +16,7 @@ from fireworks.training import sdk
 from training.utils import supervised as supervised_utils
 from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.runner import DatasetError, RunnerConfig, UserConfigError
-from training.utils.streaming import JSONL_ROW_INDEX_KEY
+from training.utils.streaming import JSONL_ROW_INDEX_KEY, DroppedRow
 
 
 class _StopAfterProvisioning(RuntimeError):
@@ -1190,6 +1191,70 @@ def test_render_one_worker_uses_per_example_mean_reduction(monkeypatch):
 
     assert module._render_one_worker({"messages": [{"role": "assistant", "content": "answer"}]}) is datum
     assert captured["reduction"] == "mean"
+
+
+@pytest.mark.parametrize(
+    ("examples", "reason"),
+    [
+        ([([1] * 33, [1.0] * 33)], "too_long"),
+        ([([1, 2, 3], [0.0, 0.0, 0.0])], "no_trainable_tokens"),
+        ([([1], [1.0])], "too_short"),
+        ([], "no_trainable_tokens"),
+        # One example fits but has nothing to train on; the other is too long.
+        ([([1, 2, 3], [0.0, 0.0, 0.0]), ([1] * 33, [1.0] * 33)], "too_long"),
+    ],
+)
+def test_render_one_worker_names_why_a_row_is_left_out(monkeypatch, examples, reason):
+    monkeypatch.setattr(
+        module,
+        "render_messages_to_datums",
+        lambda messages, **kwargs: [
+            SimpleNamespace(token_ids=ids, token_weights=weights, datum=_test_datum("x")) for ids, weights in examples
+        ],
+    )
+    monkeypatch.setattr(module, "_write_render_samples", lambda *args: None)
+    module._worker_state.clear()
+    module._worker_state.update(renderer=object(), train_on_what="all_assistant_messages", max_seq_len=32)
+
+    row = {"messages": [{"role": "assistant", "content": "answer"}]}
+    assert module._render_one_worker(row) == DroppedRow(reason)
+    assert module._render_one_worker({"messages": []}) == DroppedRow("no_messages")
+
+
+def test_flatten_rendered_batch_counts_left_out_rows():
+    first, second, third = _test_datum("a"), _test_datum("b"), _test_datum("c")
+    dropped: Counter = Counter()
+
+    batch = [first, DroppedRow("too_long"), [second, third], DroppedRow("too_long"), DroppedRow("no_messages")]
+    assert module._flatten_rendered_batch(batch, dropped) == [first, second, third]
+    assert dropped == {"too_long": 2, "no_messages": 1}
+    assert module._flatten_rendered_batch([DroppedRow("too_long"), first]) == [first]
+
+
+def test_main_logs_epoch_sequence_lengths_and_left_out_rows(tmp_path, monkeypatch):
+    logged: list[tuple[int, dict]] = []
+    monkeypatch.setattr(module, "wandb_log", lambda metrics, step: logged.append((step, dict(metrics))))
+
+    _run_main_with_fake_trainer(tmp_path, monkeypatch, resume_info=None)
+
+    train = [metrics for _, metrics in logged if "train/loss" in metrics]
+    assert len(train) == 2
+    for metrics in train:
+        assert metrics["train/epoch"] == 1
+        assert metrics["train/batch_examples"] == 2
+        assert metrics["train/seq_len_mean"] == 3
+        assert metrics["train/seq_len_max"] == 3
+    data = [metrics for _, metrics in logged if "data/rows_total" in metrics]
+    assert data == [
+        {
+            "data/rows_total": 4,
+            "data/rows_left_out": 0,
+            "data/rows_left_out_too_long": 0,
+            "data/rows_left_out_no_trainable_tokens": 0,
+            "data/rows_left_out_no_messages": 0,
+            "data/rows_left_out_too_short": 0,
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
