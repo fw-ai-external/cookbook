@@ -1017,3 +1017,47 @@ def test_dropped_rows_cross_the_dataloader_and_are_described(tmp_path):
 
 def _drop_even_rows(row: dict):
     return streaming.DroppedRow("too_long") if row["i"] % 2 == 0 else row
+
+
+def _drop_even_rows_with_index(row: dict):
+    index = row[JSONL_ROW_INDEX_KEY]
+    return streaming.DroppedRow("too_long", index) if index % 2 == 0 else row
+
+
+def test_write_row_usage_accounts_for_every_offered_row(tmp_path):
+    from collections import Counter
+
+    ds = JsonlRenderDataset(
+        _write_shard_dataset(tmp_path / "data"), _drop_even_rows_with_index, max_examples=4, row_index_key=JSONL_ROW_INDEX_KEY
+    )
+    assert ds.row_indices() == [0, 1, 2, 3]
+    view = ds.with_indices([0, 1, 2])  # row 3 is held out for evaluation
+    counts: Counter = Counter()
+    left_out: dict[int, str] = {}
+    for batch in make_render_dataloader(view, batch_size=2, num_workers=0, shuffle=False):
+        streaming.take_dropped_rows(batch, counts, left_out)
+
+    path = streaming.write_row_usage(
+        str(tmp_path / "logs"), dataset_path="data", dataset=view, left_out=left_out, counts=counts, max_rows=4
+    )
+    assert json.loads(open(path).read()) == {
+        "dataset": "data",
+        "row_numbering": "0-based, counting non-blank lines",
+        "rows_offered": 4,
+        "rows_trained": 1,
+        "held_out": [3],
+        "left_out": [{"row": 0, "reason": "too_long"}, {"row": 2, "reason": "too_long"}],
+        "not_reached": [],
+    }
+
+    # A pass that stopped early lists the rows it never reached.
+    path = streaming.write_row_usage(
+        str(tmp_path / "logs"), dataset_path="data", dataset=view, left_out={0: "too_long"}, counts=Counter(too_long=1), trained=[]
+    )
+    assert json.loads(open(path).read())["not_reached"] == [1, 2]
+    assert json.loads(open(path).read())["held_out"] == [3]
+
+    # Without an index for every dropped row, or without a row-indexed dataset, nothing is written.
+    assert streaming.write_row_usage(str(tmp_path), dataset_path="d", dataset=view, left_out={}, counts=counts) is None
+    assert streaming.write_row_usage(str(tmp_path), dataset_path="d", dataset=["x"], left_out={}, counts=Counter()) is None
+    assert streaming.write_row_usage("", dataset_path="d", dataset=view, left_out={}, counts=Counter()) is None

@@ -106,6 +106,7 @@ from training.utils.runner_state import write_completed, write_running_step
 from training.utils.serverless import setup_serverless_training
 from training.utils.metrics import optimizer_metrics
 from training.utils.streaming import (
+    JSONL_ROW_INDEX_KEY,
     DROP_NOT_A_PREFERENCE_PAIR,
     DROP_TOO_LONG,
     DROP_UNRENDERABLE_PAIR,
@@ -115,6 +116,7 @@ from training.utils.streaming import (
     dropped_row_metrics,
     raise_rendered_dataset_errors,
     take_dropped_rows,
+    write_row_usage,
 )
 from training.utils.termination import TerminatedBySignal
 from training.utils.timer import flush_timing, timer
@@ -339,7 +341,7 @@ def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | DatasetError | 
     """
     pair = normalize_preference_row(row)
     if pair is None:
-        return DroppedRow(DROP_NOT_A_PREFERENCE_PAIR)
+        return DroppedRow(DROP_NOT_A_PREFERENCE_PAIR, row.get(JSONL_ROW_INDEX_KEY))
     try:
         rendered = render_preference_pair(
             pair["chosen"],
@@ -350,16 +352,17 @@ def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | DatasetError | 
     except DatasetError as exc:
         return dataset_error_for_rendered_row(row, exc)
     if rendered is None:
-        return DroppedRow(DROP_UNRENDERABLE_PAIR)
+        return DroppedRow(DROP_UNRENDERABLE_PAIR, row.get(JSONL_ROW_INDEX_KEY))
     max_seq_len = _pair_worker_state["max_seq_len"]
     if len(rendered.chosen_tokens) > max_seq_len or len(rendered.rejected_tokens) > max_seq_len:
-        return DroppedRow(DROP_TOO_LONG)
+        return DroppedRow(DROP_TOO_LONG, row.get(JSONL_ROW_INDEX_KEY))
     return {
         "chosen_tokens_len": len(rendered.chosen_tokens),
         "rejected_tokens_len": len(rendered.rejected_tokens),
         "response_start": rendered.response_start,
         "chosen_datum": rendered.chosen_datum,
         "rejected_datum": rendered.rejected_datum,
+        "row_index": row.get(JSONL_ROW_INDEX_KEY),
     }
 
 
@@ -464,12 +467,12 @@ def _make_pair_dataset(
     path = cfg.dataset if path is None else path
     mode = _normalize_dataset_loading_mode(cfg.dataset_loading_mode)
     if mode == DATASET_LOADING_MODE_STAGE:
-        return JsonlRenderDataset(path, _render_pair_worker)
+        return JsonlRenderDataset(path, _render_pair_worker, row_index_key=JSONL_ROW_INDEX_KEY)
     if not path.startswith("gs://"):
         raise DatasetError("dataset_loading_mode='stream' requires a gs:// dataset path; " f"got {path!r}.")
     if cfg.group_by_length:
         raise DatasetError("dataset_loading_mode='stream' does not support group_by_length yet.")
-    return GcsJsonlRenderDataset(path, _render_pair_worker)
+    return GcsJsonlRenderDataset(path, _render_pair_worker, row_index_key=JSONL_ROW_INDEX_KEY)
 
 
 def _render_pairs_eagerly(
@@ -630,6 +633,8 @@ async def _train_loop(
     rendered_pairs = 0
     pairs_per_epoch = 0
     dropped_rows: Counter = Counter()
+    dropped_row_reasons: dict[int, str] = {}
+    trained_rows: list[int | None] = []
 
     if runner is None:
         runner = RunnerIO()
@@ -889,7 +894,7 @@ async def _train_loop(
             if batch is sentinel:
                 break
             raise_rendered_dataset_errors(batch)
-            batch = take_dropped_rows(batch, dropped_rows)
+            batch = take_dropped_rows(batch, dropped_rows, dropped_row_reasons)
             batches_consumed += 1
             delta = min(batch_size, total_raw_rows - raw_rows_consumed)
             raw_rows_consumed += delta
@@ -913,6 +918,7 @@ async def _train_loop(
                 if not batch:
                     break
             pending_pairs.extend(batch)
+            trained_rows.extend(pair.get("row_index") for pair in batch)
             while len(pending_pairs) >= batch_size:
                 await _emit_enriched(
                     pending_pairs[:batch_size],
@@ -971,6 +977,17 @@ async def _train_loop(
         dropped_row_metrics(dropped_rows, total_rows=raw_rows_consumed, reasons=DPO_DROP_REASONS),
         step,
     )
+    # A resumed run skips rows it trained on before, so only a fresh pass
+    # knows what happened to every row.
+    if step_offset == 0 and resume_consumed == 0 and None not in trained_rows:
+        write_row_usage(
+            cfg.log_path,
+            dataset_path=cfg.dataset,
+            dataset=pair_dataset,
+            left_out=dropped_row_reasons,
+            counts=dropped_rows,
+            trained=trained_rows,
+        )
     if rendered_pairs == 0 or pairs_per_epoch == 0:
         raise DatasetError(NO_VALID_PREFERENCE_PAIRS_MESSAGE)
 

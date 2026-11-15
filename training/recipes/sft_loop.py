@@ -116,6 +116,7 @@ from training.utils.streaming import (
     dropped_row_metrics,
     raise_rendered_dataset_errors,
     take_dropped_rows,
+    write_row_usage,
 )
 from training.utils.termination import TerminatedBySignal
 from training.utils.timer import flush_timing, timer
@@ -540,7 +541,7 @@ def _render_one_worker(
     """
     messages = row.get("messages", [])
     if not messages:
-        return DroppedRow(DROP_NO_MESSAGES)
+        return DroppedRow(DROP_NO_MESSAGES, row.get(JSONL_ROW_INDEX_KEY))
     tools = row.get("tools")
     try:
         rendered_examples = render_messages_to_datums(
@@ -562,7 +563,10 @@ def _render_one_worker(
     _write_render_samples(row, valid_rendered_examples)
     datums = [rendered.datum for rendered in valid_rendered_examples]
     if not datums:
-        return DroppedRow(_drop_reason(rendered_examples, _worker_state["max_seq_len"]))
+        return DroppedRow(
+            _drop_reason(rendered_examples, _worker_state["max_seq_len"]),
+            row.get(JSONL_ROW_INDEX_KEY),
+        )
     if len(datums) == 1:
         return datums[0]
     return datums
@@ -646,11 +650,16 @@ def _make_jsonl_dataset(
 def _flatten_rendered_batch(
     batch: list[sdk.Datum | list[sdk.Datum] | DatasetError | DroppedRow],
     dropped: Counter | None = None,
+    dropped_rows: dict[int, str] | None = None,
 ) -> list[sdk.Datum]:
-    """Flatten a loader batch to datums; left-out rows are counted by reason in ``dropped``."""
+    """Flatten a loader batch to datums.
+
+    Left-out rows are counted by reason in ``dropped``; ``dropped_rows`` maps
+    each one's dataset row index to its reason.
+    """
     raise_rendered_dataset_errors(batch)
     datums: list[sdk.Datum] = []
-    for item in take_dropped_rows(batch, dropped):
+    for item in take_dropped_rows(batch, dropped, dropped_rows):
         if isinstance(item, list):
             datums.extend(item)
         else:
@@ -1547,13 +1556,14 @@ def main(
 
                 epoch_valid_examples = 0
                 epoch_dropped: Counter = Counter()
+                epoch_dropped_rows: dict[int, str] = {}
                 for raw_batch_idx, batch in enumerate(batch_iter, start=epoch_start_batch):
                     raw_batch_size = min(
                         effective_batch_size,
                         training_count - raw_batch_idx * effective_batch_size,
                     )
                     cursor.record(raw_batch_size)
-                    batch = _flatten_rendered_batch(batch, epoch_dropped)
+                    batch = _flatten_rendered_batch(batch, epoch_dropped, epoch_dropped_rows)
                     if not batch:
                         continue  # every row in the batch was left out; skip
                     epoch_valid_examples += len(batch)
@@ -1614,6 +1624,14 @@ def main(
                     wandb_log(
                         dropped_row_metrics(epoch_dropped, total_rows=training_count, reasons=SFT_DROP_REASONS),
                         step,
+                    )
+                    write_row_usage(
+                        cfg.log_path,
+                        dataset_path=cfg.dataset,
+                        dataset=training_dataset,
+                        left_out=epoch_dropped_rows,
+                        counts=epoch_dropped,
+                        max_rows=cfg.max_examples,
                     )
                     if epoch_valid_examples == 0:
                         raise DatasetError(NO_VALID_TRAINING_EXAMPLES_MESSAGE)

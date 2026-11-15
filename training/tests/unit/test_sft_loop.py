@@ -1218,6 +1218,7 @@ def test_render_one_worker_names_why_a_row_is_left_out(monkeypatch, examples, re
 
     row = {"messages": [{"role": "assistant", "content": "answer"}]}
     assert module._render_one_worker(row) == DroppedRow(reason)
+    assert module._render_one_worker({**row, JSONL_ROW_INDEX_KEY: 7}) == DroppedRow(reason, 7)
     assert module._render_one_worker({"messages": []}) == DroppedRow("no_messages")
 
 
@@ -1228,6 +1229,9 @@ def test_flatten_rendered_batch_counts_left_out_rows():
     batch = [first, DroppedRow("too_long"), [second, third], DroppedRow("too_long"), DroppedRow("no_messages")]
     assert module._flatten_rendered_batch(batch, dropped) == [first, second, third]
     assert dropped == {"too_long": 2, "no_messages": 1}
+    rows: dict[int, str] = {}
+    module._flatten_rendered_batch([DroppedRow("too_long", 4), first, DroppedRow("no_messages", 9)], None, rows)
+    assert rows == {4: "too_long", 9: "no_messages"}
     assert module._flatten_rendered_batch([DroppedRow("too_long"), first]) == [first]
 
 
@@ -1237,6 +1241,10 @@ def test_main_logs_epoch_sequence_lengths_and_left_out_rows(tmp_path, monkeypatc
 
     _run_main_with_fake_trainer(tmp_path, monkeypatch, resume_info=None)
 
+    (usage_path,) = tmp_path.rglob("row_usage.json")
+    usage = json.loads(usage_path.read_text())
+    assert (usage["rows_offered"], usage["rows_trained"]) == (4, 4)
+    assert usage["held_out"] == usage["left_out"] == usage["not_reached"] == []
     train = [metrics for _, metrics in logged if "train/loss" in metrics]
     assert len(train) == 2
     for metrics in train:

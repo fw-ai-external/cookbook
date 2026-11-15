@@ -71,7 +71,8 @@ def test_make_pair_dataset_stream_uses_gcs_dataset(monkeypatch, tmp_path):
     calls: list[tuple[str, object]] = []
 
     class _FakeGcsDataset:
-        def __init__(self, path, render_fn):
+        def __init__(self, path, render_fn, row_index_key=None):
+            assert row_index_key == module.JSONL_ROW_INDEX_KEY
             calls.append((path, render_fn))
 
     monkeypatch.setattr(module, "GcsJsonlRenderDataset", _FakeGcsDataset)
@@ -347,6 +348,7 @@ class TestRenderPairWorker:
             "response_start": 2,
             "chosen_datum": {"kind": "chosen"},
             "rejected_datum": {"kind": "rejected"},
+            "row_index": None,
         }
         assert "chosen_tokens" not in result
         assert "rejected_tokens" not in result
@@ -561,7 +563,8 @@ def _test_render_pair(row: dict) -> dict:
 
 def _test_render_pair_dropping_odd_rows(row: dict) -> dict | DroppedRow:
     """Render fn that leaves out every odd row as too long."""
-    return DroppedRow("too_long") if row["i"] % 2 else _make_pair(row["i"])
+    row_index = row[module.JSONL_ROW_INDEX_KEY]
+    return DroppedRow("too_long", row_index) if row["i"] % 2 else {**_make_pair(row["i"]), "row_index": row_index}
 
 
 def _make_pair_dataset(tmp_path, n: int) -> JsonlRenderDataset:
@@ -651,7 +654,9 @@ class TestTrainLoop:
 
         path = tmp_path / "pairs.jsonl"
         path.write_text("".join(json.dumps({"i": i}) + "\n" for i in range(4)))
-        ds = JsonlRenderDataset(str(path), _test_render_pair_dropping_odd_rows)
+        ds = JsonlRenderDataset(
+            str(path), _test_render_pair_dropping_odd_rows, row_index_key=module.JSONL_ROW_INDEX_KEY
+        )
         policy = Policy()
         cfg = module.Config(log_path=str(tmp_path), epochs=1, batch_size=2, render_workers=0)
         with caplog.at_level(logging.INFO, logger=module.logger.name):
@@ -693,6 +698,39 @@ class TestTrainLoop:
         }
         assert "Seq-length / format filter: 2/4 raw rows filtered" in caplog.text
         assert "Rows left out by reason: too_long=2 (longer than max_seq_len" in caplog.text
+        usage = json.loads((tmp_path / "row_usage.json").read_text())
+        assert usage["rows_offered"] == 4
+        assert usage["rows_trained"] == 2
+        assert usage["left_out"] == [{"row": 1, "reason": "too_long"}, {"row": 3, "reason": "too_long"}]
+        assert usage["held_out"] == usage["not_reached"] == []
+
+    def test_row_usage_lists_rows_a_pair_cap_never_reached(self, tmp_path, monkeypatch):
+        _stub_train_step_deps(monkeypatch, {})
+        path = tmp_path / "pairs.jsonl"
+        path.write_text("".join(json.dumps({"i": i}) + "\n" for i in range(8)))
+        ds = JsonlRenderDataset(
+            str(path), _test_render_pair_dropping_odd_rows, row_index_key=module.JSONL_ROW_INDEX_KEY
+        )
+        cfg = module.Config(log_path=str(tmp_path), epochs=1, batch_size=2, render_workers=0, max_pairs=2)
+        asyncio.run(
+            module._train_loop(
+                ds,
+                None,
+                _FakeReference(),
+                _FakePolicy(),
+                adam_params=_adam_params(),
+                cfg=cfg,
+                step_offset=0,
+                cursor=_new_cursor(max_rows=8),
+            )
+        )
+
+        usage = json.loads((tmp_path / "row_usage.json").read_text())
+        trained = set(range(8)) - {entry["row"] for entry in usage["left_out"]} - set(usage["not_reached"])
+        assert usage["rows_trained"] == len(trained) == 2
+        assert trained <= {0, 2, 4, 6}
+        assert {entry["row"] for entry in usage["left_out"]} <= {1, 3, 5, 7}
+        assert usage["not_reached"]
 
     def test_rejects_unknown_grad_norm_metrics(self, tmp_path):
         cfg = module.Config(log_path=str(tmp_path), grad_norm_metrics="everything")
@@ -1793,7 +1831,7 @@ def test_serverless_main_freezes_reference_and_finalizes_policy(monkeypatch, tmp
         module, "setup_serverless_training", lambda *args, **kwargs: (service, policy, ckpt, "ts-policy", 512)
     )
     monkeypatch.setattr(module, "build_service_client", Mock(side_effect=AssertionError("dedicated provisioning")))
-    monkeypatch.setattr(module, "JsonlRenderDataset", lambda *args: ["pair"])
+    monkeypatch.setattr(module, "JsonlRenderDataset", lambda *args, **kwargs: ["pair"])
     ckpt.resume.return_value = None
     runner = Mock()
     runner.persisted_reference_checkpoint.return_value = None
@@ -2332,7 +2370,7 @@ def test_main_caches_eval_reference_logprobs_before_training(monkeypatch, tmp_pa
     monkeypatch.setattr(
         module, "setup_serverless_training", lambda *args, **kwargs: (service, policy, ckpt, "ts-policy", 512)
     )
-    monkeypatch.setattr(module, "JsonlRenderDataset", lambda *args: ["pair"])
+    monkeypatch.setattr(module, "JsonlRenderDataset", lambda *args, **kwargs: ["pair"])
     held_out = _make_pair(9)
     monkeypatch.setattr(module, "_prepare_eval_pairs", lambda cfg, ds: (ds, [held_out]))
     order: list = []
