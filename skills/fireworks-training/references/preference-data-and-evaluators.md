@@ -9,7 +9,7 @@ Generate preference pairs and evaluators transparently in the user's workspace: 
 | User has | Recommended path |
 |---|---|
 | Ideal labeled answers | SFT. Do not manufacture preference pairs. |
-| Human or model-ranked pairs | DPO or ORPO. Normalize to the managed preference schema. |
+| Human or model-ranked pairs | DPO or ORPO. Normalize to the DPO preference schema. |
 | Prompts only, plus a clear preference criterion | Generate pairs, review a sample, then run DPO or ORPO. |
 | Prompts plus objective correctness | Training API RL with an inline reward. |
 | Open-ended quality criteria | Write and calibrate an LLM-judge rubric before training. |
@@ -49,7 +49,7 @@ Do not include secrets, private file paths, or hidden chain-of-thought in the ou
 
 ### 4. Judge and normalize
 
-Map the winner into the managed DPO schema:
+Map the winner into the DPO preference schema:
 
 ```jsonl
 {"input":{"messages":[{"role":"user","content":"..."}]},"preferred_output":[{"role":"assistant","content":"better"}],"non_preferred_output":[{"role":"assistant","content":"worse"}]}

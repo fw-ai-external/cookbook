@@ -11,9 +11,6 @@ helpfulness, less rambling.
 
 And you want to understand the mechanism, not just call an API.
 
-**If you only want to ship**, use managed DPO jobs instead — `[../dpo_style/](../dpo_style/)` does the
-same training server-side in four SDK calls. Read that one to *use* DPO; read this one to *understand*
-it, because here every number in the log has a line of code you can point at.
 
 ## What the notebook does
 

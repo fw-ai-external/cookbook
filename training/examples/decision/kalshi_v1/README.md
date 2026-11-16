@@ -91,8 +91,7 @@ the calibrated checkpoint. The full recipe was previously validated on the
 serverless pool; the small smoke run is not the checkpoint evaluated below.
 
 **This reproduction uses the Training API.** It requires the decision loss;
-ordinary managed chat SFT is not an equivalent command. The example does not
-use the managed SFT CLI.
+ordinary chat SFT is not an equivalent command.
 
 ## Test data and evaluation
 

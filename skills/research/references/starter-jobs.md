@@ -101,7 +101,7 @@ starter_job_id: <option id>
 cookbook_entry_tier: example
 cookbook_entry_path: <path from table>
 implied_method: sft | rft
-suggested_path: managed | serverless
+suggested_path: serverless
 supervision_signal: gold input-output pairs | verifiable answers
 dataset_plan:
   source: user_file

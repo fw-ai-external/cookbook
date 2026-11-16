@@ -1,8 +1,8 @@
 ---
 name: configure
 description: >-
-  Plan, run, and monitor Fireworks training from a coding agent. Covers managed
-  SFT, DPO, ORPO, and RFT plus Training API serverless and dedicated workflows,
+  Plan, run, and monitor Fireworks training from a coding agent. Covers SFT, DPO,
+  ORPO, RL, and distillation on Training API serverless and dedicated trainers,
   complete cost and parameter confirmation, active monitoring, checkpoints,
   deployment, resume, and teardown. Use for explicit train, fine-tune, deploy,
   or resume requests. Use research when method, data, or evaluation is unclear;
@@ -97,7 +97,7 @@ approval confirms it.
 
 | Workload | Default |
 |---|---|
-| Plain SFT on chat JSONL (text or vision) | Managed SFT via SDK `supervised_fine_tuning_jobs` |
+| Plain SFT on chat JSONL (text or vision) | Serverless Training API recipe |
 | User wants their own loop, in-session evaluation, or Tinker-style code | Serverless Training API |
 | RL, DPO on serverless, distillation, custom loss | Serverless Training API recipe |
 | Full-parameter, unsupported serverless model, reserved capacity, custom infra | Dedicated Training |
@@ -114,9 +114,9 @@ ceremonial gate; ask only for a required fact that cannot be safely resolved or
 defaulted. The next complete approved plan launches.
 
 For Muse Glimmer starters, use
-`training/examples/sft/muse_glimmer_starter.py` (`plan`, `launch`, `watch`) and
+`training/examples/sft/muse_glimmer_starter.py` (`prepare`, `plan`, `launch`, `cleanup`) and
 `../research/references/starter-jobs.md`. If the script is missing from the
-checkout, use the SDK calls in the [Training API quick reference](../fireworks-training/references/training-api.md#quick-reference-managed-and-serverless-sft).
+checkout, use the SDK calls in the [Training API quick reference](../fireworks-training/references/training-api.md#quick-reference-serverless-sft).
 
 ## Read-only preflight
 
@@ -136,19 +136,19 @@ Do not upload or create resources during preflight.
 
 Read `references/cost-estimation.md`. For a direct route comparison, lead with totals and recommend the lowest-cost compatible route unless the user named another priority.
 
-1. Calculate Managed SFT or DPO only after resolving rendered token volume,
-   tuning mode, exact path context, and the current published rate.
+1. Resolve rendered token volume, tuning mode, exact path context, and the
+   current published rate before calculating.
 2. Calculate Serverless SFT from trainer tokens. For DPO, return an unpadded
    baseline with policy train tokens plus one-time all-uncached reference
    prefill; list padding and optional sampling as excluded work.
-3. Apply the dated Muse Glimmer LoRA SFT promotion (Managed SFT, Serverless
-   Training API SFT) exactly as in `references/cost-estimation.md`; RL is not
+3. Apply the dated Muse Glimmer LoRA SFT promotion (Serverless Training API
+   SFT) exactly as in `references/cost-estimation.md`; RL is not
    covered. Price excluded operations separately.
 4. Do not calculate vision SFT, DPO, or RL without visual token accounting,
    except a qualifying `$0` promotional SFT line; visual tokens still gate context.
 5. Do not calculate Dedicated SFT or DPO. Direct the user to
    <https://docs.fireworks.ai/fine-tuning/cost-estimator>.
-6. Do not calculate Managed ORPO until its billing contract is documented.
+6. Managed SFT, DPO, and ORPO no longer accept jobs; do not plan or price them.
 7. Route RL, embedding, IGPO, and distillation estimates to
    the Training team with method-specific assumptions.
 
@@ -193,8 +193,8 @@ exact command and ask the user to run it.
 2. Create resources with stable IDs. If a response is lost or reports
    `AlreadyExists`, query the planned ID and reuse only an exact match.
 3. Stay actively monitoring while a run is in progress. State alone is not
-   progress; report the numeric signal (Managed `job_progress.percent` and
-   epoch, or Training API step, loss, and gradient norm). Check render samples
+   progress; report the numeric signal (Training API step, loss, and
+   gradient norm). Check render samples
    and queue status per `../fireworks-training/references/execution-notes.md`.
 4. On the approved no-progress timeout, gather evidence and route to `debug`.
    Never launch a replacement before reconciling the prior run.
@@ -233,7 +233,7 @@ For Training API SFT and RL, pass `emit_grad_norm_metrics=True` to each
 
 1. Validate locally before upload; report bad rows and the proposed fix instead
    of silently dropping or rewriting them.
-2. Prefer the easiest compatible path: Managed, then Serverless, then Dedicated.
+2. Prefer the easiest compatible path: Serverless, then Dedicated.
 3. Prefer maintained cookbook recipes over blank custom loops.
 4. Keep quota, billing, capacity, user configuration, and platform failures
    distinct.

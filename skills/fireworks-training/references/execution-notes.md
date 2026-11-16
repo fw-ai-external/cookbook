@@ -8,25 +8,22 @@ Environment and credential setup is in `sdk-setup.md` and `getting-started.md`.
 
 ## Model and data checks
 
-- Model support for Managed SFT: read `supervisedLoraTunable` (LoRA) together
+- Model support for LoRA SFT: read `supervisedLoraTunable` (LoRA) together
   with `useTrainingV2` from `client.models.get(...).model_dump()`. The
   full-parameter flag (`supervisedFullParameterTunable`) is hidden from
   non-superuser reads, so its absence does not mean full-parameter is
   unsupported; the create call decides. The older `tunable` field is retired
   and is absent or false.
-- Account datasets cannot be downloaded through the API: downloads need a
-  per-account flag that is off by default, and even then require
-  `firectl signin` or the console, never an API key. Inspect account data
-  through dataset metadata before launch and the job's render samples after
-  create.
+- Account datasets can no longer be created, and archived ones cannot be
+  downloaded through the API. Train from the user's local JSONL, and render and
+  inspect one example before launch.
 
 ## Resource IDs
 
 Create calls can hang. Give the client a timeout
 (`Fireworks(account_id=..., timeout=120)`); if a create times out, `get` the
 planned ID before retrying, and retry with the same ID only if it does not
-exist. The render-samples URL can return 404 for the first minute after a job is
-created; wait and fetch again.
+exist.
 
 Use a fresh job and output-model ID for every run (for example append a UTC
 timestamp), and never reuse the ID of a deleted job. Job artifacts are stored
@@ -40,48 +37,21 @@ On busy shared accounts, list with a `filter` (for example
 
 ## Resolved configuration
 
-For Managed LoRA SFT, always pass `lora_rank` explicitly (8 or 16 for a first
-run). On a base-model job an unset `lora_rank` is `0`, which requests
-full-parameter tuning, not LoRA; it is rejected for models without a
-full-parameter trainer, and otherwise produces a full model. After the job
-finishes, confirm the output model's `kind` is `HF_PEFT_ADDON` with the expected
-`peft_details.r`.
+The plan gives concrete values. Always set the LoRA rank explicitly (8 or 16
+for a first run). When a value is resolved at run time, write "resolved at
+run" rather than guessing, then read it back from the run's logged metrics and
+report it.
 
-The plan gives concrete values. When the platform resolves a value at create
-time (Managed learning rate, batch size, eval carve-out size), write "resolved
-at create" rather than guessing, then read it back and report it:
+## Monitoring a serverless run
 
-- the job record for epochs, rank, dataset, and carve-out setting (the API does
-  not report the carve-out size; derive it from steps and batch size and say
-  it is derived);
-- the first rows of `metrics.jsonl` (`metricsFileSignedUrl`) for `train/lr`,
-  `train/step`, and `train/total_tokens`. A job record `learning_rate` of `0.0`
-  means unset, not zero.
-
-## Monitoring a Managed job
-
-- Right after create, read a few rows of `render_samples.jsonl`
-  (`job.model_dump()["renderSamplesSignedUrl"]`): decoded tokens, per-token loss
-  weights, `train_on_what`, `image_count`, and `image_token_count`. Summarize
-  across all rows (for example the min and max image tokens), not a few. If the
-  rendering or masking is wrong, cancel and say why. Fetch signed URLs with
-  `httpx` and `certifi`; python.org builds of Python on macOS often lack CA
-  certificates for `urllib`.
-- Managed SFT and DPO jobs draw runs from the serverless training pool, which
-  has a per-account concurrent-run quota (documented default 8; accounts can
-  differ, so quote the limit from the job's status message or a 429 rather than
-  assuming the default). A
-  `PENDING` job whose status starts "Waiting for a serverless training slot" is
-  queued, not stuck. Serverless Training API sessions draw from the same
-  quota, do not appear in job lists, and release their slot only when the run
-  becomes terminal after the session expires (see the docs' serverless
-  capacity section), so an open or recently closed session of yours can hold
-  it. Quote `job.status.message`, explain the wait, and do not guess whose run
-  holds the slot. Never cancel another run to jump the queue
-  without approval.
-- `training/examples/sft/muse_glimmer_starter.py watch` prints progress, the
-  status message, a render-sample summary, final losses, and the resolved
-  learning rate.
+- Serverless Training API sessions draw from a per-account, per-base-model
+  concurrent-run quota. A create rejected with 429 "maximum concurrent
+  serverless training runs" is waiting on that quota, not broken. Sessions do
+  not appear in job lists and release their slot only when the run becomes
+  terminal after the session expires (see the docs' serverless capacity
+  section), so an open or recently closed session of yours can hold it. Quote
+  the error, explain the wait, and do not guess whose run holds the slot.
+  Never cancel another run to free the slot without approval.
 - To follow a background run, write its output straight to a log file and read
   the file. Piping through `grep` or `tee` buffers output, so a healthy run can
   look silent; use `python -u` and `grep --line-buffered` if you must filter.
@@ -90,7 +60,7 @@ at create" rather than guessing, then read it back and report it:
 
 Name only documented facts. The serverless docs say checkpoint storage is
 currently included at no charge. No public page states a storage price for
-Managed SFT output models, so say the model stays on the account and that no
+promoted LoRA models, so say the model stays on the account and that no
 storage charge is documented, rather than calling it free. The promotion
 covers training, not sampling: report in-session evaluation sampling as its own
 cost line (estimated or unverified), never inside a `$0` total. On-demand

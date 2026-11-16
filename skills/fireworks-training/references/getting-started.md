@@ -52,11 +52,11 @@ Create a key in the [dashboard](https://app.fireworks.ai/settings/users/api-keys
 for **training**, one for **serving** (inference). Training on a surface does
 not decide how the result is served. Always say the full name.
 
-**Training** (pick one per run; see [overview](https://docs.fireworks.ai/fine-tuning/finetuning-intro.md)):
+**Training** (pick one per run; see [overview](https://docs.fireworks.ai/fine-tuning/finetuning-intro.md)).
+Managed fine-tuning (SFT, DPO, ORPO, RFT) no longer accepts jobs:
 
 | Name | What it is | Use when | What it creates | Cost |
 | --- | --- | --- | --- | --- |
-| **Managed fine-tuning** | A job you submit (UI, SDK, `firectl`, REST); Fireworks runs the loop. SFT, DPO, ORPO. Managed RFT has been removed. | Plain SFT or DPO on a dataset; easiest path | Job + output model | Per training token |
 | **Serverless Training** (Training API) | Your Python loop on a shared, always-on pooled trainer. LoRA SFT, DPO, ORPO, RL, distillation, custom loops. GA. | Your own loop, in-session base-vs-tuned evaluation, RL | A session (closes with your script); a model only if you promote a checkpoint | Per token; in-session sampling is its own line |
 | **Dedicated Training** (Training API) | Your loop on a provisioned trainer, plus provisioned deployments for rollouts or evaluation. [Request access](https://fireworks.ai/contact-training). | Full-parameter, a model not in the serverless pool, sustained runs, explicit resume or deployment control | Trainer job + any deployments; you delete them | Per GPU-hour while running |
 
@@ -73,8 +73,7 @@ Rules that prevent the common mix-ups:
   training surface produced it. Training serverless does not make it servable
   serverless.
 - To compare base and tuned without paying for a deployment, sample inside a
-  Serverless Training session. Managed jobs report loss only; their task-level
-  evaluation needs an on-demand deployment.
+  Serverless Training session.
 - A Dedicated Training run can create deployments for rollouts. Those are
   on-demand deployments and bill until deleted.
 - Never write bare "serverless" or "dedicated" in a plan. Write "Serverless
@@ -92,7 +91,6 @@ Creating a job is protected, spend-gated work. Verify all of these first. A reje
 ```python
 model = client.models.get("<MODEL_ID>", account_id="fireworks").model_dump()  # ID, not full path
 print(model.get("supervisedLoraTunable"), model.get("useTrainingV2"))  # LoRA SFT supported?
-client.datasets.get("<DATASET_ID>")                                    # state READY, format, rows
 ```
 
 **For a user who runs commands themselves (`firectl`):**
@@ -111,39 +109,17 @@ firectl quota list                           # GPU quota headroom (no SDK equiva
 - **Full model path:** always pass the full base-model path `accounts/fireworks/models/<MODEL_ID>`, never a bare name. A bare name resolves against your own account, so the public base model fails to resolve when your acting account is not `fireworks`.
 - **Quota vs billing are different gates:** quota is a GPU ceiling; billing is a payment-method / spend control. Check both.
 
-Only after these pass, show the complete resolved plan and receive explicit confirmation before dataset upload or job creation.
+Only after these pass, show the complete resolved plan and receive explicit confirmation before creating a training session or trainer.
 
 ## 5. Minimal first SFT job
 
 Datasets use the OpenAI-compatible chat format — JSONL, one example per line, a `messages` array (min 3 examples). → see `references/choose-method.md`.
 
-The agent uploads and launches through the SDK (full dataset upload and polling
-are in `training-api.md#quick-reference-managed-and-serverless-sft`):
-
-```python
-job = client.supervised_fine_tuning_jobs.create(
-    supervised_fine_tuning_job_id="my-first-tune",
-    dataset=f"accounts/{account}/datasets/my-first-dataset",
-    base_model="accounts/fireworks/models/qwen3-8b",
-    output_model=f"accounts/{account}/models/my-first-tune",
-    lora_rank=8,              # always explicit: unset means full-parameter
-    eval_auto_carveout=True,
-)
-client.supervised_fine_tuning_jobs.get("my-first-tune")  # state, job_progress.percent
-```
-
-**For a user who runs commands themselves (`firectl`):** the same job (check `firectl sftj create --help`
-for the LoRA rank flag and pass it explicitly):
-
-```bash
-firectl dataset create my-first-dataset /path/to/data.jsonl
-firectl sftj create \
-  --base-model accounts/fireworks/models/qwen3-8b \
-  --dataset my-first-dataset \
-  --output-model my-first-tune
-firectl sftj get <JOB_ID>                      # monitor
-firectl model list                             # the new LoRA appears here
-```
+The agent runs SFT on the Training API from a local JSONL file: the
+`sft_loop` recipe with `serverless=True`
+(`training/examples/sft/train_sft_serverless.py`), or the raw loop in
+`training-api.md#quick-reference-serverless-sft`. Account datasets can no
+longer be created, so keep the data local.
 
 For a free first run, use the Muse Glimmer starter in
 `training/examples/sft/muse_glimmer_starter.py`.
@@ -167,7 +143,7 @@ firectl quota list      # GPU quotas, rate limits, spend limit, usage
 ## First-successful-job checklist
 
 - [ ] The client is built for the intended account (`client.accounts.get()`; `firectl whoami` for the user).
-- [ ] Dataset uploaded + passes validation (valid JSONL, every line has `messages` with `role`+`content`).
+- [ ] Local dataset passes validation (valid JSONL, every line has `messages` with `role`+`content`).
 - [ ] Job reaches `COMPLETED`; training loss trends down (read the job's `metrics.jsonl`).
 - [ ] Output model exists with `kind` `HF_PEFT_ADDON` (`client.models.get(...)`; `firectl model list` for the user).
 - [ ] Deploy it on-demand and get a sensible completion → `references/deploy-and-troubleshoot.md`.

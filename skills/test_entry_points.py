@@ -97,11 +97,11 @@ def test_starter_jobs_are_linked() -> None:
     assert "muse_glimmer_starter.py" in starters
     assert "Do not add a separate readiness-package or handoff question" in starters
     assert "Muse Glimmer verifiable math RL smoke" not in starters
-    assert "renderSamplesSignedUrl" in read(
+    assert "renderSamplesSignedUrl" not in read(
         SKILLS_DIR / "fireworks-training" / "references" / "execution-notes.md"
     )
-    assert "account_preloaded" in methodology
-    assert "account_preloaded" in path_intake
+    assert "account_preloaded" not in methodology
+    assert "account_preloaded" not in path_intake
     assert "cookbook_eval_entry" in starters
     assert "cookbook_eval_entry" in methodology
     assert "cookbook_eval_entry" in path_intake

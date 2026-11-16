@@ -14,7 +14,7 @@ When a job is stuck or failing, use the resource family that created it:
 
 | Method | Status (SDK; `firectl` equivalent) | Strongest available progress signal |
 |---|---|---|
-| SFT | `client.supervised_fine_tuning_jobs.get(<JOB_ID>)`; `firectl sftj get <JOB_ID> -o json` | The job's `metrics.jsonl` (`metrics_file_signed_url`) and linked W&B metrics when enabled. The current CLI has no `sftj export-metrics`. |
+| Managed SFT (no new jobs; existing jobs only) | `client.supervised_fine_tuning_jobs.get(<JOB_ID>)`; `firectl sftj get <JOB_ID> -o json` | The job's `metrics.jsonl` (`metrics_file_signed_url`) and linked W&B metrics when enabled. The current CLI has no `sftj export-metrics`. |
 | DPO / ORPO | `client.dpo_jobs.get(<JOB_ID>)`; `firectl dpo-job get <JOB_ID> -o json` | `client.dpo_jobs.get_metrics_file_endpoint(<JOB_ID>)` or `firectl dpo-job export-metrics <JOB_ID>`, and linked W&B metrics when enabled. |
 | Managed RFT (removed) | The SDK rejects managed RFT calls; the user can run `firectl rftj get <JOB_ID> -o json` | Final state and status message only. No managed RFT job can run; see `managed-rft-operations.md`. |
 

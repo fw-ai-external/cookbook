@@ -1,10 +1,12 @@
 # DPO: Teaching a model to write the way we like
 
+> **This notebook no longer runs.** It uploads an account dataset and submits a managed DPO job, and Fireworks no longer accepts either. For new runs, use the DPO recipe (`training/examples/dpo/train_dpo_serverless.py`) on the Training API; see the [migration guide](https://docs.fireworks.ai/fine-tuning/training-api/migrate-from-managed).
+
 In this example we'll nudge a model toward the *style and quality* of answer we prefer — not by showing it the one perfect reply, but by showing it pairs of answers and which one a human liked better.
 
 **Is this you?** The model is accurate but "doesn't sound like us," and honestly it's easier to say *which of two answers is better* than to hand-write the ideal one. That's the tell-tale sign you want preference tuning. Think brand voice, helpfulness, tone, less rambling, better formatting.
 
-**The data.** We'll use [`nvidia/HelpSteer3`](https://huggingface.co/datasets/nvidia/HelpSteer3): real conversations, each with two candidate replies and a human's verdict on which is better. It's **text**. We map each row into the managed DPO schema — a prompt plus a `preferred` and a `non_preferred` final answer. (Managed DPO is single-turn, so we keep only rows whose prompt has no earlier assistant turns.)
+**The data.** We'll use [`nvidia/HelpSteer3`](https://huggingface.co/datasets/nvidia/HelpSteer3): real conversations, each with two candidate replies and a human's verdict on which is better. It's **text**. We map each row into the DPO preference schema — a prompt plus a `preferred` and a `non_preferred` final answer. (Managed DPO is single-turn, so we keep only rows whose prompt has no earlier assistant turns.)
 
 **The model.** We'll tune `qwen3-8b` (not on serverless inference, so the evals deploy it on demand and tear it down), and use the `glm-5p3-fast` router as an impartial judge when we score results — a *different* model family, so the judge has no self-preference bias toward our tuned model.
 

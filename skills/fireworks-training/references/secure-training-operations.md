@@ -6,23 +6,11 @@ Use this reference for agent-assisted BYOB and CMEK setup. Always confirm the cu
 
 ## Bring your own bucket
 
-BYOB lets Fireworks read a training dataset from customer-managed object storage. Use least-privilege access scoped to the required bucket and prefix, and revoke access after the approved workflow completes.
+BYOB lets a training run read its dataset from customer-managed object storage. Use least-privilege access scoped to the required bucket and prefix, and revoke access after the approved workflow completes.
 
-```python
-client.datasets.create(dataset_id="<dataset-id>",
-                       dataset={"externalUrl": "gs://<bucket>/<prefix>/data.jsonl", "format": "CHAT"})
-```
-
-**For a user who runs commands themselves (`firectl`):**
-
-```bash
-firectl dataset create <dataset-id> \
-  --external-url gs://<bucket>/<prefix>/data.jsonl
-```
-
-Use the equivalent `s3://` or Azure URL only when live docs confirm support for
-the selected workflow. Dataset registration is protected work and requires the
-final-plan confirmation in `../../configure/SKILL.md`.
+Account datasets can no longer be created, so there is no dataset to register:
+pass the `gs://` path straight to the Training API recipe. Use an `s3://` or
+Azure URL only when live docs confirm support for the selected workflow.
 
 ### GCS
 

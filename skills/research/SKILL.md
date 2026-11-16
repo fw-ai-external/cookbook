@@ -27,8 +27,9 @@ friction, and you can run the work yourself through **configure**.
   default non-blocking gaps.
 - Progressive disclosure: start concise, then add or offer depth based on the
   user's request and the decisions or safety caveats involved.
-- Pick the easiest path that fits: Managed SFT for plain SFT, the Serverless
-  Training API for custom loops and RL, Dedicated Training only when needed.
+- Pick the easiest path that fits: the Serverless Training API for SFT, DPO,
+  custom loops, and RL; Dedicated Training only when needed. Managed SFT, DPO,
+  and ORPO no longer accept jobs.
   Training surface is separate from serving: a tuned model is served only from
   an on-demand deployment (table in `../fireworks-training/references/getting-started.md`).
 - For RL, say Managed RFT has been removed and route to the Serverless Training API.
@@ -49,7 +50,7 @@ before opening or citing code.
 | **Cookbook entry** — case study, example, or recipe path | Workflow surface (SDK, Training API) |
 | **Dataset plan** — local, bundled, HF candidates, labeling schema | Upload, column mapping, job create |
 | **Eval plan** — metric class, baseline, cookbook eval hook | Run baseline eval, wire evaluators |
-| **Suggested path** (managed, serverless, dedicated) — coarse | Cost, model choice, monitor, deploy |
+| **Suggested path** (serverless, dedicated) — coarse | Cost, model choice, monitor, deploy |
 
 Research does **not** pick a final base model, **estimate cost**, or create jobs. If
 the user already named model + JSONL + method, skip research and go to
@@ -67,12 +68,11 @@ Missing data or a reward does not make a task-shaped request greenfield:
 provide the task-specific data, verifier, and evaluation plan first. Offer a
 starter only when it tests the same uncertainty.
 
-- Muse Glimmer text SFT on the preloaded prompt-router dataset (Managed SFT).
-- Code-first SFT on the user's own data on the Serverless Training API.
-- Muse Glimmer vision SFT on the preloaded CORD receipts dataset.
+- Code-first Muse Glimmer SFT on the Serverless Training API, on the public
+  prompt-router example or the user's own data.
 - A custom-task path: a direct recommendation for the user's own task.
 
-Muse Glimmer LoRA SFT (Managed or Serverless Training API) is free until the
+Muse Glimmer LoRA SFT on the Serverless Training API is free until the
 deadline in `starter-jobs.md`; RL is not covered. Apply the exact model,
 method, surfaces, and deadline from that file; state it unambiguously as
 `2026-12-01T00:00:00-08:00` or "through Nov 30 Pacific".
@@ -194,7 +194,7 @@ Never tell the user to paste a canned configure prompt.
 | Need | Reference |
 |---|---|
 | Full cookbook index | `references/cookbook-catalog.md` |
-| Preloaded starter jobs | `references/starter-jobs.md` |
+| Starter jobs | `references/starter-jobs.md` |
 | Interview scripts and completion gate | `references/interview-questions.md` |
 | Methodology (inspect → recommend → eval) | `references/methodology.md` |
 | Turn shapes and readiness package | `references/output-template.md` |

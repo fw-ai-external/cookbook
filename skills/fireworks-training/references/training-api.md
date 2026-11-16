@@ -12,9 +12,12 @@ Docs: https://docs.fireworks.ai/fine-tuning/training-api/introduction · Cookboo
 
 Before selecting a Training API path, confirm that the target account was enabled through onboarding or account settings. For dedicated work, read the account and shared shape inventories with `firectl training-shape list`; this proves shape visibility but does not by itself prove serverless entitlement. If no authoritative read-only entitlement signal is available, mark access unverified and ask the user to confirm enablement. Do not discover access by creating a trainer or serverless session.
 
-## Managed training vs Training API
+## Managed training is retired
 
-Use **managed training** for standard SFT/DPO/ORPO jobs. Reach for the **Training API** when you need a custom **loss/reward**, **RL with rollouts** (inference-in-the-loop), forward-pass internals (for example MoE routing for R3), distillation, or multi-turn/agentic trajectories.
+Managed SFT, DPO, and ORPO no longer accept new jobs; run all of them on the
+**Training API** (serverless or dedicated). To rerun an old managed job, see
+`training/examples/tools/README.md` and the
+[migration guide](https://docs.fireworks.ai/fine-tuning/training-api/migrate-from-managed).
 
 ## Training API infrastructure
 
@@ -54,8 +57,8 @@ The reward can come from two places:
 ## Default workflow: fork a cookbook recipe
 
 > **Cookbook implementation:** use the exact recipe and SDK references routed
-> from `../../configure/SKILL.md`. This file explains managed versus Training
-> API choices; this reference directory and `training/` contain implementation
+> from `../../configure/SKILL.md`. This file explains serverless versus
+> dedicated Training API choices; this reference directory and `training/` contain implementation
 > depth.
 
 **Approval gate still applies.** Training API cookbook recipes can create trainers, rollout deployments, checkpoints, promoted models, and paid inference. Before running a recipe or any create/promote/deploy action, show the account, recipe, dataset, full resolved trainer and deployment config, cost drivers, evaluation plan, and teardown plan; get explicit approval for this run. A deployment or materially expanded sweep gets its own approval.
@@ -68,29 +71,13 @@ Don't write a loop from scratch — fork a recipe in the `training/` tree of `fw
 
 Recipes cover SFT, DPO/ORPO, and RL. The RL loops train GRPO; DAPO, GSPO, CISPO, DRO, DPPO and others are objective modules in `training/utils/rl/algorithm/` that a forked loop calls (see `rl-custom-loss.md`). SAO/PPO and IGPO have their own recipes.
 
-## Quick reference: Managed and Serverless SFT
+## Quick reference: Serverless SFT
 
-Both blocks ran live on Muse Glimmer 30B. When the cookbook checkout has the
-Muse starter or `sft_loop`, run those and fork them for custom loops; use these
-blocks when they are missing. Load `.env` in-process first with an
+This block ran live on Muse Glimmer 30B. When the cookbook checkout has the
+Muse starter or `sft_loop`, run those and fork them for custom loops; use this
+block when they are missing. Load `.env` in-process first with an
 explicit search from the working directory:
 `from dotenv import find_dotenv, load_dotenv; load_dotenv(find_dotenv(usecwd=True))`.
-
-Managed SFT on a dataset already in the account:
-
-```python
-from fireworks import Fireworks
-c = Fireworks(account_id=ACCOUNT)
-job = c.supervised_fine_tuning_jobs.create(
-    supervised_fine_tuning_job_id=JOB_ID,
-    base_model="accounts/fireworks/models/muse-glimmer-30b",
-    dataset=f"accounts/{ACCOUNT}/datasets/{DATASET_ID}",
-    output_model=f"accounts/{ACCOUNT}/models/{JOB_ID}",
-    epochs=1, lora_rank=8, eval_auto_carveout=True,
-)
-j = c.supervised_fine_tuning_jobs.get(JOB_ID)   # state, job_progress.percent, status.message
-urls = j.model_dump()                           # metricsFileSignedUrl, renderSamplesSignedUrl
-```
 
 Serverless Training API loop with base and tuned snapshots (run from
 `$COOKBOOK_DIR/training` so the `training.*` helpers import):
@@ -153,7 +140,7 @@ fw.promote_session_checkpoint(name=max(rows, key=lambda r: r["createTime"])["nam
 
 `service.close()` ends your use of the session, but the run keeps its slot in
 the account's concurrent-run quota until the session expires. Do not tell the
-user nothing is in use until then; a new run (Managed or Serverless) on the
+user nothing is in use until then; a new serverless run on the
 same model may queue or be rejected. More in
 [`execution-notes.md`](execution-notes.md).
 
