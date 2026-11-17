@@ -171,6 +171,37 @@ RENDERER_MATRIX: list[RendererCase] = [
         observation_equals_generation=True,
         local_fixture_env="BEAM_TOKENIZER_PATH",
     ),
+    # Zero effort still preserves reasoning supplied in conversation history.
+    RendererCase(
+        renderer="inkling2",
+        tokenizer_model="thinkingmachines/Inkling-2-Small",
+        tokenizer_revision="2ad1157016e1aac77b6ff1b770e7c05229403134",
+        tokenizer_trust_remote_code=False,
+        hf_kwargs={"reasoning_effort": 0.9},
+        supports_thinking=True,
+        supports_tools=True,
+        has_extension_property=True,
+        supervised_hf_parity=True,
+        observation_equals_generation=True,
+        unsupported_scenarios=frozenset({"developer_first", "developer_midconversation"}),
+        local_fixture_env="INKLING2_TOKENIZER_PATH",
+        allow_supervised_trailing_whitespace=False,
+    ),
+    RendererCase(
+        renderer="inkling2_disable_thinking",
+        tokenizer_model="thinkingmachines/Inkling-2-Small",
+        tokenizer_revision="2ad1157016e1aac77b6ff1b770e7c05229403134",
+        tokenizer_trust_remote_code=False,
+        hf_kwargs={"reasoning_effort": 0.0},
+        supports_thinking=True,
+        supports_tools=True,
+        has_extension_property=True,
+        supervised_hf_parity=True,
+        observation_equals_generation=True,
+        unsupported_scenarios=frozenset({"developer_first", "developer_midconversation"}),
+        local_fixture_env="INKLING2_TOKENIZER_PATH",
+        allow_supervised_trailing_whitespace=False,
+    ),
     # -- Muse Glimmer -------------------------------------------------------
     RendererCase(
         renderer="muse_glimmer",
@@ -630,6 +661,8 @@ RENDERER_MATRIX: list[RendererCase] = [
 #   * deepseek_v4   — preview tokenizer ships no chat_template to diff against.
 REQUIRED_RENDERERS: frozenset[str] = frozenset(
     {
+        "inkling2",
+        "inkling2_disable_thinking",
         "glm5_interleaved",
         "glm_moe_dsa_interleaved",
         "qwen2_5",

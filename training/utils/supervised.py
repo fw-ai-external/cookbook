@@ -41,6 +41,7 @@ import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 
 import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.minimax_m3 as _minimax_m3_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.inkling2 as _inkling2_renderer  # noqa: F401
 import training.renderer.muse_glimmer as _muse_glimmer_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.qwen2_5 as _qwen2_5_renderer  # noqa: F401 — triggers register_renderer
 from training.dataset_utils.image_geometry import ImageGeometryError
@@ -464,6 +465,9 @@ def _get_image_processor_with_remote_code_default(
     if plugin_loader := renderer_image_processor_loader(renderer_name):
         return plugin_loader(tokenizer_model)
 
+    if renderer_name in {"inkling2", "inkling2_disable_thinking"}:
+        return _inkling2_renderer.Inkling2ImageTokenCounter.from_pretrained(tokenizer_model)
+
     if renderer_name == "muse_glimmer":
         # The pinned Transformers release can resolve Muse's processor config
         # but does not register its image processor class yet. Only token
@@ -524,6 +528,7 @@ def renderer_supports_images(renderer_name: str) -> bool:
             "kimi_k3",
             "kimi_k31",
             "muse_glimmer",
+            "inkling2",
             "glm53_flash",
             "deepseek_v41",
         )
@@ -541,6 +546,8 @@ def renderer_supports_tool_images(renderer_name: str) -> bool:
     if plugin_capability is not None:
         return plugin_capability
     return renderer_name in {
+        "inkling2",
+        "inkling2_disable_thinking",
         "glm53_flash",
         "glm53_flash_interleaved",
         "glm53_flash_preserve_thinking",

@@ -142,6 +142,32 @@ not be selected by the history-mode enum.
   contract, document and track each public-HF difference in
   `training/tests/unit/renderer_expected_divergences.py`.
 
+### Inkling 2 Small
+
+Use `tokenizer_model="thinkingmachines/Inkling-2-Small"` and renderer
+`inkling2` (default effort 0.9), or `inkling2_disable_thinking` (effort 0).
+The adapter executes the published HF chat template; parity tests pin revision
+`2ad1157016e1aac77b6ff1b770e7c05229403134`. Reasoning history is retained in
+both modes, matching HF. There is no assistant generation prefix: typed
+assistant headers and `<|content_model_end_sampling|>` carry SFT loss.
+Tool arguments are parsed JSON objects before entering the template. The
+cookbook normalizes its legacy `reasoning` field to `reasoning_content`; an
+explicit `reasoning_content` value takes precedence, including an empty value.
+Quoted protocol-marker spellings become special token IDs as in HF, including
+markers within payload text. `content_invoke_tool_text` responses stay visible
+text even when tools are available; only JSON tool blocks become tool calls.
+These two edge cases are shared with the serving Inkling renderer.
+
+Images in user and tool turns use one decoder token per 40-by-40 pixel cell,
+rounding each dimension upward, with no resizing. Transparency is composited
+onto Inkling's 8-pixel checkerboard before lossless PNG transport because the
+trainer transport converts to RGB. Images above 25 million pixels are rejected
+before decoding; transparency arithmetic uses bounded tiles to limit temporary
+memory. HF's `<|unused_200054|>` (200054) becomes an `ImageChunk`;
+token-in Fireworks sampling and serving image expansion use that same token.
+`<|unused|>` (199998) remains text and is never expanded as an image. CPU parity is not live release qualification;
+the private canary still needs text, tool, vision, and SFT smoke gates.
+
 ### Image sampling
 
 For token-in RL sampling, expose the model's single image marker through

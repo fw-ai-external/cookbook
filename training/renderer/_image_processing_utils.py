@@ -33,6 +33,12 @@ def get_image_processor(
 ) -> ImageProcessor:
     model_name = model_name.split(":")[0]
 
+    if renderer_name in {"inkling2", "inkling2_disable_thinking"}:
+        # lazy: avoid the renderer registry import cycle.
+        from training.renderer.inkling2 import Inkling2ImageTokenCounter
+
+        return Inkling2ImageTokenCounter.from_pretrained(model_name)
+
     from transformers.models.auto.image_processing_auto import AutoImageProcessor
 
     kwargs: dict[str, Any] = {}
