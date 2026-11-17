@@ -665,10 +665,15 @@ def test_sidecar_failure_disposition_uses_typed_marker_output(stdout, expected) 
     )
 
 
-def test_install_sidecar_uploads_bundle_and_returns_private_endpoint(tmp_path) -> None:
+@pytest.mark.parametrize("agent_user", [None, "root", 0, "0:0", "root:root"])
+def test_install_sidecar_uploads_bundle_and_returns_private_endpoint(
+    tmp_path, agent_user
+) -> None:
     calls: list[tuple[str, Any]] = []
 
     class Environment:
+        default_user = agent_user
+
         async def upload_file(self, source, target):
             calls.append(("upload_file", (Path(source).read_bytes(), target)))
 
@@ -712,6 +717,157 @@ def test_install_sidecar_uploads_bundle_and_returns_private_endpoint(tmp_path) -
     assert all("inference-key" not in command for command, _cwd in exec_calls)
 
 
+@pytest.mark.parametrize("agent_user", ["auditor", "agent", 1001, "other user"])
+def test_install_sidecar_prepares_only_its_paths_as_root_for_named_agent(
+    tmp_path, agent_user
+) -> None:
+    from shlex import quote
+
+    class Environment:
+        default_user = agent_user
+
+        def __init__(self):
+            self.uploads: list[str] = []
+            self.calls: list[tuple[str, str | None]] = []
+            self.prepared = False
+            self.copied: set[str] = set()
+
+        async def upload_file(self, source, target):
+            assert Path(source).is_file()
+            assert self.prepared
+            assert target.startswith("/tmp/fireworks-tito-upload-")
+            self.uploads.append(target)
+
+        async def exec(self, *, command, cwd=None, user=None):
+            assert cwd == "/"
+            self.calls.append((command, user))
+            if "chown --" in command and sidecar_runtime.SIDECAR_ROOT in command:
+                assert user == "root"
+                assert (
+                    f"chown -- {quote(str(agent_user))} "
+                    f"{sidecar_runtime.SIDECAR_ROOT} "
+                    f"{sidecar_runtime.SIDECAR_LOG_ROOT} "
+                    f"{sidecar_runtime.AGENT_LOG_ROOT}"
+                ) in command
+                assert "chown -R" not in command
+                assert "/logs/verifier" not in command
+                self.prepared = True
+            elif "mkdir -m 0700" in command:
+                assert user == "root"
+            elif "chown --" in command:
+                assert user == "root"
+                assert f"chown -- {quote(str(agent_user))}" in command
+                assert "chmod 600" in command
+                assert "chmod 0711" in command
+                assert "/logs/verifier" not in command
+            elif "cp -T --remove-destination" in command:
+                assert str(user) == str(agent_user)
+                for path in (
+                    sidecar_runtime.SIDECAR_BUNDLE_ARCHIVE,
+                    sidecar_runtime.SIDECAR_SPEC_PATH,
+                ):
+                    if path in command:
+                        self.copied.add(path)
+            elif "rm -rf -- /tmp/fireworks-tito-upload-" in command:
+                assert user == "root"
+            elif "nohup " in command:
+                assert str(user) == str(agent_user)
+                assert self.copied == {
+                    sidecar_runtime.SIDECAR_BUNDLE_ARCHIVE,
+                    sidecar_runtime.SIDECAR_SPEC_PATH,
+                }
+            elif f"cat {sidecar_runtime.SIDECAR_ENDPOINT_PATH}" in command:
+                assert str(user) == str(agent_user)
+                return SimpleNamespace(
+                    return_code=0,
+                    stdout=json.dumps(
+                        {
+                            "trajectory_id": "trajectory-1",
+                            "openai_base_url": "http://127.0.0.1:4567/v1",
+                            "api_key": "private-key",
+                        }
+                    ),
+                    stderr="",
+                )
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    bundle_path = tmp_path / "bundle.zip"
+    bundle_path.write_bytes(b"bundle")
+    environment = Environment()
+    endpoint = asyncio.run(
+        sidecar_runtime.install_sidecar(
+            environment,
+            bundle_path=bundle_path,
+            launch_spec='{"api_key":"inference-key"}',
+        )
+    )
+
+    assert endpoint["api_key"] == "private-key"
+    assert len(environment.uploads) == 2
+    assert len(environment.calls) == 11
+    assert all(
+        "/logs/verifier" not in command for command, _user in environment.calls
+    )
+    assert all("inference-key" not in command for command, _user in environment.calls)
+
+
+def test_install_sidecar_preparation_error_is_specific_and_redacted(tmp_path) -> None:
+    class Environment:
+        default_user = "auditor"
+
+        async def upload_file(self, source, target):
+            del source, target
+
+        async def exec(self, *, command, cwd=None, user=None):
+            assert user == "root"
+            assert cwd == "/"
+            assert "chown -- auditor" in command
+            return SimpleNamespace(
+                return_code=73,
+                stdout="private launch spec",
+                stderr="secret credential from the sandbox",
+            )
+
+    bundle_path = tmp_path / "bundle.zip"
+    bundle_path.write_bytes(b"bundle")
+    with pytest.raises(RuntimeError, match="set sidecar directory ownership.*exit code 73") as exc:
+        asyncio.run(
+            sidecar_runtime.install_sidecar(
+                Environment(), bundle_path=bundle_path, launch_spec="private launch spec"
+            )
+        )
+    assert "secret credential" not in str(exc.value)
+    assert "private launch spec" not in str(exc.value)
+
+
+def test_install_sidecar_invalid_endpoint_does_not_echo_sandbox_output(tmp_path) -> None:
+    class Environment:
+        default_user = None
+
+        async def upload_file(self, source, target):
+            del source, target
+
+        async def exec(self, *, command, cwd=None):
+            assert cwd == "/"
+            if f"cat {sidecar_runtime.SIDECAR_ENDPOINT_PATH}" in command:
+                return SimpleNamespace(
+                    return_code=0,
+                    stdout='{"api_key":"private-value" invalid json',
+                    stderr="",
+                )
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    bundle_path = tmp_path / "bundle.zip"
+    bundle_path.write_bytes(b"bundle")
+    with pytest.raises(RuntimeError, match="invalid endpoint") as exc:
+        asyncio.run(
+            sidecar_runtime.install_sidecar(
+                Environment(), bundle_path=bundle_path, launch_spec="{}"
+            )
+        )
+    assert "private-value" not in str(exc.value)
+
+
 def test_terminalize_sidecar_publishes_terminal_json_atomically(tmp_path) -> None:
     calls: list[tuple[str, Any]] = []
 
@@ -739,8 +895,136 @@ def test_terminalize_sidecar_publishes_terminal_json_atomically(tmp_path) -> Non
     assert all(cwd == "/" for _command, cwd in exec_calls)
     commands = [command for command, _cwd in exec_calls]
     assert sidecar_runtime.SIDECAR_TERMINAL_STAGING_PATH in commands[0]
-    assert f"mv -f {sidecar_runtime.SIDECAR_TERMINAL_STAGING_PATH}" in commands[0]
+    assert f"mv -fT -- {sidecar_runtime.SIDECAR_TERMINAL_STAGING_PATH}" in commands[0]
     assert sidecar_runtime.SIDECAR_TERMINAL_PATH in commands[0]
+
+
+def test_terminalize_sidecar_copies_marker_as_named_agent() -> None:
+    class Environment:
+        default_user = "auditor"
+
+        def __init__(self):
+            self.calls: list[tuple[str, str | None]] = []
+            self.uploaded_payload = ""
+            self.marker_copied = False
+
+        async def upload_file(self, source, target):
+            assert target.startswith("/tmp/fireworks-tito-upload-")
+            self.uploaded_payload = Path(source).read_text()
+
+        async def exec(self, *, command, cwd=None, user=None):
+            assert cwd == "/"
+            self.calls.append((command, user))
+            if "mkdir -m 0700" in command:
+                assert user == "root"
+            elif "chown -- auditor" in command:
+                assert user == "root"
+                assert command.index("chmod 600") < command.index("chown -- auditor")
+                assert command.index("chown -- auditor") < command.index("chmod 0711")
+            elif "cp -T --remove-destination" in command:
+                assert user == "auditor"
+                assert sidecar_runtime.SIDECAR_TERMINAL_STAGING_PATH in command
+                self.marker_copied = True
+            elif "rm -rf -- /tmp/fireworks-tito-upload-" in command:
+                assert user == "root"
+            elif "mv -f" in command:
+                assert user == "auditor"
+                assert self.marker_copied
+                assert f"mv -fT -- {sidecar_runtime.SIDECAR_TERMINAL_STAGING_PATH}" in command
+            elif sidecar_runtime.SIDECAR_COMPLETE_PATH in command:
+                assert user == "auditor"
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    environment = Environment()
+    asyncio.run(
+        sidecar_runtime.terminalize_sidecar(
+            environment, status="failed", reason="test failure"
+        )
+    )
+    assert json.loads(environment.uploaded_payload) == {
+        "status": "failed",
+        "reason": "test failure",
+    }
+    assert [user for _command, user in environment.calls] == [
+        "root",
+        "root",
+        "auditor",
+        "root",
+        "auditor",
+        "auditor",
+    ]
+
+
+def test_upload_private_text_copies_opencode_config_as_named_agent() -> None:
+    remote_path = "/tmp/fireworks-tito-opencode/xdg-config/opencode/opencode.json"
+
+    class Environment:
+        default_user = "agent"
+
+        def __init__(self):
+            self.commands: list[tuple[str, str | None]] = []
+
+        async def upload_file(self, source, target):
+            assert Path(source).read_text() == "private config value"
+            assert target.startswith("/tmp/fireworks-tito-upload-")
+            assert target != remote_path
+
+        async def exec(self, *, command, cwd=None, user=None):
+            assert cwd == "/"
+            self.commands.append((command, user))
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    environment = Environment()
+    asyncio.run(
+        sidecar_runtime.upload_private_text(
+            environment, content="private config value", remote_path=remote_path
+        )
+    )
+    assert [user for _command, user in environment.commands] == [
+        "root",
+        "root",
+        "agent",
+        "root",
+    ]
+    assert remote_path in environment.commands[2][0]
+    assert "private config value" not in repr(environment.commands)
+
+
+def test_upload_private_text_handoff_error_does_not_expose_private_content() -> None:
+    class Environment:
+        default_user = "auditor"
+
+        def __init__(self):
+            self.cleaned = False
+
+        async def upload_file(self, source, target):
+            assert Path(source).read_text() == "private config value"
+            assert target.startswith("/tmp/fireworks-tito-upload-")
+
+        async def exec(self, *, command, cwd=None, user=None):
+            assert cwd == "/" and user == "root"
+            if "chown -- auditor" in command:
+                return SimpleNamespace(
+                    return_code=73,
+                    stdout="private config value",
+                    stderr="credential from sandbox stderr",
+                )
+            if "rm -rf --" in command:
+                self.cleaned = True
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    environment = Environment()
+    with pytest.raises(RuntimeError, match="hand off.*exit code 73") as exc:
+        asyncio.run(
+            sidecar_runtime.upload_private_text(
+                environment,
+                content="private config value",
+                remote_path="/tmp/opencode/config.json",
+            )
+        )
+    assert environment.cleaned
+    assert "private config value" not in str(exc.value)
+    assert "credential from sandbox stderr" not in str(exc.value)
 
 
 def test_terminalize_sidecar_fails_immediately_when_atomic_publish_fails() -> None:
@@ -753,7 +1037,7 @@ def test_terminalize_sidecar_fails_immediately_when_atomic_publish_fails() -> No
             assert sidecar_runtime.SIDECAR_TERMINAL_STAGING_PATH in command
             return SimpleNamespace(return_code=1, stdout="", stderr="mv failed")
 
-    with pytest.raises(RuntimeError, match="publish.*mv failed"):
+    with pytest.raises(RuntimeError, match="publish.*exit code 1"):
         asyncio.run(
             sidecar_runtime.terminalize_sidecar(
                 Environment(), status="failed", reason="test"
@@ -2009,7 +2293,9 @@ def test_prepared_harness_image_is_pinned_and_preserves_final_user(
     environment.mkdir(parents=True)
     solution.mkdir()
     (source / "task.toml").write_text('[metadata]\nname = "task"\n')
-    (environment / "Dockerfile").write_text("FROM debian:bookworm\nUSER task-user\n")
+    (environment / "Dockerfile").write_text(
+        "FROM debian:bookworm\nENV PATH=/opt/rk/bin:${PATH}\nUSER task-user\n"
+    )
     (solution / "solve.sh").write_text("super-secret-solution\n")
     (solution / "solve.sh").chmod(0o600)
     prepared = prepare(source, tmp_path / "prepared")
@@ -2026,6 +2312,9 @@ def test_prepared_harness_image_is_pinned_and_preserves_final_user(
     assert "jinja2==3.1.6" in dockerfile
     assert "numpy==2.4.6" in dockerfile
     assert "import aiohttp, httpx, jinja2," in dockerfile
+    assert 'TITO_HARNESS_PYTHON="$(command -v python3)"' in dockerfile
+    assert '/root/*) TITO_HARNESS_PYTHON=/usr/bin/python3' in dockerfile
+    assert '"$TITO_HARNESS_PYTHON" -m venv /opt/fireworks-tito' in dockerfile
     assert "zstandard" not in dockerfile
     assert dockerfile.rstrip().endswith("USER task-user")
     assert not (prepared[0] / "solution" / "solve.sh").stat().st_mode & stat.S_IROTH

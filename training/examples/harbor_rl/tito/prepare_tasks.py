@@ -50,12 +50,18 @@ _PYTHON_INSTALL = r"""RUN set -eu; \
    exit 1; \
  fi; \
 """
-# The sidecar interpreter is a venv over the task image's python3, so its
-# stdlib is the image's. `lzma` is checked explicitly because the sidecar
-# bundle ships LZMA-compressed: a base image built without liblzma would
-# otherwise fail per trial at bundle extraction instead of here, at build.
-_SIDECAR_PYTHON_INSTALL = r"""python3 -c 'import sys; assert sys.version_info >= (3, 10), sys.version'; \
- python3 -m venv /opt/fireworks-tito; \
+# The sidecar interpreter is a venv over the task image's Python. Some images
+# prepend a root-private uv venv to PATH; resolve that case to the system
+# Python installed above so named Harbor agents can execute the sidecar.
+# Keep accessible PATH interpreters, such as Admidio's /opt/rk Python 3.12,
+# because the system Python in those images can be older. `lzma` is checked
+# explicitly because the bundle ships LZMA-compressed files.
+_SIDECAR_PYTHON_INSTALL = r"""TITO_HARNESS_PYTHON="$(command -v python3)"; \
+ case "$(readlink -f "$TITO_HARNESS_PYTHON")" in \
+   /root/*) TITO_HARNESS_PYTHON=/usr/bin/python3 ;; \
+ esac; \
+ "$TITO_HARNESS_PYTHON" -c 'import sys; assert sys.version_info >= (3, 10), sys.version'; \
+ "$TITO_HARNESS_PYTHON" -m venv /opt/fireworks-tito; \
  /opt/fireworks-tito/bin/python -m pip install --no-cache-dir \
    aiohttp==3.14.3 \
    httpx==0.28.1 \
