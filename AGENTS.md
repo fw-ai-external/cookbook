@@ -80,6 +80,15 @@ python -m unittest skills.configure.tests.test_cost_estimation_contract -v
   agent mutations. Write skill steps as SDK calls, and give the `firectl`
   command only as the way a user runs that step themselves or as a read-only
   check.
+- **Renderer changes need a renderer matrix row.** A PR that adds or changes a
+  renderer (`training/renderer/`) must give every renderer name it adds or
+  touches a `RendererCase` row in
+  [`training/tests/unit/renderer_matrix.py`](training/tests/unit/renderer_matrix.py),
+  with known HF divergences recorded in `renderer_expected_divergences.py`.
+  When you touch a name listed in `UNMATRIXED_RENDERERS`, add its row and
+  remove it from that set; never add names to it. Run
+  `pytest tests/unit/test_renderer_matrix_coverage.py tests/unit/test_renderer_properties.py`
+  from `training/`. Renderer QA CI enforces the coverage rules.
 - **Skill size.** `skills/configure/SKILL.md` has a 240-line limit enforced by
   `validate_skills.py`. Put detail in a reference file and link it.
 
