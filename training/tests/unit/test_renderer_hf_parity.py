@@ -94,9 +94,7 @@ _KIMI27_REVISION = "74797c9c62378b951a1f6fcf5c4631024e9b8bef"
 _MUSE_GLIMMER_MODEL = "meta-models/Muse-Glimmer-30B"
 _MUSE_GLIMMER_REVISION = "a4e59da52a7bc87ae7251dd5545c0dd437c44b68"
 _ONE_PIXEL_PNG = (
-    "data:image/png;base64,"
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8A"
-    "AQUBAScY42YAAAAASUVORK5CYII="
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
 
 
@@ -451,6 +449,4 @@ def test_qwen3_5_multimodal_adapter_matches_independent_hf_ground_truth() -> Non
     assert tokenizer.decode(adapter_tokens, skip_special_tokens=False).endswith(
         "<|im_start|>assistant\n<think>\n\n</think>\n\n"
     )
-    assert tokenizer.decode(default_tokens, skip_special_tokens=False).endswith(
-        "<|im_start|>assistant\n<think>\n"
-    )
+    assert tokenizer.decode(default_tokens, skip_special_tokens=False).endswith("<|im_start|>assistant\n<think>\n")

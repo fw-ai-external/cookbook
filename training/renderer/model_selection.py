@@ -46,6 +46,7 @@ _LEGACY_FAMILY_DEFAULTS = {
 # Literal identifiers only. Each group is a reviewed renderer contract, not a
 # namespace/prefix rule. Similar-looking forks, paths and unknown variants fail.
 _EXACT_GROUPS = {
+    "inkling2": "thinkingmachines/inkling-2-small accounts/fireworks/models/inkling-2-small",
     "beam": """
         reflection/beam-1.0-501b-a23b reflection/beam-1.0-501b-a23b-nvfp4
         accounts/fireworks/models/beam-1p0-501b-a23b-nvfp4

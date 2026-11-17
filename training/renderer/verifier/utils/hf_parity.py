@@ -70,9 +70,7 @@ def _load_tokenizer(
     if renderer_name == "beam":
         # Beam declares TokenizersBackend. AutoTokenizer unnecessarily parses
         # its unregistered model config and fails in RoPE validation first.
-        return TokenizersBackend.from_pretrained(
-            tokenizer_model, revision=tokenizer_revision, trust_remote_code=False
-        )
+        return TokenizersBackend.from_pretrained(tokenizer_model, revision=tokenizer_revision, trust_remote_code=False)
     if is_kimi_k3_k31_tokenizer_source(tokenizer_model, revision=tokenizer_revision):
         # Kimi's raw data has no stock AutoTokenizer implementation. Use the
         # pinned installed release encoder, never the checkpoint's auto_map.
@@ -182,6 +180,8 @@ def _hf_messages_with_reasoning_parts(messages: list[dict], *, renderer_name: st
     """Map normalized thinking parts to a tokenizer's native HF input shape."""
     supports_reasoning_parts = renderer_name in {
         "beam",
+        "inkling2",
+        "inkling2_disable_thinking",
         "minimax_m3",
         "kimi_k3",
         "kimi_k3_disable_thinking",
@@ -209,10 +209,9 @@ def _hf_messages_with_reasoning_parts(messages: list[dict], *, renderer_name: st
             normalized["reasoning_content"] = reasoning
         if renderer_name == "beam":
             normalized["content"] = "".join(part["text"] for part in content if part.get("type") == "text")
-        if renderer_name.startswith("kimi_k3"):
-            # K3's Python template consumes reasoning from the top-level field;
-            # leaving a ``thinking`` content part behind makes its generic
-            # content loop look for a nonexistent ``text`` key.
+        if renderer_name.startswith(("kimi_k3", "inkling2")):
+            # These templates consume reasoning from the top-level field,
+            # not from structured thinking content parts.
             normalized["content"] = [
                 part for part in content if not (isinstance(part, dict) and part.get("type") == "thinking")
             ]
@@ -258,6 +257,8 @@ def compare_renderer_to_hf(
         messages,
         require_mapping=renderer_name
         in {
+            "inkling2",
+            "inkling2_disable_thinking",
             "gemma4",
             "gemma4_thinking",
             "minimax_m3",

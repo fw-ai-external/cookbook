@@ -32,6 +32,8 @@ class _CharacterTokenizer:
 
 
 _BASELINE_CUSTOM_RENDERERS = (
+    "inkling2",
+    "inkling2_disable_thinking",
     "beam",
     "deepseek_v4",
     "deepseek_v4_disable_thinking",
