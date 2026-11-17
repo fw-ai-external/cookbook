@@ -2,8 +2,10 @@
 
 Each ``RendererCase`` row binds a registered renderer name to the upstream
 tokenizer it must match and to the capability flags that tell the harness
-which invariants to run and which to skip. Adding a renderer to CI coverage
-is a one-line change: append a row here.
+which invariants to run and which to skip. Every new or changed renderer
+must have a row here; ``test_renderer_matrix_coverage`` fails CI for a
+registered renderer name that has no row and is not in the shrink-only
+``UNMATRIXED_RENDERERS`` legacy baseline.
 
 Why the capability flags instead of per-renderer test files:
 
@@ -683,5 +685,84 @@ REQUIRED_RENDERERS: frozenset[str] = frozenset(
         "muse_glimmer",
         "nemotron3",
         "gemma4",
+    }
+)
+
+
+# Registered renderer names with no ``RendererCase`` row yet. This is a
+# shrink-only legacy baseline, not an opt-out: every renderer added or changed
+# after the gate landed must have its own matrix row. When you touch one of
+# these renderers, add its row above and delete its name here.
+# ``test_renderer_matrix_coverage`` fails when a registered name is in neither
+# set. On PRs, the Renderer QA workflow also fails a change that adds names here
+# or edits one of these renderers' source without giving it a row.
+UNMATRIXED_RENDERERS: frozenset[str] = frozenset(
+    {
+        # DeepSeek
+        "deepseek_v41",
+        "deepseek_v4_disable_thinking",
+        "deepseekv3",
+        "deepseekv3_disable_thinking",
+        "deepseekv3_thinking",
+        # GLM
+        "glm5",
+        "glm5_release",
+        "glm53_flash",
+        "glm53_flash_interleaved",
+        "glm53_flash_preserve_thinking",
+        "glm53_interleaved",
+        "glm53_preserve_thinking",
+        "glm_moe_dsa",
+        # GPT-OSS
+        "gpt_oss_high_reasoning",
+        "gpt_oss_low_reasoning",
+        "gpt_oss_medium_reasoning",
+        "gpt_oss_no_sysprompt",
+        # Kimi
+        "kimi_k2",
+        "kimi_k25",
+        "kimi_k25_disable_thinking",
+        "kimi_k26",
+        "kimi_k26_disable_thinking",
+        "kimi_k27_code",
+        "kimi_k31_high",
+        "kimi_k31_low",
+        "kimi_k31_max",
+        # Llama / Mistral / generic
+        "llama3",
+        "mistral",
+        "role_colon",
+        # Muse Spark
+        "muse_spark",
+        "muse_spark_high",
+        "muse_spark_low",
+        "muse_spark_medium",
+        "muse_spark_xhigh",
+        # Nemotron
+        "nemotron35_vl",
+        "nemotron35_vl_disable_thinking",
+        "nemotron3_disable_thinking",
+        "nemotron3_interleaved",
+        "nemotron3_low_thinking",
+        "nemotron3_preserve_thinking",
+        "nemotron3_preserved",
+        "nemotron3_ultra",
+        "nemotron3_ultra_disable_thinking",
+        "nemotron3_ultra_interleaved",
+        "nemotron3_ultra_medium_thinking",
+        "nemotron3_ultra_preserve_thinking",
+        "nemotron3_ultra_preserved",
+        # Qwen
+        "qwen3_5",
+        "qwen3_5_disable_thinking",
+        "qwen3_5_disable_thinking_interleaved",
+        "qwen3_5_interleaved",
+        "qwen3_6",
+        "qwen3_6_disable_thinking",
+        "qwen3_6_preserve_thinking",
+        "qwen3_8",
+        "qwen3_instruct",
+        "qwen3_vl",
+        "qwen3_vl_instruct",
     }
 )

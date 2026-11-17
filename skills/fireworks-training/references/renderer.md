@@ -190,11 +190,16 @@ so its renderer does not add `sampler_image_placeholder_affixes`.
    from training.renderer import register_renderer
    register_renderer("my_model", _my_factory)
    ```
-4. **Add a CPU HF parity test** in
-   `training/tests/unit/test_renderer_hf_parity.py`. Add a
-   `parametrize` case for your renderer + tokenizer. Cookbook CI runs
-   this on every PR; passing means the renderer agrees with
-   `tokenizer.apply_chat_template` byte-for-byte.
+4. **Add a renderer matrix row (required).** Append a `RendererCase` for
+   each registered name to `RENDERER_MATRIX` in
+   `training/tests/unit/renderer_matrix.py`, with its tokenizer, capability
+   flags, and any known HF divergences in `renderer_expected_divergences.py`.
+   Renderer QA CI runs the shared parity, round-trip, and extension
+   invariants on every row and fails a PR whose registered renderer has no
+   row. When you change a renderer listed in `UNMATRIXED_RENDERERS`, add its
+   row and remove it from that set. Put renderer-specific branches the shared
+   scenarios cannot express in a focused test such as
+   `training/tests/unit/test_renderer_hf_parity.py`.
 5. **Smoke-test live in the GUI.** From the repository root run
    `FIREWORKS_API_KEY=... python -m training.renderer.verifier.serve --port 8765`,
    open <http://localhost:8765/>, pick the renderer, type a chat, and select
