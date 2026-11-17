@@ -128,7 +128,7 @@ Confirm in as few calls as possible:
    token lengths. Account datasets cannot be downloaded by default.
 3. Evaluator, reward, or preference-data contract when relevant.
 4. Held-out evaluation and success metric.
-5. Cookbook commit and installed SDK version for Training API work.
+5. Cookbook commit, SDK version, [LR schedule](../fireworks-training/references/sdk-recipes.md#learning-rate-schedule-sft-and-dpo), [LoRA continuation compatibility](../fireworks-training/references/sdk-checkpoints.md#before-planning-lora-continuation), and [checkpoint evaluation plan](../fireworks-training/references/sdk-checkpoints.md#save-evaluate-and-promote-a-chosen-checkpoint) for Training API work.
 
 Do not upload or create resources during preflight.
 

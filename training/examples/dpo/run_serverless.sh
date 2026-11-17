@@ -45,6 +45,5 @@ python -m examples.dpo.train_dpo_serverless \
     --batch-size 4 \
     --learning-rate 1e-5 \
     --beta 0.1 \
-    --dcp-save-interval 4 \
     --output-model-id "serverless-dpo-uf-k3-$(date +%Y%m%d%H%M)" \
     "$@"

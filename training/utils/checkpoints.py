@@ -236,6 +236,35 @@ def resolve_checkpoint_cadence(
     return CheckpointCadence(dcp_save_interval=steps, checkpoint_interval_minutes=0.0)
 
 
+def log_checkpoint_plan(
+    cadence: CheckpointCadence,
+    *,
+    sampler_save_interval: int,
+    save_final_checkpoint: bool,
+    output_model_id: str | None,
+) -> None:
+    """Describe resolved save capabilities separately from model promotion."""
+    if cadence.schedule_on:
+        within_epoch = (
+            f"every {sampler_save_interval} steps"
+            if sampler_save_interval > 0
+            else f"max({cadence.checkpoint_interval_minutes:g} minutes, estimated runtime / 20)"
+        )
+        logger.info("Checkpoint plan: resumable + promotable at epoch ends and %s", within_epoch)
+    else:
+        logger.info(
+            "Checkpoint plan: DCP every %d steps; sampler export every %d steps (0 = off)",
+            cadence.dcp_save_interval, sampler_save_interval,
+        )
+        if cadence.dcp_save_interval > 0 and sampler_save_interval == 0:
+            logger.warning("Intermediate checkpoints are resumable only; set sampler_save_interval for inference evaluation.")
+    logger.info(
+        "Final checkpoint: %s; promotion: %s",
+        "resumable + promotable" if save_final_checkpoint else "disabled",
+        output_model_id or "disabled (no output_model_id)",
+    )
+
+
 def _short_name(resource_name: str) -> str:
     """Extract the trailing checkpoint id from a full resource name."""
     return resource_name.rstrip("/").rsplit("/", 1)[-1]

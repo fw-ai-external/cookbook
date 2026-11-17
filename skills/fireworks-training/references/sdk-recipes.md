@@ -110,6 +110,33 @@ chunked forward/backward results and silently drops those metrics.
 
 Distillation-specific: use `distillation_loop.py` for sampled-token OPD and the [external SDFT cookbook](https://github.com/fw-ai-external/tinker-cookbook) for top-K SDFT. Open [`sdk-distillation.md`](sdk-distillation.md) before changing its config, dataset format, or teacher scoring.
 
+## Learning-rate schedule (SFT and DPO)
+
+Set the recipe's `lr_scheduler` explicitly when the user requests cosine decay.
+`learning_rate` is the peak rate; `warmup_steps` alone does not enable decay.
+For an existing SFT or DPO `Config`, before calling the recipe:
+
+```python
+from fireworks.training.sdk.training_spec import CosineSchedule
+
+cfg.learning_rate = 1e-4
+cfg.lr_scheduler = CosineSchedule(warmup_steps=10, min_lr_ratio=0.1)
+```
+
+These numbers are illustrative; choose warmup relative to the run's total
+optimizer steps. `warmup_ratio` is an alternative to `warmup_steps`; do not set
+both. Set SFT's legacy top-level `warmup_steps` to zero when specifying warmup
+inside `lr_scheduler`. The default schedule is constant. The recipe computes
+the learning rate and passes it to each `optim_step`; no custom cosine loop
+is needed.
+
+The small serverless SFT/DPO example CLIs expose `--learning-rate` but not
+`lr_scheduler`. Customize the Python recipe config instead of inventing a
+`--lr-scheduler` flag. The legacy managed REST field `lrScheduler` is a
+different input surface; use the recipe's snake-case fields on Training API.
+See the [cookbook reference](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/reference)
+and [checkpoint selection](sdk-checkpoints.md#save-evaluate-and-promote-a-chosen-checkpoint).
+
 ## Resume
 
 Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg.trainer.job_id` (all recipes; the reference trainer is SDK-managed, so there is no separate reference job id to pin), keep the same `log_path`, and rerun. `TrainingCheckpoints.resume()` lists the trainer's checkpoints on the control plane, picks the newest resumable row, and restores the rollout cursor from `dataloader.json`. See [`sdk-checkpoints.md`](sdk-checkpoints.md) for the full priority order and constraints.

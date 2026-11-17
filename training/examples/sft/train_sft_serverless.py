@@ -50,7 +50,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--learning-rate", type=float, default=1e-4)
-    p.add_argument("--dcp-save-interval", type=int, default=3, help="0 disables periodic saves.")
+    p.add_argument("--dcp-save-interval", type=int, default=None, help="DCP step cadence; unset uses the recipe default.")
+    p.add_argument("--sampler-save-interval", type=int, default=0, help="Promotable export step cadence; 0 disables step exports.")
+    p.add_argument("--checkpoint-interval-minutes", type=float, default=None, help="Timed and epoch-end saves; unset uses the recipe default.")
     p.add_argument(
         "--log-path",
         default=f"./serverless_sft_logs/{time.strftime('%Y%m%d-%H%M%S')}",
@@ -81,6 +83,8 @@ def build_config(args: argparse.Namespace) -> sft_loop.Config:
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         dcp_save_interval=args.dcp_save_interval,
+        sampler_save_interval=args.sampler_save_interval,
+        checkpoint_interval_minutes=args.checkpoint_interval_minutes,
         init_from_checkpoint=args.init_from_checkpoint,
         output_model_id=args.output_model_id,
         wandb=WandBConfig(entity=args.wandb_entity, project="serverless-sft"),
