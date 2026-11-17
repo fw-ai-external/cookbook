@@ -95,6 +95,7 @@ from training.utils import (
 from training.utils.checkpoints import (
     TrainingCheckpoints,
     resolve_checkpoint_cadence,
+    log_checkpoint_plan,
     timed_checkpoint_due,
     validate_warm_start_config,
 )
@@ -635,6 +636,12 @@ async def _train_loop(
         checkpoint_interval_minutes=cfg.checkpoint_interval_minutes,
         lora_rank=cfg.lora_rank,
     )
+    log_checkpoint_plan(
+        cadence,
+        sampler_save_interval=cfg.sampler_save_interval,
+        save_final_checkpoint=cfg.save_final_checkpoint,
+        output_model_id=cfg.output_model_id,
+    )
     schedule_on = cadence.schedule_on
     dcp_save_interval = cadence.dcp_save_interval
     sampler_save_interval = 0 if schedule_on else cfg.sampler_save_interval
@@ -1037,6 +1044,7 @@ def main(
 
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
     cfg.lr_scheduler = lr_scheduler
+    logger.info("Learning rate: peak=%g; scheduler=%s", cfg.learning_rate, lr_scheduler.model_dump())
     setup_wandb(
         cfg.wandb,
         {

@@ -21,7 +21,6 @@ cfg = sft_loop.Config(
     max_seq_len=32768,
     epochs=1,
     batch_size=8,
-    dcp_save_interval=3,
     output_model_id="serverless-sft-triage-demo",
 )
 sft_loop.main(cfg)
@@ -60,7 +59,7 @@ python -m examples.sft.train_sft_serverless \
 
 Flags: `--base-model`, `--tokenizer-model`, `--renderer-name`, `--dataset`,
 `--lora-rank`, `--max-seq-len`, `--epochs`, `--batch-size`,
-`--learning-rate`, `--dcp-save-interval` (0 disables periodic saves),
+`--learning-rate`, `--dcp-save-interval`, `--sampler-save-interval`, `--checkpoint-interval-minutes`,
 `--log-path`, `--init-from-checkpoint`, `--output-model-id` (omit to skip
 promotion), `--wandb-entity` (enables W&B).
 
@@ -71,7 +70,7 @@ an unlisted model or an override.
 ### Kimi K3
 
 [`run_serverless.sh`](run_serverless.sh) wraps the flags for a K3 run — LoRA rank 8,
-one epoch of batch 8 (9 steps), a DCP checkpoint every 3 steps, and a
+one epoch of batch 8 (9 steps), the recipe checkpoint defaults, and a
 timestamped output model id so repeated runs don't collide:
 
 ```bash
@@ -84,11 +83,23 @@ infers the tokenizer from the selected base model. Set `BASE_MODEL` or pass
 `--base-model` to change models; `TOKENIZER_MODEL` / `--tokenizer-model` are
 optional explicit overrides.
 
+## Configure the schedule and continuation
+
+For cosine decay, set `cfg.lr_scheduler = CosineSchedule(...)` on the Python
+recipe config; `--learning-rate` alone uses the constant default. See the
+[LR schedule example](../../../skills/fireworks-training/references/sdk-recipes.md#learning-rate-schedule-sft-and-dpo).
+The CLI does not expose this scheduler field.
+
+Before resuming or loading an adapter, verify the source base model, effective
+LoRA rank, and checkpoint type. Increasing the requested rank does not convert
+the saved adapter into a higher-rank training run. See
+[continuation preflight](../../../skills/fireworks-training/references/sdk-checkpoints.md#before-planning-lora-continuation).
+
 ## Checkpoints and resume
 
-The recipe saves a DCP checkpoint (weights **and** optimizer state) named
-`step-<N>` every `--dcp-save-interval` steps, and a final `step-<N>` that is
-both resumable and promotable. Each DCP save also records the step and dataset
+By default, LoRA saves resumable DCP state and promotable sampler weights at
+epoch ends and on the recipe's 30-minute schedule. A short one-epoch run may
+save only the final checkpoint. Each DCP save records the step and dataset
 cursor in `<log-path>/dataloader.json`.
 
 Serverless checkpoints are namespaced under the run that wrote them. At start
@@ -111,6 +122,21 @@ python -m examples.sft.train_sft_serverless \
 
 With a different `--log-path` the weights and optimizer still load, but the
 step counter and dataset cursor restart at 0.
+
+## Evaluate intermediate checkpoints
+
+For a short run with intermediate evaluation, explicitly pass
+`--dcp-save-interval 3 --sampler-save-interval 3 --checkpoint-interval-minutes 0`.
+DCP alone saves recovery state; the sampler interval adds inference exports.
+Startup logs show the normalized LR schedule; before training steps, the recipe
+reports the save cadence and promotion target and warns about recovery-only
+intermediates.
+
+Omit `output_model_id` when choosing checkpoints yourself. Follow
+[save, evaluate, and promote](../../../skills/fireworks-training/references/sdk-checkpoints.md#save-evaluate-and-promote-a-chosen-checkpoint)
+to list session checkpoints, promote individual sampler exports, and evaluate
+them against your acceptance criteria. The lowest loss or final checkpoint
+is not necessarily the best model for tool-call safety or task success.
 
 ## Promotion
 

@@ -39,6 +39,5 @@ python -m examples.sft.train_sft_serverless \
     --epochs 1 \
     --batch-size 8 \
     --learning-rate 1e-4 \
-    --dcp-save-interval 3 \
     --output-model-id "serverless-sft-triage-k3-$(date +%Y%m%d%H%M)" \
     "$@"

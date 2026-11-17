@@ -55,7 +55,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=4, help="Preference pairs per optimizer step.")
     p.add_argument("--learning-rate", type=float, default=1e-5)
     p.add_argument("--beta", type=float, default=0.1, help="Higher keeps the policy closer to the reference.")
-    p.add_argument("--dcp-save-interval", type=int, default=4, help="0 disables periodic saves.")
+    p.add_argument("--dcp-save-interval", type=int, default=None, help="DCP step cadence; unset uses the recipe default.")
+    p.add_argument("--sampler-save-interval", type=int, default=0, help="Promotable export step cadence; 0 disables step exports.")
+    p.add_argument("--checkpoint-interval-minutes", type=float, default=None, help="Timed and epoch-end saves; unset uses the recipe default.")
     p.add_argument(
         "--log-path",
         default=f"./serverless_dpo_logs/{time.strftime('%Y%m%d-%H%M%S')}",
@@ -88,6 +90,8 @@ def build_config(args: argparse.Namespace) -> dpo_loop.Config:
         learning_rate=args.learning_rate,
         beta=args.beta,
         dcp_save_interval=args.dcp_save_interval,
+        sampler_save_interval=args.sampler_save_interval,
+        checkpoint_interval_minutes=args.checkpoint_interval_minutes,
         init_from_checkpoint=args.init_from_checkpoint,
         output_model_id=args.output_model_id,
         # A resumed run must score against the same frozen reference snapshot,

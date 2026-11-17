@@ -21,7 +21,6 @@ cfg = dpo_loop.Config(
     max_seq_len=32768,
     batch_size=4,          # preference pairs per optimizer step
     beta=0.1,
-    dcp_save_interval=4,
     runner=RunnerConfig(reference_checkpoint_file="<log_path>/reference_checkpoint.json"),
 )
 dpo_loop.main(cfg)
@@ -64,7 +63,7 @@ python -m examples.dpo.train_dpo_serverless --max-pairs 32 --output-model-id ser
 Flags: `--base-model`, `--tokenizer-model`, `--renderer-name`, `--dataset`,
 `--max-pairs` (default: all valid pairs; pass 32 for an eight-step demo), `--lora-rank`,
 `--max-seq-len`, `--epochs`, `--batch-size`, `--learning-rate`, `--beta`,
-`--dcp-save-interval`, `--log-path`, `--init-from-checkpoint`,
+`--dcp-save-interval`, `--sampler-save-interval`, `--checkpoint-interval-minutes`, `--log-path`, `--init-from-checkpoint`,
 `--output-model-id` (omit to skip promotion), `--wandb-entity` (enables W&B).
 
 [`run_serverless.sh`](run_serverless.sh) prepares the data on first run, exports
@@ -83,13 +82,25 @@ Each step logs `train/dpo_loss` (starts near ln 2 ≈ 0.693 and should fall),
 `train/margin` and `train/accuracy` (should climb). With `--wandb-entity` they
 also go to W&B.
 
+## Configure the schedule and continuation
+
+For cosine decay, set `cfg.lr_scheduler = CosineSchedule(...)` on the Python
+recipe config; `--learning-rate` alone uses the constant default. See the
+[LR schedule example](../../../skills/fireworks-training/references/sdk-recipes.md#learning-rate-schedule-sft-and-dpo).
+The CLI does not expose this scheduler field.
+
+Before resuming or loading an adapter, verify the source base model, effective
+LoRA rank, and checkpoint type. Increasing the requested rank does not convert
+the saved adapter into a higher-rank training run. See
+[continuation preflight](../../../skills/fireworks-training/references/sdk-checkpoints.md#before-planning-lora-continuation).
+
 ## Checkpoints and resume
 
-DCP checkpoints (`step-<N>`, weights + optimizer) are saved every
-`--dcp-save-interval` steps and at the end. The step and dataset cursor go to
-`<log-path>/dataloader.json`, and the frozen reference snapshot id to
-`<log-path>/reference_checkpoint.json`. At start the run logs its checkpoint
-reference prefix, `<account>/run-<32 hex>/<checkpoint>`.
+By default, LoRA saves resumable DCP state and promotable sampler weights at
+epoch ends and on the recipe's 30-minute schedule. A short one-epoch run may
+save only the final checkpoint. Each DCP save records the step and dataset
+cursor in `<log-path>/dataloader.json`.
+The frozen DPO reference is preserved in `<log-path>/reference_checkpoint.json`.
 
 Continue in a fresh process with the **same `--log-path`**:
 
@@ -104,6 +115,23 @@ recipe refuses to resume without it. Reference scores are recomputed from
 that snapshot. Floating-point inference can vary across requests, so a
 resumed loss need not be bit-identical even when the policy and cursor restore
 correctly.
+
+## Evaluate and promote intermediate checkpoints
+
+For a short run with intermediate evaluation, explicitly pass
+`--dcp-save-interval 4 --sampler-save-interval 4 --checkpoint-interval-minutes 0`.
+DCP alone saves recovery state; the sampler interval adds inference exports.
+Startup logs show the normalized LR schedule; before training steps, the recipe
+reports the save cadence and promotion target and warns about recovery-only
+intermediates.
+
+With the default `save_final_checkpoint=True`, the final save is promotable.
+`--output-model-id` promotes it automatically; it does not select by evaluation
+score. Omit it to select manually. Follow
+[save, evaluate, and promote](../../../skills/fireworks-training/references/sdk-checkpoints.md#save-evaluate-and-promote-a-chosen-checkpoint)
+for session-scoped listing and promotion. Compare candidates on the same
+held-out task and safety criteria, including latency; DPO loss alone does not
+prove the model meets those criteria.
 
 ## Notes
 

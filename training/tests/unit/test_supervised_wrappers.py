@@ -58,3 +58,5 @@ def test_wrapper_resolves_tokenizer_from_final_arguments(
     module = importlib.import_module(f"training.examples.{method}.train_{method}_serverless")
     cfg = module.build_config(module.parse_args(argv[2:]))
     assert cfg.tokenizer_model == expected
+    assert cfg.dcp_save_interval is None
+    assert cfg.checkpoint_interval_minutes is None
