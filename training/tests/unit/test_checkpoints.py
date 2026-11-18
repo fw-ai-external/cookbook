@@ -190,6 +190,7 @@ def _make(
     save_state_renames_to: str | None = None,
     serverless=False,
     current_run_id: str | None = None,
+    on_checkpoint_saved=None,
 ):
     fw = _mock_fw_client(rows=fw_rows)
     client = _mock_client(fw=fw, save_state_renames_to=save_state_renames_to)
@@ -205,6 +206,7 @@ def _make(
         save_stabilize_s=0.0,
         save_poll_s=0.01,
         current_run_id=current_run_id,
+        on_checkpoint_saved=on_checkpoint_saved,
     )
     return ckpt, client, fw
 
@@ -822,6 +824,43 @@ class TestResume:
 
 
 class TestSave:
+    def test_recovery_callback_precedes_sampler_failure_and_uses_committed_cursor(self, log_dir):
+        seen = []
+
+        def committed(reference, cursor_path):
+            seen.append((reference, json.loads(cursor_path.read_text())))
+            client.save_weights_for_sampler.assert_not_called()
+
+        ckpt, client, _ = _make(log_dir, save_state_renames_to="step-0", on_checkpoint_saved=committed)
+        client.save_weights_for_sampler.side_effect = RuntimeError("sampler unavailable")
+        with pytest.raises(RuntimeError, match="sampler unavailable"):
+            ckpt.save("step-42", resumable=True, promotable=True, data_consumed=84)
+        assert seen == [
+            ("step-0", {"schema_version": 1, "checkpoints": {"step-0": {"step": 42, "data_consumed": 84}}})
+        ]
+
+    def test_repeated_dcp_save_retries_recovery_publication_without_saving_weights_again(self, log_dir):
+        published = []
+
+        def committed(reference, cursor_path):
+            published.append((reference, json.loads(cursor_path.read_text())["checkpoints"]))
+            if len(published) == 1:
+                raise RuntimeError("customer storage unavailable")
+
+        ckpt, client, _ = _make(log_dir, on_checkpoint_saved=committed)
+        with pytest.raises(RuntimeError, match="customer storage unavailable"):
+            ckpt.save("step-2", resumable=True, promotable=True, data_consumed=4)
+        client.save_weights_for_sampler.assert_not_called()
+        ckpt.save("step-2", resumable=True, promotable=False, data_consumed=4)
+        client.save_state.assert_called_once_with("step-2")
+        assert published == [("step-2", {"step-2": {"step": 2, "data_consumed": 4}})] * 2
+
+    def test_recovery_callback_requires_a_dcp_and_committed_cursor(self, log_dir):
+        callback = MagicMock()
+        ckpt, client, _ = _make(log_dir, on_checkpoint_saved=callback)
+        ckpt.save("step-1", resumable=True, promotable=False)
+        callback.assert_not_called()
+
     def test_returns_authoritative_dcp_path_and_reuses_it_on_repeat_save(self, log_dir: str) -> None:
         ckpt, client, _ = _make(log_dir)
         saved_path = "account/run-0123456789abcdef0123456789abcdef/server-chosen-checkpoint"

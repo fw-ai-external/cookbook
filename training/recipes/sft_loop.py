@@ -43,7 +43,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import Any, Dict, List, Literal
+from typing import Any, Callable, Dict, List, Literal
 
 import torch
 from dotenv import load_dotenv
@@ -101,6 +101,7 @@ from training.utils.runner_state import (
     write_running_step,
 )
 from training.utils.serverless import setup_serverless_training
+from training.utils.sft_runtime import SFTRuntime
 from training.utils.sft_generation_eval import (
     prepare_generation_eval,
     run_generation_eval,
@@ -971,6 +972,7 @@ def run_eval(
     step: int,
     epoch: int | None,
     metric_prefixes: tuple[str, ...] = ("eval",),
+    check_active: Callable[[], None] | None = None,
 ) -> float | None:
     """Run evaluation without affecting model weights or optimizer state.
 
@@ -993,6 +995,8 @@ def run_eval(
     train_loss_fn = make_batch_weighted_sft_loss_fn()
 
     def _eval_batch(b: List[sdk.Datum]) -> Dict[str, float]:
+        if check_active is not None:
+            check_active()
         fwd = client.forward(b, "cross_entropy")
         logprobs_list = [fwd.loss_fn_outputs[i]["logprobs"].to_torch() for i in range(len(b))]
         _, metrics = train_loss_fn(b, logprobs_list)
@@ -1041,8 +1045,23 @@ def run_eval(
 
 def main(
     config: Config,
+    *,
+    runtime: SFTRuntime | None = None,
 ):
     cfg = config
+    if runtime is not None:
+        if not cfg.serverless or cfg.close_session_on_exit:
+            raise ValueError("caller-owned SFT runtime requires serverless=True and close_session_on_exit=False")
+        if cfg.generation_eval:
+            raise ValueError("caller-owned SFT runtime does not support generation_eval")
+        if "://" in cfg.log_path:
+            raise ValueError("caller-owned SFT runtime requires a local log_path for checkpoint cursor commits")
+        runtime.check_active()
+
+    def check_active() -> None:
+        if runtime is not None:
+            runtime.check_active()
+
     runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
@@ -1114,8 +1133,10 @@ def main(
                 additional_headers=additional_headers,
                 stack=stack,
                 close_session_on_exit=cfg.close_session_on_exit,
+                **({"runtime": runtime} if runtime is not None else {}),
             )
-            stack.callback(service.close)
+            if runtime is None:
+                stack.callback(service.close)
             # Per-token billed by the pool trainer; there is no dedicated
             # accelerator to report, and the control plane must skip its own
             # token-billing leg (mark_serverless) to avoid double-charging.
@@ -1281,6 +1302,7 @@ def main(
 
         # -- Resume ---------------------------------------------------------------
 
+        check_active()
         resume_info = ckpt.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
             warm_start_from_adapter=cfg.warm_start_from_adapter,
@@ -1337,6 +1359,7 @@ def main(
             data: List[sdk.Datum],
             metric_prefixes: tuple[str, ...] = ("eval",),
         ) -> None:
+            check_active()
             try:
                 eval_loss = run_eval(
                     eval_data=data,
@@ -1345,6 +1368,7 @@ def main(
                     step=step,
                     epoch=epoch,
                     metric_prefixes=metric_prefixes,
+                    **({"check_active": check_active} if runtime is not None else {}),
                 )
                 if eval_loss is not None:
                     metrics = {}
@@ -1353,6 +1377,8 @@ def main(
                         metrics[f"{prefix}/ppl"] = perplexity_from_nll(eval_loss)
                     runner.append_metrics(step, metrics)
             except Exception as e:
+                if runtime is not None:
+                    raise
                 phase = "pre-training" if epoch is None else f"epoch {epoch + 1}"
                 logger.warning("Eval failed at %s, continuing: %s", phase, e)
 
@@ -1370,6 +1396,7 @@ def main(
 
         def _save_scheduled_checkpoint() -> None:
             nonlocal last_save_at, last_save_step
+            check_active()
             with timer("checkpoint_save"):
                 ckpt.save(
                     f"step-{step}",
@@ -1395,11 +1422,15 @@ def main(
             data_consumed: int,
         ) -> int:
             """Submit one fwd_bwd + optim_step pair (non-blocking). Returns updated step."""
+            check_active()
             tokens = sum(len(c.tokens) for d in batch for c in d.model_input.chunks if hasattr(c, "tokens"))
             loss_weight = _batch_loss_weight(batch)
             step += 1
             adam = sdk.AdamParams(learning_rate=_current_lr(step), **adam_kwargs)
             t_submit = time.time()
+            forward_backward = client.submit_forward_backward(batch, loss_fn="cross_entropy")
+            check_active()
+            optimizer = client.submit_optim_step(adam, emit_grad_norm_metrics=cfg.grad_norm_metrics)
             in_flight.append(
                 (
                     step,
@@ -1407,11 +1438,8 @@ def main(
                     loss_weight,
                     data_consumed,
                     t_submit,
-                    client.submit_forward_backward(batch, loss_fn="cross_entropy"),
-                    client.submit_optim_step(
-                        adam,
-                        emit_grad_norm_metrics=cfg.grad_norm_metrics,
-                    ),
+                    forward_backward,
+                    optimizer,
                 )
             )
             return step
@@ -1440,6 +1468,7 @@ def main(
             dcp_due = dcp_save_interval > 0 and s % dcp_save_interval == 0
             sampler_due = sampler_save_interval > 0 and s % sampler_save_interval == 0
             if dcp_due or sampler_due:
+                check_active()
                 with timer("checkpoint_save"):
                     logger.info(
                         "Saving intermediate checkpoint at step %d (dcp=%s, sampler=%s)",
@@ -1626,6 +1655,7 @@ def main(
         # A zero-step resume must still export and promote the loaded weights.
         needs_model_finalization = resume_info is not None and bool(cfg.output_model_id)
         if cfg.save_final_checkpoint and (trained_new_steps or needs_model_finalization):
+            check_active()
             logger.info("Saving final checkpoint (step %d)...", step)
             cp_name = f"step-{step}"
             final_training_checkpoint = ckpt.save(
@@ -1635,6 +1665,7 @@ def main(
                 data_consumed=cursor.value,
             )
             if cfg.output_model_id:
+                check_active()
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model, checkpoint_name=cp_name)
                 runner.write_output_model(
                     model_id=cfg.output_model_id,
@@ -1657,6 +1688,7 @@ def main(
             except Exception:
                 logger.exception("Generation evaluation failed; the trained model is still available")
 
+        check_active()
         write_completed(runner, step=step, total_steps=step)
         logger.info("Training complete: %d optimizer steps", step)
         wandb_finish()
