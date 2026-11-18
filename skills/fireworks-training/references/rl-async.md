@@ -24,6 +24,20 @@ rollout adapter.
 
 ## Responsibility boundary
 
+For dedicated rollouts, we recommend `Config.backend_managed_concurrency=True`:
+let serving admission control inference work and use the SDK's bounded overload
+retries. Independent client controllers cannot coordinate a deployment-wide
+budget and can leave serving capacity unused as tool waits and rollout demand
+change. See [recommended serving admission](rl-concurrency.md#recommended-serving-admission)
+for the ownership boundary and retry guidance.
+
+The option disables the sampler-local controller, and Harbor/TITO sidecars
+inherit that choice. The default remains `False` for backward compatibility.
+The cookbook's declared minimum SDK includes the option on its service sampler
+factory. Keep runner environment/group and version-admission budgets bounded.
+Queue deadlines remain a separate serving setting. Record overload rejections,
+retries and cancelled work in experiment costs.
+
 Users provide:
 
 - dataset rows through `Config.dataset` or `rows=`;
@@ -167,9 +181,9 @@ the barrier; a slower callback blocks weight publication for its remaining
 tail, reported as `eval/weight_sync_wait_time`.
 
 `max_concurrency_rollout_sample` limits training rollout calls owned by the
-producer; evaluation fan-out does not consume those slots. Both paths share the
-sampler's adaptive inference-request controller, so size deployment capacity
-for their combined peak and let the evaluation callback bound its own fan-out.
+producer; evaluation fan-out does not consume those slots. Both paths use the
+sampler's selected admission mode, so size deployment capacity for their
+combined peak and let the evaluation callback bound its own fan-out.
 Do not add evaluation calls to the producer merely to reuse its admission
 budget: evaluation remains outside training groups and durability accounting.
 
@@ -203,7 +217,7 @@ There is one optimizer update after every backward in its window succeeds.
 
 The async loop creates one sampler and passes that exact object through
 `RolloutSetup`. All rollout trajectories and evaluation calls therefore share
-one HTTP connection pool, deployment route, and sampler concurrency controller.
+one HTTP connection pool, deployment route, and selected sampler admission mode.
 A rollout factory may own a gateway or other facade over the sampler, but the
 sampler itself remains borrowed.
 

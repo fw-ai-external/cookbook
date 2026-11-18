@@ -642,6 +642,29 @@ def test_launch_spec_keeps_full_history_as_the_default(tmp_path) -> None:
     assert spec.prompt_mode == "full_history"
 
 
+@pytest.mark.parametrize("backend_managed", [False, True])
+def test_launch_spec_preserves_backend_managed_concurrency(
+    tmp_path, backend_managed
+) -> None:
+    setup = _setup(tmp_path)
+    setup.sampler = SimpleNamespace(
+        concurrency_controller=None if backend_managed else object()
+    )
+    spec = sidecar_runtime.build_launch_spec(
+        setup,
+        _fake_bundle(tmp_path / "bundle"),
+        _tito(),
+        call_classifier="tools_present",
+        metadata={},
+    )
+    assert (
+        json.loads(sidecar_runtime.launch_spec_json(spec))[
+            "backend_managed_concurrency"
+        ]
+        is backend_managed
+    )
+
+
 @pytest.mark.parametrize(
     ("stdout", "expected"),
     [

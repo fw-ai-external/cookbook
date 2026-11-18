@@ -8,6 +8,21 @@ def test_sidecar_supports_scoped_failure_trace_retention() -> None:
     assert callable(TITOSidecar.dump_failure_trace)
 
 
+def test_sampling_supports_backend_managed_concurrency() -> None:
+    from fireworks.training import sdk
+
+    client = sdk.FiretitanSamplingClient.create(
+        inference_url="https://api.example.com",
+        model="test-model",
+        api_key="test-key",
+        backend_managed_concurrency=True,
+    )
+    try:
+        assert client.deployment_sampler.concurrency_controller is None
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize("head,mask", [(True, False), (False, True), (True, True)])
 def test_sampling_support_request_keeps_independent_references_on_wire(
     head: bool, mask: bool
