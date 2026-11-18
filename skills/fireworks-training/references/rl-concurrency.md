@@ -3,6 +3,30 @@
 The synchronous and asynchronous recipes expose different concurrency
 semantics because they own different schedulers.
 
+## Recommended serving admission
+
+For dedicated asynchronous RL rollouts, set
+`Config.backend_managed_concurrency=True` and rely on the serving engine's
+admission control. Each client-side controller sees only its own sampler;
+independent processes, hosts and sandbox sidecars cannot use those local windows
+to enforce a global deployment budget. Independent throttling also makes engine
+saturation harder to maintain when tool waits and trajectory lengths vary.
+
+Offer enough bounded rollout work to keep serving busy, and let the backend's
+batch, KV and overload limits determine admission. Use the SDK's existing
+bounded retry policy with jittered backoff for retryable overload responses;
+avoid stacking another retry loop around each sampling call. Keep failed
+attempts and retry costs in the run accounting. Watch queue time, overload
+responses and throughput while tuning the offered workload; a longer queue
+deadline increases tolerated waiting, not serving capacity.
+
+Keep runner environment, group and policy-staleness budgets: they bound different
+resources from sampler-local inference requests. Backend limits apply to work
+reaching each serving instance; a strict deployment-wide cap across replicas
+needs shared backend admission. The option adds no such global cap and sends no
+new backend mode or concurrency value. The adaptive default remains available
+for compatibility and for callers deliberately protecting one client's budget.
+
 ## Synchronous `rl_loop`
 
 `prompt_groups_per_step` is the batch-native concurrency boundary. The recipe
@@ -29,10 +53,13 @@ Use the async recipe for completion-triggered refill across optimizer windows
 with independently bounded rollout concurrency and policy staleness.
 
 The recipe creates one sampler and injects it into `RolloutSetup`; training and
-evaluation rollouts share its HTTP pool and adaptive-concurrency controller.
+evaluation rollouts share its HTTP pool and selected admission mode.
 Rollout factories must reuse `setup.sampler` when present rather than creating a
-second sampler or controller. This sampler-level controller is distinct from
-the recipe's rollout-call admission cap above.
+second sampler or controller. With the recommended option, no sampler-local
+controller is created, including inside Harbor/TITO sidecars. The recipe's
+rollout-call admission cap above remains independent.
+
+### Compatibility adaptive controller
 
 On a dedicated deployment, the controller uses prefill queue duration as its
 congestion signal. Serverless inference does not expose that metric, so the

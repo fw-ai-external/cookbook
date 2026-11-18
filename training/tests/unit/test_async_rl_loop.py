@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +28,20 @@ class _StopAfterRolloutSetup(RuntimeError):
 
 class _StopAfterCoordinatorSetup(RuntimeError):
     pass
+
+
+def test_backend_mode_preserves_legacy_positional_config() -> None:
+    expected = async_rl_loop.Config(
+        log_path="/tmp/legacy", min_group_size=2, cleanup_on_exit=False
+    )
+    legacy_args = [
+        getattr(expected, config_field.name)
+        for config_field in fields(expected)
+        if config_field.init and config_field.name != "backend_managed_concurrency"
+    ]
+    assert async_rl_loop.Config(*legacy_args) == expected
+    opted_in = async_rl_loop.Config(*legacy_args, backend_managed_concurrency=True)
+    assert opted_in.backend_managed_concurrency
 
 
 def test_evaluation_rollout_context_is_explicit_and_compatible() -> None:
@@ -277,9 +292,11 @@ def test_main_requests_trainer_cleanup_for_empty_job_id(
 
 
 @pytest.mark.parametrize("advantage_mode", ["rollout_setup", "default", "mean_only"])
+@pytest.mark.parametrize("backend_managed", [False, True])
 def test_main_injects_sampler_and_advantages_and_closes_before_service(
     monkeypatch: pytest.MonkeyPatch,
     advantage_mode: str,
+    backend_managed: bool,
 ) -> None:
     events: list[str] = []
     expected_tokenizer = object()
@@ -303,8 +320,11 @@ def test_main_injects_sampler_and_advantages_and_closes_before_service(
         def create_training_client(self, *_args, **_kwargs):
             return object()
 
-        def create_deployment_sampler(self, *, tokenizer):
+        def create_deployment_sampler(self, *, tokenizer, **kwargs):
             assert tokenizer is expected_tokenizer
+            assert kwargs == (
+                {"backend_managed_concurrency": True} if backend_managed else {}
+            )
             return sampler
 
         def hotload_sampler_snapshot(self, path: str) -> None:
@@ -387,9 +407,14 @@ def test_main_injects_sampler_and_advantages_and_closes_before_service(
 
     cfg = async_rl_loop.Config(
         log_path="/tmp/async_rl_test_logs",
+        backend_managed_concurrency=backend_managed,
         deployment=async_rl_loop.DeployConfig(tokenizer_model="Qwen/Qwen3-1.7B"),
     )
-    error = _StopAfterRolloutSetup if advantage_mode == "rollout_setup" else _StopAfterCoordinatorSetup
+    error = (
+        _StopAfterRolloutSetup
+        if advantage_mode == "rollout_setup"
+        else _StopAfterCoordinatorSetup
+    )
     options = {"advantage_fn": mean_only} if advantage_mode == "mean_only" else {}
     with pytest.raises(error):
         async_rl_loop.main(

@@ -136,6 +136,7 @@ class TITOSidecarLaunchSpec:
     debug_redact_text: bool
     routing_matrix_format: str = "base64_inline"
     r3_store_id: str | None = None
+    backend_managed_concurrency: bool = False
 
 
 def _source_roots() -> tuple[Path, Path]:
@@ -433,6 +434,7 @@ def build_launch_spec(
         schema_version=2,
         routing_matrix_format=getattr(setup.sampler, "routing_matrix_format", "base64_inline"),
         r3_store_id=getattr(setup.sampler, "r3_store_id", None),
+        backend_managed_concurrency=getattr(setup.sampler, "concurrency_controller", False) is None,
         bundle_digest=bundle.digest,
         inference_base_url=setup.inference_base_url,
         api_key=setup.api_key,
@@ -929,6 +931,7 @@ async def serve(spec_path: Path) -> None:
         model=str(spec["model"]),
         api_key=str(spec["api_key"]),
         tokenizer=tokenizer,
+        **({"backend_managed_concurrency": True} if spec.get("backend_managed_concurrency", False) else {}),
     )
     sampler.routing_matrix_format = spec.get("routing_matrix_format", "base64_inline")
     sampler.r3_store_id = spec.get("r3_store_id")

@@ -155,6 +155,8 @@ class Config:
     max_concurrency_rollout_sample: int | None = None
     """In-flight LLM-call cap (same unit as ``deployment.max_batch_size``);
     must be ``>= completions_per_prompt`` or the gate stalls."""
+    backend_managed_concurrency: bool = field(default=False, kw_only=True)
+    """Use serving capacity control without a sampler-local concurrency controller."""
     min_group_size: int = 1
     """Minimum surviving rollout runs per row to emit a PromptGroup."""
     max_incomplete_group_retries: int = 0
@@ -258,6 +260,8 @@ async def main(
     Tinker path.
     """
     cfg = config
+    if type(cfg.backend_managed_concurrency) is not bool:
+        raise TypeError("backend_managed_concurrency must be a bool")
     if evaluation_interval < 1:
         raise ValueError("evaluation_interval must be >= 1")
     policy_loss = objective.GRPOConfig(eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high)
@@ -427,7 +431,8 @@ async def main(
             http_timeout=cfg.deployment.sample_timeout,
             router_replay=router_replay_enabled,
         )
-        sampler = await run_in_thread(service.create_deployment_sampler, tokenizer=tokenizer)
+        sampler_options = {"backend_managed_concurrency": True} if cfg.backend_managed_concurrency else {}
+        sampler = await run_in_thread(service.create_deployment_sampler, tokenizer=tokenizer, **sampler_options)
         stack.push_async_callback(close_in_thread, sampler.close)
         # One rollout object serves training and evaluation, so stateful
         # rollouts (sandbox pools, judges) keep a single concurrency budget.
