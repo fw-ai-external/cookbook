@@ -15,8 +15,8 @@ from training.renderer import (
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.renderer.base import RenderedMessage
 from training.utils.data import prepare_sampling_messages
+from training.utils.errors import DatasetError
 from training.utils.losses import make_batch_weighted_sft_loss_fn
-from training.utils.runner import DatasetError
 from training.utils.supervised import (
     build_datum_from_token_mask,
     build_renderer,
@@ -1355,7 +1355,6 @@ def test_kimi_counts_image_tokens_without_checkpoint_code(
     import json
 
     from PIL import Image
-
     from training.renderer.kimi_k31 import KimiK31ImageTokenCounter
     from training.utils.supervised import _get_image_processor_with_remote_code_default
 

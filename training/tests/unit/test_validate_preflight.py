@@ -5,8 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
-from training.utils.runner import UserConfigError
+from training.utils.errors import UserConfigError
 from training.utils.validation import validate_config, validate_preflight
 
 

@@ -137,6 +137,17 @@ different input surface; use the recipe's snake-case fields on Training API.
 See the [cookbook reference](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/reference)
 and [checkpoint selection](sdk-checkpoints.md#save-evaluate-and-promote-a-chosen-checkpoint).
 
+## Logging and recovery
+
+Recipes report progress through logs, W&B, and optional JSONL. The legacy managed `runner`
+config, `RunnerIO`, and status/metadata/output-model file hooks are removed.
+Use the recipe return value for final resource IDs. DCP checkpoints and
+`dataloader.json` still own training recovery; serverless DPO also persists its
+frozen reference in `reference_checkpoint.json` under `log_path` (override with
+`reference_checkpoint_file`). Keep that file when resuming. Error types live in
+`training.utils.errors`. Client phase tracing and the canonical JSONL
+metrics ledger remain available.
+
 ## Resume
 
 Auto-resume is scoped to one trainer. Pin both runs to the same trainer via `cfg.trainer.job_id` (all recipes; the reference trainer is SDK-managed, so there is no separate reference job id to pin), keep the same `log_path`, and rerun. `TrainingCheckpoints.resume()` lists the trainer's checkpoints on the control plane, picks the newest resumable row, and restores the rollout cursor from `dataloader.json`. See [`sdk-checkpoints.md`](sdk-checkpoints.md) for the full priority order and constraints.

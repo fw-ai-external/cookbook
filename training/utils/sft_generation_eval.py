@@ -12,7 +12,6 @@ from fireworks.training import sdk
 
 from training.renderer.message_weights import _mode_targets
 from training.utils import fileio
-from training.utils.runner import RunStatus
 from training.utils.supervised import (
     build_tool_prefixed_messages,
     normalize_messages,
@@ -36,7 +35,9 @@ def _sampling_prompt(prompt, record, renderer, tokenizer) -> tuple[Any, list[str
     if all(isinstance(chunk, sdk.types.EncodedTextChunk) for chunk in prompt.chunks):
         return prompt, None
     # lazy: the RL rollout helper is only needed for image prompts
-    from training.utils.rl.rollout.renderer import build_multimodal_completions_prompt_token_ids
+    from training.utils.rl.rollout.renderer import (
+        build_multimodal_completions_prompt_token_ids,
+    )
 
     # Prefer the exact tool-prefixed sequence prepare_generation_eval stored;
     # fall back to messages for callers that pass records directly.
@@ -178,7 +179,6 @@ def run_generation_eval(
     tokenizer,
     service,
     client,
-    runner,
     step,
 ) -> None:
     """Sample base and trained answers. Log inference or artifact errors and return."""
@@ -189,9 +189,6 @@ def run_generation_eval(
         "checkpoints": ["Original", "Your model"],
         "examples": [],
     }
-    runner.write_status(
-        RunStatus.EVALUATION, step=step, total_steps=step, message="generating baseline and trained-model comparisons"
-    )
     try:
         sampler_path = client.save_weights_for_sampler(f"eval-step-{step}").path
         result["trained_checkpoint"] = sampler_path

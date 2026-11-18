@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 import training.recipes.dpo_loop as dpo_loop
 from training.examples.dpo import train_dpo_serverless
 from training.examples.dpo.prepare_data import row_to_preference
@@ -31,7 +30,7 @@ def test_serverless_dpo_records_frozen_reference_under_log_path(tmp_path):
         train_dpo_serverless.parse_args(["--log-path", str(tmp_path / "run")])
     )
 
-    assert cfg.runner.reference_checkpoint_file == str(
+    assert cfg.reference_checkpoint_file == str(
         tmp_path / "run" / "reference_checkpoint.json"
     )
 

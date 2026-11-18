@@ -10,7 +10,7 @@ import logging
 import re
 
 try:
-    from fireworks.training.sdk.errors import format_sdk_error, DOCS_SDK
+    from fireworks.training.sdk.errors import DOCS_SDK, format_sdk_error
 except ImportError:
     from fireworks.training.sdk.errors import format_sdk_error
     DOCS_SDK = ""
@@ -35,7 +35,7 @@ except ImportError:
             )
         ]
 from training.utils.config import DeployConfig, WeightSyncConfig
-from training.utils.runner import UserConfigError
+from training.utils.errors import UserConfigError
 
 logger = logging.getLogger(__name__)
 

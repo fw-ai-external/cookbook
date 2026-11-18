@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-
 import pytest
-
 import training.recipes.orpo_loop as module
 from training.utils import supervised as supervised_utils
-from training.utils.runner import UserConfigError
+from training.utils.errors import UserConfigError
 
 
 class _StopAfterProvisioning(RuntimeError):
@@ -203,7 +201,6 @@ def test_eager_rendering_builds_validated_concrete_renderer(
     tokenizer = object()
 
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setattr(module, "RunnerIO", lambda _cfg: FakeRunner())
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
     monkeypatch.setattr(

@@ -23,13 +23,6 @@ from typing import Any, Iterable, Literal, Mapping, Sequence
 import numpy as np
 import torch
 from fireworks.training import sdk
-from training.tokenizer_identity import (
-    is_code_free_model_name,
-    is_standard_tokenizer_renderer_name,
-    is_deepseek_v4_model_name,
-    is_deepseek_v4_tokenizer_source,
-    requires_code_free_tokenizer_loading,
-)
 
 import training.renderer._gemma4_split as _gemma4_split_renderer  # noqa: F401 — split override
 import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
@@ -61,7 +54,10 @@ from training.renderer.message_weights import (
     without_trainable_flags,
 )
 from training.renderer.model_info import get_recommended_renderer_name
-from training.renderer.model_selection import local_declared_renderer, resolve_exact_model_renderer
+from training.renderer.model_selection import (
+    local_declared_renderer,
+    resolve_exact_model_renderer,
+)
 from training.renderer.plugins import (
     renderer_image_processor_loader,
     renderer_plugin_supports_images,
@@ -80,7 +76,14 @@ from training.renderer.thinking_trace import (
     normalize_thinking_trace_history_mode,
     resolve_thinking_trace_renderer_plan,
 )
-from training.utils.runner import DatasetError
+from training.tokenizer_identity import (
+    is_code_free_model_name,
+    is_deepseek_v4_model_name,
+    is_deepseek_v4_tokenizer_source,
+    is_standard_tokenizer_renderer_name,
+    requires_code_free_tokenizer_loading,
+)
+from training.utils.errors import DatasetError
 from training.utils.tokenizers import load_tokenizer
 
 

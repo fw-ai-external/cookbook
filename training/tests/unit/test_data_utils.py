@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import pytest
-
 from training.utils import replicate_rows_for_epochs
 from training.utils.data import (
     iter_preference_examples,
     load_jsonl_dataset,
     load_preference_dataset,
 )
-from training.utils.runner import DatasetError
+from training.utils.errors import DatasetError
 
 
 def test_replicate_rows_for_epochs_each_row_is_independent():

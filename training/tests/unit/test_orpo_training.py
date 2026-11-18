@@ -11,11 +11,10 @@ from typing import Any
 from unittest.mock import MagicMock, call
 
 import pytest
-from fireworks.training import sdk as tinker
 import torch
-
+from fireworks.training import sdk as tinker
 from training.recipes import orpo_loop
-from training.utils.runner import DatasetError, RunnerConfig
+from training.utils.errors import DatasetError
 
 
 @pytest.fixture
@@ -82,19 +81,14 @@ def orpo_run(
         orpo_loop, "build_renderer_from_resolved_name", build_renderer_from_resolved_name
     )
     monkeypatch.setattr(orpo_loop, "setup_wandb", lambda *a: None)
-    monkeypatch.setattr(orpo_loop, "wandb_log", lambda *a: None)
+    metrics = []
+    monkeypatch.setattr(orpo_loop, "log_metrics", lambda values, step: metrics.append({"step": step, **values}))
     monkeypatch.setattr(orpo_loop, "wandb_finish", lambda: None)
     cfg = orpo_loop.Config(
         log_path=str(tmp_path),
         dataset=str(tmp_path / "pairs.jsonl"),
         tokenizer_model="test-tokenizer",
         batch_size=2,
-        runner=RunnerConfig(
-            status_file=str(tmp_path / "status.json"),
-            metrics_file=str(tmp_path / "metrics.jsonl"),
-            metadata_file=str(tmp_path / "metadata.json"),
-            output_model_path=str(tmp_path / "output.json"),
-        ),
     )
     handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
     yield SimpleNamespace(
@@ -104,6 +98,7 @@ def orpo_run(
         checkpoints=checkpoints,
         gradients=gradients,
         path=tmp_path,
+        metrics=metrics,
     )
     for sig, handler in handlers.items():
         signal.signal(sig, handler)
@@ -157,18 +152,8 @@ def test_orpo_full_and_partial_batches_checkpoint_and_report(
     run.checkpoints.promote_latest.assert_called_once_with(
         "test-orpo", run.cfg.base_model
     )
-    assert json.loads((run.path / "status.json").read_text())["code"] == 0
-    assert json.loads((run.path / "output.json").read_text())["checkpoint"] == "step-4"
-    metrics = [
-        json.loads(line)
-        for line in (run.path / "metrics.jsonl").read_text().splitlines()
-    ]
-    assert [m["step"] for m in metrics] == [1, 2, 3, 4]
-    assert [m["train/epoch"] for m in metrics] == [1, 1, 2, 2]
-    assert all(m["train/accuracy"] == 1.0 for m in metrics)
-    assert (
-        json.loads((run.path / "metadata.json").read_text())["metadata"]["tokens"] == 78
-    )
+    assert [m["step"] for m in run.metrics] == [1, 2, 3, 4]
+    assert all(m["train/accuracy"] == 1.0 for m in run.metrics)
     run.service.close.assert_called_once()
 
 
@@ -203,7 +188,6 @@ def test_orpo_unusable_dataset_closes_trainer(
     run.service.close.assert_called_once()
     run.client.optim_step.assert_not_called()
     run.checkpoints.save.assert_not_called()
-    assert json.loads((run.path / "status.json").read_text())["code"] != 0
 
 
 def test_orpo_failed_optimizer_closes_trainer_without_checkpoint(
@@ -216,4 +200,3 @@ def test_orpo_failed_optimizer_closes_trainer_without_checkpoint(
         orpo_loop.main(run.cfg)
     run.service.close.assert_called_once()
     run.checkpoints.save.assert_not_called()
-    assert json.loads((run.path / "status.json").read_text())["code"] != 0

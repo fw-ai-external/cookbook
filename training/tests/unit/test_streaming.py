@@ -19,15 +19,14 @@ import json
 import os
 
 import pytest
-
 import training.utils.streaming as streaming
-from training.utils.runner import DatasetError
+from training.utils.errors import DatasetError
 from training.utils.streaming import (
-    AppendOnlyPickleLog,
     DEFAULT_PREFETCH_FACTOR,
     DEFAULT_RENDER_WORKERS,
-    GcsJsonlRenderDataset,
     JSONL_ROW_INDEX_KEY,
+    AppendOnlyPickleLog,
+    GcsJsonlRenderDataset,
     JsonlRenderDataset,
     LengthGroupedBatchSampler,
     _scan_jsonl_offsets,
@@ -562,6 +561,7 @@ def test_length_grouped_sampler_is_deterministic_per_seed():
 
 def test_length_grouped_sampler_reduces_within_batch_spread():
     import random
+
     import torch
 
     rng = random.Random(0)
@@ -647,6 +647,7 @@ def test_length_grouped_sampler_cuts_total_padding():
     feature exists, so assert the padding token total drops sharply.
     """
     import random
+
     import torch
 
     rng = random.Random(7)

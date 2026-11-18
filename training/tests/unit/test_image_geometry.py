@@ -11,7 +11,7 @@ from training.dataset_utils.image_geometry import (
     qwen_vl_aspect_ratio_message,
 )
 from training.renderer.base import image_to_chunk
-from training.utils.runner import DatasetError
+from training.utils.errors import DatasetError
 from training.utils.streaming import (
     JSONL_ROW_INDEX_KEY,
     dataset_error_for_rendered_row,

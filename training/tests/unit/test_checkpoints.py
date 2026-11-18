@@ -8,8 +8,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-
-from training.utils.runner import UserConfigError
 from training.utils.checkpoints import (
     DATALOADER_BASE_NAME,
     DATALOADER_HISTORY_KEEP,
@@ -17,13 +15,14 @@ from training.utils.checkpoints import (
     ResumeInfo,
     TrainingCheckpoints,
     _logical_name,
-    _newest_first,
     _logical_name_for_run,
+    _newest_first,
     _public_logical_name,
     resolve_checkpoint_cadence,
     timed_checkpoint_due,
     validate_warm_start_config,
 )
+from training.utils.errors import UserConfigError
 
 
 @pytest.mark.parametrize(

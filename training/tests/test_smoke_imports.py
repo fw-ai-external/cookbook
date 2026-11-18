@@ -67,7 +67,7 @@ UTIL_MODULES = [
     "training.utils.distillation.losses",
     "training.utils.distillation.sampling",
     "training.utils.distillation.teacher",
-    "training.utils.runner",
+    "training.utils.errors",
 ]
 
 

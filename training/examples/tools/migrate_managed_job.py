@@ -48,6 +48,9 @@ _COOKBOOK_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "
 if _COOKBOOK_ROOT not in sys.path:
     sys.path.insert(0, _COOKBOOK_ROOT)
 
+import training.recipes.dpo_loop as dpo_loop
+import training.recipes.orpo_loop as orpo_loop
+import training.recipes.sft_loop as sft_loop
 from fireworks.training.sdk import FireworksClient
 from fireworks.training.sdk.training_spec import (
     ConstantSchedule,
@@ -55,13 +58,8 @@ from fireworks.training.sdk.training_spec import (
     LinearSchedule,
     LRSchedulerSpec,
 )
-
 from training.examples.sft.example_datasets import HF_EXAMPLES, download_example_dataset
-
-import training.recipes.dpo_loop as dpo_loop
-import training.recipes.orpo_loop as orpo_loop
-import training.recipes.sft_loop as sft_loop
-from training.utils import RunnerConfig, TrainerConfig, WandBConfig, fileio, resolve_renderer_snapshot
+from training.utils import TrainerConfig, WandBConfig, fileio, resolve_renderer_snapshot
 from training.utils.checkpoints import DATALOADER_BASE_NAME
 from training.utils.validation import validate_output_model_id
 
@@ -736,7 +734,7 @@ def _build_recipe_config(
         common["ref_cache_batch_size"] = int(settings.ref_cache_batch_size)
     if serverless:
         # A resumed serverless DPO run must score against the same frozen reference.
-        common["runner"] = RunnerConfig(reference_checkpoint_file=fileio.join(inputs.log_path, "reference_checkpoint.json"))
+        common["reference_checkpoint_file"] = fileio.join(inputs.log_path, "reference_checkpoint.json")
     return dpo_loop.Config(**common)
 
 

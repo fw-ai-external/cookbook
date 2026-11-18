@@ -369,7 +369,7 @@ and serverless runs. Resuming an older completed checkpoint does not promote a
 newer export retained on the same trainer.
 
 Serverless DPO stores its fixed reference at a stable job-level
-`runner.reference_checkpoint_file`, separate from per-attempt billing metadata.
+`reference_checkpoint_file` (default: `reference_checkpoint.json` under `log_path`).
 A resumed DPO run with no recoverable reference is rejected rather than
 snapshotting a different policy. DPO replays deterministic rendering/reference
 cache order while skipping optimizer updates for already consumed batches, both

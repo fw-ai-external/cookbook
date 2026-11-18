@@ -7,7 +7,6 @@ from typing import Any
 from unittest.mock import MagicMock, Mock
 
 import pytest
-
 from training.recipes import decision_loop, dpo_loop, orpo_loop, sft_loop
 from training.tests._v4_tokenizer_data import (
     NON_V4_MODEL,
@@ -16,9 +15,14 @@ from training.tests._v4_tokenizer_data import (
     V41_ALIAS,
     assert_stock_tokenizer,
     tampered_v4_dir,
+)
+from training.tests._v4_tokenizer_data import (
     v4_files as v4_files,
 )
-from training.utils.supervised import build_renderer_from_resolved_name, render_messages_to_datums
+from training.utils.supervised import (
+    build_renderer_from_resolved_name,
+    render_messages_to_datums,
+)
 
 _FOREIGN_RENDERER = "qwen3"
 _MESSAGES = [{"role": "user", "content": "Name one prime above 10."}, {"role": "assistant", "content": "11 is prime."}]
@@ -57,8 +61,6 @@ def _stub_common(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> None:
     monkeypatch.setattr(module, "build_service_client", lambda **k: service)
     monkeypatch.setattr(module.ReconnectableClient, "from_training_client", lambda *a, **k: Mock())
     monkeypatch.setattr(module, "TrainingCheckpoints", lambda *a, **k: Mock(resume=lambda **k: None))
-    if hasattr(module, "RunnerIO"):
-        monkeypatch.setattr(module, "RunnerIO", lambda cfg: MagicMock())
 
 
 @pytest.mark.parametrize("module", [sft_loop, dpo_loop, decision_loop], ids=["sft", "dpo", "decision"])
@@ -89,7 +91,6 @@ def test_parent_and_spawn_callback_context(
         monkeypatch.setattr(module, "_prepare_eval_pairs", lambda cfg, pairs: (pairs, []))
         monkeypatch.setattr(module, "resolve_renderer_snapshot", lambda **k: _FOREIGN_RENDERER)
     else:
-        monkeypatch.setattr(module, "write_running_step", lambda *a, **k: None)
         monkeypatch.setattr(module, "prepare_datasets", lambda cfg: (dataset, [], dataset))
 
     base_model, base_model_type, expected = v4_model_context

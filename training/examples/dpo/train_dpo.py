@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""DPO training entry point for managed and standalone use.
-
-When invoked by the managed training workflow, COOKBOOK_* env vars
-are set automatically and RunnerIO handles all file-based coordination.
-"""
+"""Standalone DPO training entry point."""
 
 from __future__ import annotations
 
@@ -11,6 +7,7 @@ import argparse
 import logging
 
 from dotenv import load_dotenv
+
 import training.recipes.dpo_loop as dpo_loop
 from training.utils import TrainerConfig, WandBConfig
 

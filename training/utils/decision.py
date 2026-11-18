@@ -32,7 +32,7 @@ from typing import Any, Literal
 from fireworks.training import sdk
 
 from training.renderer.base import Message, Renderer
-from training.utils.runner import DatasetError
+from training.utils.errors import DatasetError
 from training.utils.supervised import build_datum_from_tokens_and_weights
 
 SYSTEM_PROMPT = "You are a decision engine. You answer questions about a state by replying " "with a single letter."

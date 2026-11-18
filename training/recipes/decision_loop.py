@@ -31,17 +31,15 @@ from training.utils import (
     DatasetError,
     RawRowCursor,
     ReconnectableClient,
-    RunnerIO,
-    RunStatus,
     UserConfigError,
     build_service_client,
+    log_metrics,
     log_metrics_json,
     make_render_dataloader,
     read_api_extra_headers_env,
     setup_wandb,
     validate_config,
     wandb_finish,
-    wandb_log,
 )
 from training.utils.checkpoints import (
     DEFAULT_DCP_SAVE_INTERVAL,
@@ -58,11 +56,6 @@ from training.utils.decision import (
 )
 from training.utils.decision_calibration import calibration_metadata, mean_nll
 from training.utils.resource_autosizing import select_render_worker_count
-from training.utils.runner_state import (
-    start_running,
-    write_completed,
-    write_running_step,
-)
 from training.utils.serverless import setup_serverless_training
 from training.utils.streaming import dataset_error_for_rendered_row
 from training.utils.supervised import RenderedSupervisedDatum
@@ -222,15 +215,14 @@ def prepare_datasets(cfg: Config):
     return training_ds, [t for t, _ in pairs], [d for _, d in pairs]
 
 
-def evaluate(client, datums: list[sdk.Datum], step: int, runner: RunnerIO) -> None:
+def evaluate(client, datums: list[sdk.Datum], step: int) -> None:
     rows = option_logprobs(client, datums)
     labels = [gold_option_index(d) for d in datums]
     loss = mean_nll(rows, labels)
     accuracy = sum(max(range(len(r)), key=r.__getitem__) == y for r, y in zip(rows, labels)) / len(labels)
     logger.info("[Eval] step %d | K-way NLL %.4f | accuracy %.4f", step, loss, accuracy)
     log_metrics_json(step, eval_loss=loss, eval_accuracy=accuracy)
-    wandb_log({"eval/loss": loss, "eval/accuracy": accuracy}, step)
-    runner.append_metrics(step, {"eval/loss": loss, "eval/accuracy": accuracy})
+    log_metrics({"eval/loss": loss, "eval/accuracy": accuracy}, step=step)
 
 
 def main(config: Config) -> dict:
@@ -253,14 +245,10 @@ def main(config: Config) -> dict:
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler, legacy_warmup_steps=cfg.warmup_steps)
     setup_wandb(cfg.wandb, {"lr": cfg.learning_rate, "lr_schedule": lr_scheduler.type, "epochs": cfg.epochs})
 
-    runner = RunnerIO(cfg.runner)
     api_key = os.environ.get("FIREWORKS_API_KEY", "")
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     headers = read_api_extra_headers_env()
-    runner.write_status(
-        RunStatus.PENDING, message="attaching to serverless trainer pool" if cfg.serverless else "provisioning"
-    )
-    with runner, ExitStack() as stack:
+    with ExitStack() as stack:
         if cfg.serverless:
             service, client, ckpt, job_id, max_seq_len = setup_serverless_training(
                 cfg,
@@ -271,8 +259,6 @@ def main(config: Config) -> dict:
                 close_session_on_exit=cfg.close_session_on_exit,
             )
             stack.callback(service.close)
-            runner.set_accelerator_info(None, None, profile=None)
-            runner.mark_serverless()
         else:
             service = build_service_client(
                 api_key=api_key,
@@ -290,9 +276,6 @@ def main(config: Config) -> dict:
             stack.callback(service.close)
             training_client = service.create_training_client(
                 cfg.base_model, lora_rank=cfg.lora_rank, lora_alpha=cfg.lora_alpha
-            )
-            runner.set_accelerator_info(
-                service.accelerator_type, service.accelerator_count, profile=service.training_profile
             )
             job_id, max_seq_len = service.trainer_job_id, service.max_context_length
             client = ReconnectableClient.from_training_client(
@@ -371,9 +354,8 @@ def main(config: Config) -> dict:
         # Decision tuning has no timed checkpoint schedule, only the step cadence.
         dcp_save_interval = DEFAULT_DCP_SAVE_INTERVAL if cfg.dcp_save_interval is None else cfg.dcp_save_interval
         timeout = cfg.step_timeout or DEFAULT_TIMEOUT_S
-        start_running(runner, total_steps=total_steps)
         if step == 0:
-            evaluate(client, eval_data, step, runner)
+            evaluate(client, eval_data, step)
 
         in_flight: deque = deque()
 
@@ -387,8 +369,7 @@ def main(config: Config) -> dict:
                 ckpt.save(f"step-{s}", resumable=dcp_due, promotable=sampler_due, data_consumed=consumed)
             lr = compute_lr(lr_scheduler, step=s, base_lr=cfg.learning_rate, total_steps=total_steps)
             log_metrics_json(s, kway_loss=loss, lr=lr)
-            wandb_log({"train/loss": loss, "train/lr": lr}, s)
-            write_running_step(runner, step=s, total_steps=total_steps, metrics={"train/loss": loss}, tokens=tokens)
+            log_metrics({"train/loss": loss, "train/lr": lr}, step=s)
 
         try:
             for epoch in range(completed_epochs, cfg.epochs):
@@ -417,7 +398,7 @@ def main(config: Config) -> dict:
                 if step == 0:
                     raise DatasetError(NO_VALID_TRAINING_EXAMPLES_MESSAGE)
                 if step > start_step:
-                    evaluate(client, eval_data, step, runner)
+                    evaluate(client, eval_data, step)
         finally:
             while in_flight:
                 try:
@@ -439,8 +420,6 @@ def main(config: Config) -> dict:
             ckpt.save(calibrated, resumable=False, promotable=True, sampler_metadata=metadata)
         if cfg.output_model_id:
             ckpt.promote_latest(cfg.output_model_id, cfg.base_model, checkpoint_name=calibrated)
-            runner.write_output_model(model_id=cfg.output_model_id, checkpoint=calibrated, job_id=job_id)
 
-        write_completed(runner, step=step, total_steps=step)
     wandb_finish()
     return {"steps": step, "job_id": job_id}

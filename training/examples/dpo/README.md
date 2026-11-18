@@ -21,7 +21,6 @@ cfg = dpo_loop.Config(
     max_seq_len=32768,
     batch_size=4,          # preference pairs per optimizer step
     beta=0.1,
-    runner=RunnerConfig(reference_checkpoint_file="<log_path>/reference_checkpoint.json"),
 )
 dpo_loop.main(cfg)
 ```

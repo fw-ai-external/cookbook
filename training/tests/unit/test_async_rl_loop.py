@@ -13,8 +13,8 @@ from types import SimpleNamespace
 import pytest
 from fireworks.training import sdk
 from training.recipes import async_rl_loop
+from training.utils.errors import UserConfigError
 from training.utils.rl.heldout import evaluation_rollout_fn
-from training.utils.runner import UserConfigError
 
 
 class _StopAfterProvisioning(RuntimeError):

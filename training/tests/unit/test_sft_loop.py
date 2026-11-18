@@ -14,7 +14,7 @@ import training.recipes.sft_loop as module
 from fireworks.training import sdk
 from training.utils import supervised as supervised_utils
 from training.utils.checkpoints import TrainingCheckpoints
-from training.utils.runner import DatasetError, RunnerConfig, UserConfigError
+from training.utils.errors import DatasetError, UserConfigError
 from training.utils.streaming import JSONL_ROW_INDEX_KEY
 
 
@@ -616,8 +616,6 @@ def _run_main_with_fake_trainer(
     dataset_path = _write_dataset(tmp_path, rows)
     eval_path = tmp_path / "eval.jsonl"
     eval_path.write_text("\n".join(json.dumps(rows[0]) for _ in range(eval_rows)))
-    metrics_path = tmp_path / "metrics.jsonl"
-    status_path = tmp_path / "status.json"
 
     class FakeClient:
         def submit_forward_backward(self, batch, loss_fn):
@@ -678,6 +676,7 @@ def _run_main_with_fake_trainer(
             events.append(f"eval(step={step}, epoch={epoch})")
         else:
             events.append(f"eval(step={step}, epoch={epoch}, {'+'.join(metric_prefixes)}, n={len(eval_data)})")
+        module.log_metrics({f"{prefix}/loss": 0.5 for prefix in metric_prefixes}, step)
         return 0.5
 
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
@@ -728,14 +727,8 @@ def _run_main_with_fake_trainer(
         if not generation_eval_fails:
             monkeypatch.setattr(module, "prepare_generation_eval", lambda *args, **kwargs: ["prompt"])
             monkeypatch.setattr(module, "run_generation_eval", lambda **kwargs: events.append("generate"))
-    if generation_eval or config_overrides.get("output_model_id"):
-        complete = module.write_completed
-
-        def record_completed(*args, **kwargs):
-            events.append("completed")
-            complete(*args, **kwargs)
-
-        monkeypatch.setattr(module, "write_completed", record_completed)
+    records = []
+    monkeypatch.setattr(module, "log_metrics", lambda metrics, step: records.append({"step": step, **metrics}))
 
     config_kwargs = {
         "log_path": str(tmp_path / "logs"),
@@ -749,18 +742,12 @@ def _run_main_with_fake_trainer(
         "save_final_checkpoint": generation_eval,
         "serverless": generation_eval,
         "generation_eval": generation_eval,
-        "runner": RunnerConfig(
-            metrics_file=str(metrics_path),
-            status_file=str(status_path),
-            output_model_path=str(tmp_path / "output-model.json"),
-        ),
     }
     result = module.main(
         module.Config(**{**config_kwargs, **config_overrides}),
         **({"runtime": runtime} if runtime is not None else {}),
     )
 
-    records = [json.loads(line) for line in metrics_path.read_text().splitlines()] if metrics_path.exists() else []
     return (
         events,
         [record for record in records if "eval/loss" in record or "checkpoint_eval/loss" in record],
@@ -796,7 +783,13 @@ def test_owned_runtime_does_not_close_its_service_after_success(tmp_path, monkey
 
 
 @pytest.mark.parametrize("cancel_on", ["train", "eval(step=0, epoch=None)"])
-def test_owned_runtime_cancellation_stops_new_training_and_final_completion(tmp_path, monkeypatch, cancel_on):
+def test_owned_runtime_cancellation_stops_new_training_and_final_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    cancel_on: str,
+) -> None:
+    caplog.set_level("INFO", logger=module.__name__)
     events = []
 
     def check_active():
@@ -815,11 +808,9 @@ def test_owned_runtime_cancellation_stops_new_training_and_final_completion(tmp_
             save_final_checkpoint=True,
         )
     assert events.count("train") == (1 if cancel_on == "train" else 0)
-    assert "save" not in events and "completed" not in events
+    assert "save" not in events
+    assert "Training complete:" not in caplog.text
     runtime.service.close.assert_not_called()
-    status = json.loads((tmp_path / "status.json").read_text())
-    assert status["code"] != 0
-    assert status["message"] == "cancelled by owner"
 
 
 @pytest.mark.parametrize("serverless", [False, True], ids=["dedicated", "serverless"])
@@ -853,7 +844,7 @@ def test_output_model_finalization_runs_after_terminal_step_resume(
     )
 
     assert events.count("train") == new_steps
-    assert events[-3:] == ["save", "promote", "completed"]
+    assert events[-2:] == ["save", "promote"]
     assert saves == [
         (
             f"step-{final_step}",
@@ -871,10 +862,6 @@ def test_output_model_finalization_runs_after_terminal_step_resume(
     assert result["final_training_checkpoint"] == (
         "account/run-0123456789abcdef0123456789abcdef/server-saved-final" if new_steps else None
     )
-    output = json.loads((tmp_path / "output-model.json").read_text())
-    assert output["model_id"] == "trained-model"
-    assert output["checkpoint"] == f"step-{final_step}"
-    assert json.loads((tmp_path / "status.json").read_text())["message"] == "done"
 
 
 @pytest.mark.parametrize("lora_rank", [0, 16], ids=["full", "lora"])
@@ -924,8 +911,6 @@ def test_terminal_step_resume_promotes_loaded_checkpoint_not_newer_export(
         hot_load_deployment_id=None,
     )
     assert result["steps"] == 9
-    output = json.loads((tmp_path / "output-model.json").read_text())
-    assert output["checkpoint"] == "step-9"
 
 
 @pytest.mark.parametrize("stage", ["save", "promote"])
@@ -944,9 +929,6 @@ def test_terminal_step_finalization_failure_does_not_report_completion(
         )
 
     assert not (tmp_path / "output-model.json").exists()
-    status = json.loads((tmp_path / "status.json").read_text())
-    assert status["code"] != 0
-    assert status["message"] != "done"
 
 
 @pytest.mark.parametrize(
@@ -998,7 +980,7 @@ def test_generation_eval_finishes_before_completion_and_session_close(tmp_path, 
         generation_eval=True,
         resume_info=SimpleNamespace(step=2, data_consumed=4) if resumed else None,
     )
-    assert events[-3:] == ["generate", "completed", "close"]
+    assert events[-2:] == ["generate", "close"]
     assert events.count("close") == 1
     assert events.count("train") == (0 if resumed else 2)
     assert events.count("save") == (0 if resumed else 1)
@@ -1018,14 +1000,11 @@ def test_generation_eval_failure_is_logged_and_training_still_succeeds(tmp_path,
         "job_id": "session-1",
         "final_training_checkpoint": "account/run-0123456789abcdef0123456789abcdef/server-saved-final",
     }
-    assert events[-2:] == ["completed", "close"]
+    assert events[-1:] == ["close"]
     assert "Generation evaluation failed" in caplog.text
     artifact = json.loads((tmp_path / "logs" / "generation_eval.json").read_text())
     assert artifact["status"] == "failed"
     assert "Generation evaluation failed" in artifact["error"]
-    status = json.loads((tmp_path / "status.json").read_text())
-    assert status["code"] == 0
-    assert status["message"] == "done"
 
 
 @pytest.mark.parametrize(
@@ -1060,7 +1039,7 @@ def test_run_eval_logs_once_per_metric_prefix(monkeypatch):
     logged = []
     monkeypatch.setattr(module, "make_batch_weighted_sft_loss_fn", lambda: lambda b, lp: (None, {"ce_loss_sum": 1.0}))
     monkeypatch.setattr(module, "log_metrics_json", lambda step, **kw: logged.append((step, kw)))
-    monkeypatch.setattr(module, "wandb_log", lambda metrics, step: logged.append((step, metrics)))
+    monkeypatch.setattr(module, "log_metrics", lambda metrics, step: logged.append((step, metrics)))
     client = SimpleNamespace(
         forward=lambda batch, loss_fn: SimpleNamespace(
             loss_fn_outputs=[{"logprobs": SimpleNamespace(to_torch=lambda: None)} for _ in batch]
