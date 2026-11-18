@@ -7,14 +7,21 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-
 from fireworks.training.sdk.client import qualify_snapshot_name
-from fireworks.training.sdk.training_spec import CosineSchedule, compute_lr, normalize_lr_scheduler_spec
+from fireworks.training.sdk.training_spec import (
+    CosineSchedule,
+    compute_lr,
+    normalize_lr_scheduler_spec,
+)
 from fireworks.training.sdk.types.save_weights_response import SaveWeightsResponse
 from training.recipes import decision_loop, sft_loop
 from training.renderer.muse_glimmer import MuseGlimmerOptions, MuseGlimmerRenderer
-from training.utils.checkpoints import TrainingCheckpoints, _RUN_ID_RE, _public_logical_name
-from training.utils.runner import DatasetError, UserConfigError
+from training.utils.checkpoints import (
+    _RUN_ID_RE,
+    TrainingCheckpoints,
+    _public_logical_name,
+)
+from training.utils.errors import DatasetError, UserConfigError
 
 from .test_decision_rows import ROW, _GlimmerTokenizer
 from .test_sft_loop import _make_stub_render_worker_state
@@ -60,7 +67,6 @@ class _ControlPlane:
         self.sampler_metadata: dict[str, object] = {}
         self.promoted: list[str] = []
         self.train_steps = 0
-        self.step_tokens: list[int] = []
         self.tokenizer_args: tuple | None = None
         self.learning_rates: list[float] = []
         self.provisioned = False
@@ -167,11 +173,6 @@ def _run(
     monkeypatch.setattr(decision_loop, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(decision_loop, "validate_config", lambda *args, **kwargs: None)
 
-    def _write_running_step(runner, *, tokens, **kwargs):
-        plane.step_tokens.append(tokens)
-
-    monkeypatch.setattr(decision_loop, "write_running_step", _write_running_step)
-
     def _provision(**kwargs):
         plane.provisioned = True
         return plane
@@ -223,7 +224,6 @@ def test_trains_candidates_and_promotes_the_calibrated_checkpoint(monkeypatch, t
     _run(monkeypatch, tmp_path, plane)
 
     assert plane.train_steps == 4
-    assert len(plane.step_tokens) == 4 and all(tokens > 0 for tokens in plane.step_tokens)
     assert plane.sampler_metadata["step-4"] is None
     _assert_calibrated(plane, "step-4-cal")
     assert plane.promoted == ["step-4-cal"]

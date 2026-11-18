@@ -48,13 +48,13 @@ from typing import Any, Callable, Dict, List, Literal
 import torch
 from dotenv import load_dotenv
 from fireworks.training import sdk
-from training.model_defaults import resolve_tokenizer_model
 from fireworks.training.sdk.training_spec import (
     LRSchedulerSpec,
     compute_lr,
     default_constant_schedule,
     normalize_lr_scheduler_spec,
 )
+from training.model_defaults import resolve_tokenizer_model
 from training.utils import (
     DEFAULT_ADAM,
     JSONL_ROW_INDEX_KEY,
@@ -64,13 +64,11 @@ from training.utils import (
     JsonlRenderDataset,
     RawRowCursor,
     ReconnectableClient,
-    RunnerConfig,
-    RunnerIO,
-    RunStatus,
     TrainerConfig,
     WandBConfig,
     build_service_client,
     fileio,
+    log_metrics,
     log_metrics_json,
     make_render_dataloader,
     parse_train_on_what,
@@ -82,12 +80,11 @@ from training.utils import (
     setup_wandb,
     validate_config,
     wandb_finish,
-    wandb_log,
 )
 from training.utils.checkpoints import (
     TrainingCheckpoints,
-    resolve_checkpoint_cadence,
     log_checkpoint_plan,
+    resolve_checkpoint_cadence,
     timed_checkpoint_due,
     validate_warm_start_config,
 )
@@ -95,11 +92,6 @@ from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.losses import make_batch_weighted_sft_loss_fn, perplexity_from_nll
 from training.utils.metrics import optimizer_metrics
 from training.utils.resource_autosizing import select_render_worker_count
-from training.utils.runner_state import (
-    start_running,
-    write_completed,
-    write_running_step,
-)
 from training.utils.serverless import setup_serverless_training
 from training.utils.sft_runtime import SFTRuntime
 from training.utils.sft_generation_eval import (
@@ -933,18 +925,6 @@ class Config:
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
-    runner: RunnerConfig = field(default_factory=RunnerConfig)
-    """Optional orchestration outputs written during training.
-
-    Paths can be set here or via environment variables:
-      COOKBOOK_STATUS_FILE      -- training status + progress (JSON, overwritten each step)
-      COOKBOOK_METADATA_FILE    -- tokens processed + accelerator-seconds (JSON)
-      COOKBOOK_METRICS_FILE     -- per-step metrics (JSONL, appended each step)
-      COOKBOOK_OUTPUT_MODEL_PATH -- final model info written on completion (JSON)
-
-    All paths are optional; unset paths are silently skipped.
-    See training/utils/runner.py for file format details.
-    """
 
     base_model_type: str = ""
     """Independent model-family context that can only restrict code loading."""
@@ -1030,9 +1010,9 @@ def run_eval(
     )
     for prefix in metric_prefixes:
         log_metrics_json(step, **{f"{prefix}_loss": eval_loss, f"{prefix}_ppl": eval_ppl})
-        wandb_log(
+        log_metrics(
             {f"{prefix}/loss": eval_loss, f"{prefix}/ppl": eval_ppl, f"{prefix}/tokens": eval_resp_tokens},
-            step,
+            step=step,
         )
 
     return eval_loss
@@ -1061,8 +1041,6 @@ def main(
     def check_active() -> None:
         if runtime is not None:
             runtime.check_active()
-
-    runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name
@@ -1117,12 +1095,7 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    runner.write_status(
-        RunStatus.PENDING,
-        message="attaching to serverless trainer pool" if cfg.serverless else "provisioning",
-    )
-
-    with runner, ExitStack() as stack:
+    with ExitStack() as stack:
         if cfg.serverless:
             # Attach to a shared, already-running pooled trainer through the
             # serverless surface instead of provisioning a dedicated trainer.
@@ -1137,11 +1110,6 @@ def main(
             )
             if runtime is None:
                 stack.callback(service.close)
-            # Per-token billed by the pool trainer; there is no dedicated
-            # accelerator to report, and the control plane must skip its own
-            # token-billing leg (mark_serverless) to avoid double-charging.
-            runner.set_accelerator_info(None, None, profile=None)
-            runner.mark_serverless()
         else:
             service = build_service_client(
                 api_key=api_key,
@@ -1162,11 +1130,6 @@ def main(
                 cfg.base_model,
                 lora_rank=cfg.lora_rank,
                 lora_alpha=cfg.lora_alpha,
-            )
-            runner.set_accelerator_info(
-                service.accelerator_type,
-                service.accelerator_count,
-                profile=service.training_profile,
             )
             job_id = service.trainer_job_id
             max_seq_len = service.max_context_length
@@ -1313,7 +1276,7 @@ def main(
         total_raw_rows = training_count * cfg.epochs
         cursor = RawRowCursor(max_rows=total_raw_rows)
         cursor.resume(resume_info.data_consumed if resume_info else None)
-        wandb_log({"train/step": step}, step)
+        log_metrics({"train/step": step}, step=step)
 
         adam_kwargs = dict(DEFAULT_ADAM)
         adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
@@ -1361,7 +1324,7 @@ def main(
         ) -> None:
             check_active()
             try:
-                eval_loss = run_eval(
+                run_eval(
                     eval_data=data,
                     client=client,
                     batch_size=cfg.batch_size,
@@ -1370,19 +1333,11 @@ def main(
                     metric_prefixes=metric_prefixes,
                     **({"check_active": check_active} if runtime is not None else {}),
                 )
-                if eval_loss is not None:
-                    metrics = {}
-                    for prefix in metric_prefixes:
-                        metrics[f"{prefix}/loss"] = eval_loss
-                        metrics[f"{prefix}/ppl"] = perplexity_from_nll(eval_loss)
-                    runner.append_metrics(step, metrics)
             except Exception as e:
                 if runtime is not None:
                     raise
                 phase = "pre-training" if epoch is None else f"epoch {epoch + 1}"
                 logger.warning("Eval failed at %s, continuing: %s", phase, e)
-
-        start_running(runner, total_steps=total_steps_estimate)
 
         # Pre-training baseline (skipped on resume). Must run before
         # pipe_started so it does not dilute train/tokens_per_sec.
@@ -1530,15 +1485,7 @@ def main(
                     }
                 )
                 step_metrics["train/lr"] = current_lr
-                wandb_log(step_metrics, s)
-
-            write_running_step(
-                runner,
-                step=s,
-                total_steps=total_steps_estimate,
-                metrics=step_metrics,
-                tokens=tokens,
-            )
+                log_metrics(step_metrics, step=s)
 
         def _pipe_drain_safe() -> None:
             """Drain remaining in-flight ops for cleanup (e.g. in ``finally``)."""
@@ -1667,11 +1614,6 @@ def main(
             if cfg.output_model_id:
                 check_active()
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model, checkpoint_name=cp_name)
-                runner.write_output_model(
-                    model_id=cfg.output_model_id,
-                    checkpoint=cp_name,
-                    job_id=job_id,
-                )
 
         if generation_examples:
             try:
@@ -1682,14 +1624,12 @@ def main(
                     tokenizer=_worker_state["tokenizer"],
                     service=service,
                     client=client,
-                    runner=runner,
                     step=step,
                 )
             except Exception:
                 logger.exception("Generation evaluation failed; the trained model is still available")
 
         check_active()
-        write_completed(runner, step=step, total_steps=step)
         logger.info("Training complete: %d optimizer steps", step)
         wandb_finish()
         return {

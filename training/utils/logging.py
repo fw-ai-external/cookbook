@@ -13,10 +13,10 @@ from collections.abc import Callable
 from numbers import Integral, Real
 from typing import Any
 
-from training.utils.config import WandBConfig
 from training.utils import fileio
+from training.utils.config import WandBConfig
+from training.utils.errors import WandbConfigError
 from training.utils.phase_tracing import flush_phase_trace
-from training.utils.runner import WandbConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,7 @@ def setup_wandb(
         return False
     try:
         import os
+
         import wandb
     except ImportError:
         logger.warning("wandb not installed; metrics will only be logged to console")

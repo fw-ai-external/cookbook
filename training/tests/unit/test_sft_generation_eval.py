@@ -10,13 +10,12 @@ import pytest
 from fireworks.training import sdk
 from training.recipes.sft_loop import Config
 from training.utils import fileio
-from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
+from training.utils import sft_generation_eval as generation_eval_module
 from training.utils.sft_generation_eval import (
     prepare_generation_eval,
     run_generation_eval,
     write_skipped_generation_eval,
 )
-from training.utils import sft_generation_eval as generation_eval_module
 from training.utils.streaming import JsonlRenderDataset
 
 
@@ -190,12 +189,8 @@ def test_paired_answers_persist_with_shared_prompts_and_partial_failures(tmp_pat
     tokenizer.decode.return_value = "answer"
     renderer.get_stop_sequences.return_value = [99]
     prompt = sdk.ModelInput.from_ints([1, 2, 3])
-    status_path = tmp_path / "status.json"
-    runner = RunnerIO(RunnerConfig(status_file=str(status_path)))
 
     def sample_baseline(**kwargs):
-        status = json.loads(status_path.read_text())
-        assert status["details"][0]["state"] == "JOB_STATE_EVALUATION"
         return SimpleNamespace(sequences=[sequence])
 
     baseline.sample.return_value.result.side_effect = sample_baseline
@@ -209,7 +204,7 @@ def test_paired_answers_persist_with_shared_prompts_and_partial_failures(tmp_pat
         tokenizer=tokenizer,
         service=service,
         client=client,
-        runner=runner,
+
         step=2,
     )
     result = json.loads((tmp_path / "generation_eval.json").read_text())
@@ -238,8 +233,6 @@ def test_paired_answers_persist_with_shared_prompts_and_partial_failures(tmp_pat
     assert all(controller.window_size == 4 for controller in controllers)
     baseline.close.assert_called_once()
     trained.close.assert_called_once()
-    runner.write_status(RunStatus.COMPLETED, step=2, total_steps=2)
-    assert json.loads(status_path.read_text())["details"][0]["state"] == "JOB_STATE_EVALUATION"
 
 
 def test_each_sampler_controller_waits_on_its_own_loop():
@@ -356,7 +349,7 @@ def test_generation_eval_submits_all_samples_before_waiting(tmp_path):
         tokenizer=tokenizer,
         service=service,
         client=client,
-        runner=RunnerIO(RunnerConfig()),
+
         step=2,
     )
     assert submitted == ["baseline", "trained", "baseline", "trained"]
@@ -392,7 +385,7 @@ def test_generation_eval_uses_one_deadline_and_cancels_the_rest(tmp_path, monkey
         tokenizer=tokenizer,
         service=service,
         client=client,
-        runner=RunnerIO(RunnerConfig()),
+
         step=2,
     )
     result = json.loads((tmp_path / "generation_eval.json").read_text())
@@ -436,7 +429,7 @@ def test_generation_eval_keeps_completed_future_after_timeout(tmp_path, monkeypa
         tokenizer=tokenizer,
         service=service,
         client=client,
-        runner=RunnerIO(RunnerConfig()),
+
         step=2,
     )
     result = json.loads((tmp_path / "generation_eval.json").read_text())
@@ -478,7 +471,7 @@ def test_finished_sample_does_not_grant_the_next_sample_a_new_timeout(tmp_path, 
         tokenizer=tokenizer,
         service=service,
         client=client,
-        runner=RunnerIO(RunnerConfig()),
+
         step=2,
     )
     result = json.loads((tmp_path / "generation_eval.json").read_text())
@@ -511,7 +504,7 @@ def test_authentication_failure_keeps_successful_samples_and_does_not_raise(tmp_
             tokenizer=tokenizer,
             service=service,
             client=client,
-            runner=RunnerIO(RunnerConfig()),
+
             step=2,
         )
     result = json.loads((tmp_path / "generation_eval.json").read_text())
@@ -534,7 +527,7 @@ def test_cancellation_during_artifact_write_propagates(tmp_path, monkeypatch):
             tokenizer=Mock(),
             service=service,
             client=Mock(),
-            runner=Mock(),
+
             step=1,
         )
 
@@ -552,7 +545,7 @@ def test_cancellation_propagates_and_closes_samplers(tmp_path):
             tokenizer=Mock(),
             service=service,
             client=client,
-            runner=RunnerIO(RunnerConfig()),
+
             step=1,
         )
     assert sampler.close.call_count == 2
@@ -605,7 +598,7 @@ def test_image_prompt_is_accepted_and_sampled(tmp_path):
         tokenizer=tokenizer,
         service=service,
         client=client,
-        runner=RunnerIO(RunnerConfig()),
+
         step=1,
     )
     result = json.loads((tmp_path / "generation_eval.json").read_text())
@@ -681,7 +674,7 @@ def test_image_prompt_with_tools_reuses_tool_prefixed_messages(tmp_path, monkeyp
         tokenizer=tokenizer,
         service=service,
         client=client,
-        runner=RunnerIO(RunnerConfig()),
+
         step=1,
     )
     assert seen["messages"] == prefixed
@@ -727,7 +720,7 @@ def test_image_prompt_falls_back_to_messages_without_generation_messages(tmp_pat
         tokenizer=tokenizer,
         service=service,
         client=client,
-        runner=RunnerIO(RunnerConfig()),
+
         step=1,
     )
     assert seen["messages"] == messages
@@ -747,7 +740,7 @@ def test_artifact_failure_is_logged_and_does_not_fail_training(tmp_path, monkeyp
             tokenizer=Mock(),
             service=service,
             client=Mock(),
-            runner=Mock(),
+
             step=1,
         )
     service.create_sampling_client.assert_called_once()

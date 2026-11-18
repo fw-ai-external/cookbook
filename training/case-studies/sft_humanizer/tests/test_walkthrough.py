@@ -1,7 +1,7 @@
 """Offline checks for the lesson's evidence, reader data, and paid-run boundary."""
 
-from pathlib import Path as _TestPath
 import sys as _test_sys
+from pathlib import Path as _TestPath
 
 _test_sys.path.insert(0, str(_TestPath(__file__).resolve().parents[1]))
 
@@ -9,20 +9,20 @@ _test_sys.path.insert(0, str(_TestPath(__file__).resolve().parents[1]))
 import ast
 import contextlib
 import hashlib
+import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
-import unittest
 import types
-import os
-import importlib.util
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from train_walkthrough import make_plan, validate_dataset, execute, main
 from evaluate_walkthrough import run_evaluation
+from train_walkthrough import execute, main, make_plan, validate_dataset
 
 HERE = Path(__file__).resolve().parent.parent
 
@@ -105,7 +105,6 @@ class LessonTests(unittest.TestCase):
         recipes = types.ModuleType("training.recipes")
         utils = types.ModuleType("training.utils")
         recipes.sft_loop = types.SimpleNamespace(Config=Config, main=fake_train)
-        utils.RunnerConfig = Config
         modules = {
             "training": training,
             "training.recipes": recipes,
@@ -125,7 +124,6 @@ class LessonTests(unittest.TestCase):
             self.assertTrue(cfg.serverless)
             self.assertEqual((cfg.max_examples, cfg.epochs, cfg.batch_size), (8, 1, 4))
             self.assertEqual(cfg.output_model_id, None)
-            self.assertEqual(Path(cfg.runner.status_file), target.resolve() / "status.json")
             self.assertEqual(json.loads((target / "lesson-result.json").read_text()), result)
 
     def test_evaluation_reruns_preserve_evidence(self):

@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import pytest
 import torch
-
 import training.recipes.embedding_loop as module
 from training.utils.embedding import bidirectional_info_nce_loss, info_nce_loss_fn
-from training.utils.runner import UserConfigError
+from training.utils.errors import UserConfigError
 
 
 class _StopAfterProvisioning(RuntimeError):

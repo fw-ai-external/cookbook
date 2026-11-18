@@ -607,7 +607,7 @@ def _stub_train_step_deps(monkeypatch, events: dict):
     )
     monkeypatch.setattr(module, "flush_timing", lambda: {})
     monkeypatch.setattr(module, "log_metrics_json", lambda *a, **kw: None)
-    monkeypatch.setattr(module, "wandb_log", lambda *a, **kw: None)
+    monkeypatch.setattr(module, "log_metrics", lambda *a, **kw: None)
 
 
 class TestTrainLoop:
@@ -909,7 +909,7 @@ class TestTrainLoop:
 
         monkeypatch.setattr(module, "flush_timing", lambda: {})
         monkeypatch.setattr(module, "log_metrics_json", lambda *a, **kw: None)
-        monkeypatch.setattr(module, "wandb_log", lambda *a, **kw: None)
+        monkeypatch.setattr(module, "log_metrics", lambda *a, **kw: None)
 
         def slow_fwd_bwd(batch, policy, beta):
             time.sleep(0.15)
@@ -1033,137 +1033,6 @@ class TestTrainLoop:
         assert len(events["flush_batches"]) == 1
         trained_ids = [pair["chosen_datum"]["id"] for pair in events["flush_batches"][0][0]]
         assert trained_ids == ["c1", "c2"]
-
-    def test_total_steps_matches_actual_step_count(self, tmp_path, monkeypatch) -> None:
-        """The runner-facing total_steps should use ceil(valid_pairs / batch_size)."""
-        executed = {"count": 0}
-        reported_total_steps = {"value": None}
-
-        def fake_fwd_bwd(batch, policy, beta):
-            executed["count"] += 1
-            return SimpleNamespace(metrics={"dpo_loss": 0.0, "margin": 0.0, "accuracy": 0.5})
-
-        class RecordingRunner:
-            def start_training(self):
-                pass
-
-            def write_status(self, *args, **kwargs):
-                total = kwargs.get("total_steps")
-                if total is not None:
-                    reported_total_steps["value"] = total
-
-            def write_metadata(self, *args, **kwargs):
-                pass
-
-            def append_metrics(self, *args, **kwargs):
-                pass
-
-            def report_rendering_progress(self, *args, **kwargs):
-                pass
-
-            def set_accelerator_info(self, *args, **kwargs):
-                pass
-
-        monkeypatch.setattr(module, "_forward_backward_pairs", fake_fwd_bwd)
-        monkeypatch.setattr(module, "flush_timing", lambda: {})
-        monkeypatch.setattr(module, "log_metrics_json", lambda *a, **kw: None)
-        monkeypatch.setattr(module, "wandb_log", lambda *a, **kw: None)
-
-        ds = _make_pair_dataset(tmp_path, n=5)
-        cfg = module.Config(
-            log_path=str(tmp_path),
-            beta=0.1,
-            epochs=1,
-            batch_size=2,
-            ref_cache_concurrency=4,
-            render_workers=0,
-        )
-
-        asyncio.run(
-            module._train_loop(
-                ds,
-                None,
-                _FakeReference(),
-                _FakePolicy(),
-                adam_params=_adam_params(),
-                cfg=cfg,
-                step_offset=0,
-                cursor=_new_cursor(max_rows=5),
-                runner=RecordingRunner(),
-            )
-        )
-
-        assert executed["count"] == 3
-        assert reported_total_steps["value"] == 3
-
-    def test_billing_tokens_exclude_reference_forward(self, tmp_path, monkeypatch) -> None:
-        """DPO billing metadata counts policy chosen+rejected tokens only.
-
-        The reference trainer processes the same sequences during epoch 0, but
-        those tokens are reported as metrics rather than accumulated into
-        RunnerIO metadata for billing.
-        """
-        events: dict = {}
-        _stub_train_step_deps(monkeypatch, events)
-        append_calls: list[dict] = []
-
-        class RecordingRunner:
-            def start_training(self):
-                pass
-
-            def write_status(self, *args, **kwargs):
-                pass
-
-            def write_metadata(self, *args, **kwargs):
-                pass
-
-            def append_metrics(self, step, metrics, *, tokens=0):
-                append_calls.append(
-                    {
-                        "step": step,
-                        "metrics": dict(metrics),
-                        "tokens": tokens,
-                    }
-                )
-
-            def report_rendering_progress(self, *args, **kwargs):
-                pass
-
-            def set_accelerator_info(self, *args, **kwargs):
-                pass
-
-        ds = _make_pair_dataset(tmp_path, n=2)
-        cfg = module.Config(
-            log_path=str(tmp_path),
-            beta=0.1,
-            epochs=1,
-            batch_size=2,
-            render_workers=0,
-        )
-
-        asyncio.run(
-            module._train_loop(
-                ds,
-                None,
-                _FakeReference(),
-                _FakePolicy(),
-                adam_params=_adam_params(),
-                cfg=cfg,
-                step_offset=0,
-                cursor=_new_cursor(max_rows=2),
-                runner=RecordingRunner(),
-            )
-        )
-
-        assert len(append_calls) == 1
-        call = append_calls[0]
-        # _make_pair has 3 chosen + 3 rejected tokens. Two pairs => 12 policy
-        # tokens. The epoch-0 reference forward also sees 12 tokens, but billing
-        # should not count it.
-        assert call["tokens"] == 12
-        assert call["metrics"]["train/step_tokens"] == 12
-        assert call["metrics"]["train/ref_tokens"] == 12
-        assert call["metrics"]["train/total_tokens"] == 24
 
     def test_data_consumed_includes_render_drops(self, tmp_path, monkeypatch):
         """``data_consumed`` reflects raw rows pulled (incl. render drops), not post-filter pairs."""
@@ -1686,7 +1555,7 @@ def test_serverless_main_freezes_reference_and_finalizes_policy(monkeypatch, tmp
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     for name in [
         "setup_wandb",
-        "wandb_log",
+        "log_metrics",
         "wandb_finish",
         "validate_config",
         "validate_warm_start_config",
@@ -1707,11 +1576,6 @@ def test_serverless_main_freezes_reference_and_finalizes_policy(monkeypatch, tmp
     monkeypatch.setattr(module, "build_service_client", Mock(side_effect=AssertionError("dedicated provisioning")))
     monkeypatch.setattr(module, "JsonlRenderDataset", lambda *args: ["pair"])
     ckpt.resume.return_value = None
-    runner = Mock()
-    runner.persisted_reference_checkpoint.return_value = None
-    runner.__enter__ = Mock(return_value=runner)
-    runner.__exit__ = Mock(return_value=False)
-    monkeypatch.setattr(module, "RunnerIO", lambda *args: runner)
 
     async def train(*args, **kwargs):
         policy.save_weights_for_sampler.assert_called_once_with("dpo-reference")
@@ -1749,7 +1613,6 @@ def test_serverless_main_freezes_reference_and_finalizes_policy(monkeypatch, tmp
         return
     result = module.main(cfg)
     assert result["steps"] == 1
-    runner.mark_serverless.assert_called_once()
     ckpt.save.assert_called_once()
     ckpt.promote_latest.assert_called_once_with("trained", cfg.base_model, checkpoint_name="step-1")
     service.create_reference_client.assert_not_called()
@@ -1928,19 +1791,11 @@ class _RecordingCheckpoints:
         self.saves.append((name, kwargs))
 
 
-class _RecordingRunner(module.RunnerIO):
-    """Records eval metric rows; ``run_eval`` is stubbed to report the pair count as the loss."""
-
-    def __init__(self, events: list):
-        super().__init__()
-        self.events = events
-
-    def append_metrics(self, step, metrics, **kwargs):
-        prefixes = sorted({key.split("/")[0] for key in metrics if key.endswith("/loss") and "eval" in key})
-        if prefixes:
-            n = int(metrics[f"{prefixes[0]}/loss"])
-            self.events.append(f"eval(step={step}, {'+'.join(prefixes)}, n={n})")
-        super().append_metrics(step, metrics, **kwargs)
+def _record_eval(events, step, metrics):
+    prefixes = sorted({key.split("/")[0] for key in metrics if key.endswith("/loss") and key.startswith(("eval/", "checkpoint_eval/"))})
+    if prefixes:
+        n = int(metrics[f"{prefixes[0]}/loss"])
+        events.append(f"eval(step={step}, {'+'.join(prefixes)}, n={n})")
 
 
 def _stub_run_eval(monkeypatch):
@@ -1962,6 +1817,7 @@ def test_checkpoint_schedule_scores_every_save_point_including_final(tmp_path, m
     _stub_train_step_deps(monkeypatch, {})
     _stub_run_eval(monkeypatch)
     events: list = []
+    monkeypatch.setattr(module, "log_metrics", lambda metrics, step: _record_eval(events, step, metrics))
     ckpt = _RecordingCheckpoints(events)
     ds = _make_pair_dataset(tmp_path, n=4)
     ref_cache = AppendOnlyPickleLog(str(tmp_path / "ref_cache.pkl"))
@@ -1985,7 +1841,7 @@ def test_checkpoint_schedule_scores_every_save_point_including_final(tmp_path, m
                 step_offset=0,
                 cursor=_new_cursor(max_rows=8),
                 ckpt=ckpt,
-                runner=_RecordingRunner(events),
+
                 eval_pairs=[_eval_pair(0)],
             )
         )
@@ -2023,6 +1879,7 @@ def test_default_checkpoint_cadence_depends_on_lora_rank(tmp_path, monkeypatch, 
     _stub_train_step_deps(monkeypatch, {})
     _stub_run_eval(monkeypatch)
     events: list = []
+    monkeypatch.setattr(module, "log_metrics", lambda metrics, step: _record_eval(events, step, metrics))
     ref_cache = AppendOnlyPickleLog(str(tmp_path / "ref_cache.pkl"))
     cfg = module.Config(
         log_path=str(tmp_path),
@@ -2044,7 +1901,7 @@ def test_default_checkpoint_cadence_depends_on_lora_rank(tmp_path, monkeypatch, 
                 step_offset=0,
                 cursor=_new_cursor(max_rows=8),
                 ckpt=_RecordingCheckpoints(events),
-                runner=_RecordingRunner(events),
+
                 eval_pairs=[_eval_pair(0)],
             )
         )
@@ -2059,11 +1916,7 @@ def test_checkpoint_eval_logs_ranking_metrics_at_save_points(tmp_path, monkeypat
     _stub_run_eval(monkeypatch)
     rows: list = []
 
-    class MetricsRunner(module.RunnerIO):
-        def append_metrics(self, step, metrics, **kwargs):
-            if any(key.startswith("checkpoint_eval/") for key in metrics):
-                rows.append((step, metrics))
-            super().append_metrics(step, metrics, **kwargs)
+    monkeypatch.setattr(module, "log_metrics", lambda metrics, step: rows.append((step, metrics)) if any(k.startswith("checkpoint_eval/") for k in metrics) else None)
 
     cfg = module.Config(
         log_path=str(tmp_path),
@@ -2084,7 +1937,7 @@ def test_checkpoint_eval_logs_ranking_metrics_at_save_points(tmp_path, monkeypat
             step_offset=0,
             cursor=_new_cursor(max_rows=4),
             ckpt=_RecordingCheckpoints([]),
-            runner=MetricsRunner(),
+
             eval_pairs=[_eval_pair(0)],
         )
     )
@@ -2107,6 +1960,7 @@ def test_checkpoint_schedule_sampler_interval_replaces_timed_points(tmp_path, mo
 
     monkeypatch.setattr(module, "timed_checkpoint_due", fail_if_called)
     events: list = []
+    monkeypatch.setattr(module, "log_metrics", lambda metrics, step: _record_eval(events, step, metrics))
     ckpt = _RecordingCheckpoints(events)
     cfg = module.Config(
         log_path=str(tmp_path),
@@ -2128,7 +1982,7 @@ def test_checkpoint_schedule_sampler_interval_replaces_timed_points(tmp_path, mo
             step_offset=0,
             cursor=_new_cursor(max_rows=4),
             ckpt=ckpt,
-            runner=_RecordingRunner(events),
+
             eval_pairs=[_eval_pair(i) for i in range(130)],
         )
     )
@@ -2171,6 +2025,7 @@ def test_checkpoint_eval_only_at_saved_steps(
     _stub_train_step_deps(monkeypatch, {})
     _stub_run_eval(monkeypatch)
     events: list = []
+    monkeypatch.setattr(module, "log_metrics", lambda metrics, step: _record_eval(events, step, metrics))
     ref_cache = AppendOnlyPickleLog(str(tmp_path / "ref_cache.pkl"))
     cfg = module.Config(
         log_path=str(tmp_path),
@@ -2192,7 +2047,7 @@ def test_checkpoint_eval_only_at_saved_steps(
                 step_offset=0,
                 cursor=_new_cursor(max_rows=8),
                 ckpt=_RecordingCheckpoints(events),
-                runner=_RecordingRunner(events),
+
                 eval_pairs=[_eval_pair(0)],
             )
         )
@@ -2206,6 +2061,7 @@ def test_epoch_end_without_new_steps_skips_eval(tmp_path, monkeypatch):
     _stub_train_step_deps(monkeypatch, {})
     _stub_run_eval(monkeypatch)
     events: list = []
+    monkeypatch.setattr(module, "log_metrics", lambda metrics, step: _record_eval(events, step, metrics))
     ref_cache = AppendOnlyPickleLog(str(tmp_path / "resume-cache.pkl"))
     cfg = module.Config(log_path=str(tmp_path), epochs=2, batch_size=2, render_workers=0)
     try:
@@ -2219,7 +2075,7 @@ def test_epoch_end_without_new_steps_skips_eval(tmp_path, monkeypatch):
                 cfg=cfg,
                 step_offset=2,
                 cursor=_new_cursor(max_rows=8, persisted=4),
-                runner=_RecordingRunner(events),
+
                 eval_pairs=[_eval_pair(0)],
             )
         )
@@ -2234,7 +2090,7 @@ def test_epoch_end_without_new_steps_skips_eval(tmp_path, monkeypatch):
 
 def test_main_caches_eval_reference_logprobs_before_training(monkeypatch, tmp_path):
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    for name in ["setup_wandb", "wandb_log", "wandb_finish", "validate_config", "validate_warm_start_config"]:
+    for name in ["setup_wandb", "log_metrics", "wandb_finish", "validate_config", "validate_warm_start_config"]:
         monkeypatch.setattr(module, name, Mock())
     monkeypatch.setattr(module, "_init_pair_worker", Mock())
     monkeypatch.setattr(module, "resolve_renderer_snapshot", lambda **kwargs: "qwen3")
@@ -2256,11 +2112,6 @@ def test_main_caches_eval_reference_logprobs_before_training(monkeypatch, tmp_pa
 
     monkeypatch.setattr(module, "_ref_forward_batch", fake_ref_forward_batch)
     ckpt.resume.return_value = None
-    runner = Mock()
-    runner.persisted_reference_checkpoint.return_value = None
-    runner.__enter__ = Mock(return_value=runner)
-    runner.__exit__ = Mock(return_value=False)
-    monkeypatch.setattr(module, "RunnerIO", lambda *args: runner)
 
     async def train(*args, **kwargs):
         order.append("train")
@@ -2282,3 +2133,34 @@ def test_main_caches_eval_reference_logprobs_before_training(monkeypatch, tmp_pa
     )
 
     assert order == ["eval-reference", "train"]
+
+
+def test_serverless_resume_uses_existing_reference_file(monkeypatch, tmp_path):
+    """An explicit frozen reference is reused when the policy resumes."""
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    for name in ("setup_wandb", "log_metrics", "wandb_finish", "validate_config", "_init_pair_worker"):
+        monkeypatch.setattr(module, name, Mock())
+    monkeypatch.setattr(module, "resolve_renderer_snapshot", lambda **kwargs: "qwen3")
+    reference_file = tmp_path / "dpo-reference.json"
+    reference_file.write_text(json.dumps({"reference_checkpoint": "snapshot://original"}))
+    service, policy, ckpt = Mock(), Mock(), Mock()
+    ckpt.resume.return_value = SimpleNamespace(step=1, data_consumed=1)
+    monkeypatch.setattr(module, "setup_serverless_training", lambda *a, **k: (service, policy, ckpt, "policy", 512))
+    monkeypatch.setattr(module, "JsonlRenderDataset", lambda *a: ["pair"])
+
+    async def train(*args, **kwargs):
+        assert args[6] == 1
+        return 1
+
+    monkeypatch.setattr(module, "_train_loop", train)
+    cfg = module.Config(
+        log_path=str(tmp_path), dataset="pairs.jsonl", tokenizer_model="Qwen/Qwen3-8B",
+        serverless=True, lora_rank=8, max_seq_len=512, render_workers=0,
+        init_from_checkpoint="prior-run/step-1", reference_checkpoint_file=str(reference_file),
+        save_final_checkpoint=False,
+    )
+    assert module.main(cfg)["steps"] == 1
+    policy.save_weights_for_sampler.assert_not_called()
+    service.create_sampling_client.assert_called_once_with(model_path="snapshot://original")
+    assert json.loads(reference_file.read_text()) == {"reference_checkpoint": "snapshot://original"}
+    assert ckpt.resume.call_args.kwargs["init_from_checkpoint"] == cfg.init_from_checkpoint

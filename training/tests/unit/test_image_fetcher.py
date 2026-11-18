@@ -335,7 +335,7 @@ def test_rendering_turns_image_url_errors_into_dataset_errors(
 ) -> None:
     # lazy: supervised pulls in the full renderer stack, which the fetcher tests above don't need.
     from training.utils import supervised
-    from training.utils.runner import DatasetError
+    from training.utils.errors import DatasetError
 
     def fail(*_args: object, **_kwargs: object) -> None:
         raise ImageURLError(image_fetcher.IMAGE_URL_ERROR_MESSAGE) from ValueError(
@@ -352,8 +352,11 @@ def test_rendering_turns_image_url_errors_into_dataset_errors(
 
 
 def test_rendered_row_image_url_error_names_only_the_row() -> None:
-    from training.utils.runner import DatasetError
-    from training.utils.streaming import JSONL_ROW_INDEX_KEY, dataset_error_for_rendered_row
+    from training.utils.errors import DatasetError
+    from training.utils.streaming import (
+        JSONL_ROW_INDEX_KEY,
+        dataset_error_for_rendered_row,
+    )
 
     row = {"messages": [{"role": "user", "content": "hi"}], JSONL_ROW_INDEX_KEY: 7}
     error = dataset_error_for_rendered_row(row, DatasetError(image_fetcher.IMAGE_URL_ERROR_MESSAGE))

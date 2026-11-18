@@ -56,15 +56,13 @@ from training.utils import (
     NO_VALID_PREFERENCE_PAIRS_MESSAGE,
     DatasetError,
     ReconnectableClient,
-    RunnerConfig,
-    RunnerIO,
-    RunStatus,
     TrainerConfig,
     WandBConfig,
     build_renderer_from_resolved_name,
     build_service_client,
     load_preference_dataset,
     load_tokenizer,
+    log_metrics,
     log_metrics_json,
     make_batch_orpo_loss_fn,
     read_api_extra_headers_env,
@@ -73,7 +71,6 @@ from training.utils import (
     setup_wandb,
     validate_config,
     wandb_finish,
-    wandb_log,
 )
 from training.utils.checkpoints import (
     DEFAULT_DCP_SAVE_INTERVAL,
@@ -81,11 +78,6 @@ from training.utils.checkpoints import (
     validate_warm_start_config,
 )
 from training.utils.client import DEFAULT_TIMEOUT_S
-from training.utils.runner_state import (
-    start_running,
-    write_completed,
-    write_running_step,
-)
 from training.utils.termination import TerminatedBySignal
 from training.utils.tokenizers import resolve_tokenizer_base_model
 
@@ -159,18 +151,6 @@ class Config:
             project="dsv3-training",
         )
     )
-    runner: RunnerConfig = field(default_factory=RunnerConfig)
-    """Optional orchestration outputs written during training.
-
-    Paths can be set here or via environment variables:
-      COOKBOOK_STATUS_FILE      -- training status + progress (JSON, overwritten each step)
-      COOKBOOK_METADATA_FILE    -- tokens processed + accelerator-seconds (JSON)
-      COOKBOOK_METRICS_FILE     -- per-step metrics (JSONL, appended each step)
-      COOKBOOK_OUTPUT_MODEL_PATH -- final model info written on completion (JSON)
-
-    All paths are optional; unset paths are silently skipped.
-    See training/utils/runner.py for file format details.
-    """
     save_final_checkpoint: bool = True
     dcp_save_interval: int = DEFAULT_DCP_SAVE_INTERVAL
     """Save a resumable DCP checkpoint every N steps. 0 disables."""
@@ -259,7 +239,6 @@ def main(
     config: Config,
 ):
     cfg = config
-    runner = RunnerIO(cfg.runner)
 
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name
@@ -313,9 +292,7 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    runner.write_status(RunStatus.PENDING, message="provisioning")
-
-    with runner, ExitStack() as stack:
+    with ExitStack() as stack:
         service = build_service_client(
             api_key=api_key,
             base_url=base_url,
@@ -335,11 +312,6 @@ def main(
             cfg.base_model,
             lora_rank=cfg.lora_rank,
             lora_alpha=cfg.lora_alpha,
-        )
-        runner.set_accelerator_info(
-            service.accelerator_type,
-            service.accelerator_count,
-            profile=service.training_profile,
         )
         job_id = service.trainer_job_id
         max_seq_len = service.max_context_length
@@ -391,7 +363,6 @@ def main(
             raise DatasetError(f"No data loaded from {cfg.dataset}")
 
         total_raw = len(raw_data)
-        log_interval = max(1, total_raw // 20)  # ~5% increments
         logger.info("Tokenizing %d preference pairs...", total_raw)
         pair_cache: list[dict] = []
         filtered_count = 0
@@ -418,8 +389,6 @@ def main(
                     "rejected_datum": pair.rejected_datum,
                 }
             )
-            if (i + 1) % log_interval == 0 or (i + 1) == total_raw:
-                runner.report_rendering_progress(i + 1, total_raw)
 
         if filtered_count > 0:
             logger.info(
@@ -529,17 +498,8 @@ def main(
                 "train/epoch": epoch + 1,
                 "train/lr": current_lr,
             }
-            wandb_log(step_metrics, step)
-            write_running_step(
-                runner,
-                step=step,
-                total_steps=total_steps,
-                metrics=step_metrics,
-                tokens=step_tokens,
-            )
+            log_metrics(step_metrics, step=step)
             return time.monotonic()
-
-        start_running(runner, total_steps=total_steps)
 
         for epoch in range(cfg.epochs):
             epoch_pairs = _shuffled_pair_cache(pair_cache, cfg.seed, epoch)
@@ -567,13 +527,7 @@ def main(
             )
             if getattr(cfg, "output_model_id", None):
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
-                runner.write_output_model(
-                    model_id=cfg.output_model_id,
-                    checkpoint=cp_name,
-                    job_id=job_id,
-                )
 
-        write_completed(runner, step=step, total_steps=total_steps)
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
         wandb_finish()
         return {"steps": step, "job_id": job_id}

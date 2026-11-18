@@ -8,11 +8,11 @@ import logging
 import math
 from typing import Any, Dict, Iterable, Iterator, List
 
-import torch
 import requests
-
+import torch
 from fireworks.training.sdk.errors import request_with_retries
-from training.utils.runner import DatasetError
+
+from training.utils.errors import DatasetError
 from training.utils.streaming import resolve_jsonl_shards
 
 logger = logging.getLogger(__name__)

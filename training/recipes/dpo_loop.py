@@ -48,7 +48,6 @@ from typing import Any, Callable, Sequence
 
 import torch
 from fireworks.training import sdk
-from training.model_defaults import resolve_tokenizer_model
 from fireworks.training.sdk.training_spec import (
     LRSchedulerSpec,
     compute_lr,
@@ -56,6 +55,7 @@ from fireworks.training.sdk.training_spec import (
     normalize_lr_scheduler_spec,
 )
 from tqdm import tqdm
+from training.model_defaults import resolve_tokenizer_model
 from training.recipes.sft_loop import (
     CHECKPOINT_EVAL_MAX_EXAMPLES,
     CHECKPOINT_EVAL_METRIC_PREFIX,
@@ -73,12 +73,11 @@ from training.utils import (
     JsonlRenderDataset,
     RawRowCursor,
     ReconnectableClient,
-    RunnerConfig,
-    RunnerIO,
-    RunStatus,
     TrainerConfig,
     WandBConfig,
     build_service_client,
+    fileio,
+    log_metrics,
     log_metrics_json,
     make_batch_dpo_loss_fn,
     make_render_dataloader,
@@ -90,19 +89,21 @@ from training.utils import (
     setup_wandb,
     validate_config,
     wandb_finish,
-    wandb_log,
 )
 from training.utils.checkpoints import (
     TrainingCheckpoints,
-    resolve_checkpoint_cadence,
     log_checkpoint_plan,
+    resolve_checkpoint_cadence,
     timed_checkpoint_due,
     validate_warm_start_config,
 )
+from training.utils.dpo_reference import (
+    read_reference_checkpoint,
+    write_reference_checkpoint,
+)
+from training.utils.errors import UserConfigError
 from training.utils.resource_autosizing import select_render_worker_count
 from training.utils.rl.reference import SamplerReference
-from training.utils.runner import UserConfigError
-from training.utils.runner_state import write_completed, write_running_step
 from training.utils.serverless import setup_serverless_training
 from training.utils.streaming import (
     dataset_error_for_rendered_row,
@@ -262,8 +263,9 @@ class Config:
     weights from the adapter at training start (weights-only, fresh optimizer).
     Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
     output_model_id: str | None = None
+    reference_checkpoint_file: str | None = None
+    """Frozen reference recovery file; defaults to reference_checkpoint.json under log_path."""
     save_final_checkpoint: bool = True
-    runner: RunnerConfig = field(default_factory=RunnerConfig)
     cleanup_on_exit: bool = True
     """Delete the trainer this run created once the run finishes. A run that
     stops on an error keeps a new trainer so it can resume with
@@ -581,7 +583,6 @@ async def _train_loop(
     ckpt: TrainingCheckpoints | None = None,
     worker_init_fn: Callable[[int], None] | None = None,
     on_ref_done: Callable[[], None] | None = None,
-    runner: RunnerIO | None = None,
     training_shape_id: str | None = None,
     eval_pairs: Sequence[dict[str, Any]] = (),
 ) -> int:
@@ -618,14 +619,10 @@ async def _train_loop(
     total_steps = ((rough_pairs_per_epoch + batch_size - 1) // batch_size) * cfg.epochs
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
     total_raw_rows = len(pair_dataset)
-    total_raw_batches = (total_raw_rows + batch_size - 1) // batch_size
-    progress_interval = max(1, total_raw_batches // 20) if total_raw_batches else 1
     raw_rows_consumed = 0
     rendered_pairs = 0
     pairs_per_epoch = 0
 
-    if runner is None:
-        runner = RunnerIO()
     adam_kwargs = adam_params.model_dump()
     adam_kwargs.pop("learning_rate", None)
     pipe: asyncio.Queue = asyncio.Queue()
@@ -669,8 +666,7 @@ async def _train_loop(
         )
         recorded = {f"{prefix}/{name}": value for prefix in metric_prefixes for name, value in metrics.items()}
         log_metrics_json(step, **{key.replace("/", "_"): value for key, value in recorded.items()})
-        wandb_log(recorded, step)
-        runner.append_metrics(step, recorded)
+        log_metrics(recorded, step=step)
 
     def _save_scheduled_checkpoint() -> None:
         nonlocal last_save_at, last_save_step
@@ -805,14 +801,7 @@ async def _train_loop(
             }
         )
         step_metrics["train/lr"] = current_lr
-        wandb_log(step_metrics, step)
-        write_running_step(
-            runner,
-            step=step,
-            total_steps=total_steps,
-            metrics=step_metrics,
-            tokens=step_tokens,
-        )
+        log_metrics(step_metrics, step=step)
 
     # -- Epoch 0: stream render → ref forward → training -----------------------
 
@@ -876,14 +865,6 @@ async def _train_loop(
             delta = min(batch_size, total_raw_rows - raw_rows_consumed)
             raw_rows_consumed += delta
             cursor.resume(max(resume_consumed, raw_rows_consumed))
-            if total_raw_rows > 0 and (
-                batches_consumed % progress_interval == 0 or raw_rows_consumed == total_raw_rows
-            ):
-                runner.report_rendering_progress(
-                    raw_rows_consumed,
-                    total_raw_rows,
-                    label="rendering/ref cache",
-                )
             rendered_pairs += len(batch)
             if not batch:  # all rows in this DataLoader batch rendered to None
                 continue
@@ -1062,10 +1043,7 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
 
-    runner = RunnerIO(cfg.runner)
-    runner.write_status(RunStatus.PENDING, message="provisioning")
-
-    with runner, ExitStack() as stack:
+    with ExitStack() as stack:
         if cfg.serverless:
             service, policy, ckpt, policy_job_id, max_seq_len = setup_serverless_training(
                 cfg,
@@ -1076,12 +1054,11 @@ def main(
                 close_session_on_exit=cfg.close_session_on_exit,
             )
             stack.callback(service.close)
-            runner.set_accelerator_info(None, None, profile=None)
-            runner.mark_serverless()
             # Snapshot before the first update: fresh LoRA has zero adapter effect.
             # A resumed job reuses the reference recorded on the previous attempt
             # so policy restoration cannot become the frozen reference.
-            reference_path = runner.persisted_reference_checkpoint()
+            reference_file = cfg.reference_checkpoint_file or fileio.join(cfg.log_path, "reference_checkpoint.json")
+            reference_path = read_reference_checkpoint(reference_file)
             if not reference_path and cfg.init_from_checkpoint:
                 raise UserConfigError("serverless DPO resume requires the persisted frozen reference")
             if not reference_path:
@@ -1092,8 +1069,7 @@ def main(
             stack.callback(sampler.close)
             reference = SamplerReference(sampler, timeout=cfg.step_timeout or 3600)
             reference_job_id = None
-            runner.set_reference_checkpoint(reference_path)
-            runner.write_metadata()
+            write_reference_checkpoint(reference_file, reference_path)
             logger.info("Frozen DPO reference snapshot: %s", reference_path)
         else:
             service = build_service_client(
@@ -1116,11 +1092,6 @@ def main(
                 cfg.base_model,
                 lora_rank=cfg.lora_rank,
                 lora_alpha=cfg.lora_alpha,
-            )
-            runner.set_accelerator_info(
-                service.accelerator_type,
-                service.accelerator_count,
-                profile=service.training_profile,
             )
             policy_job_id = service.trainer_job_id
             max_seq_len = service.max_context_length
@@ -1165,7 +1136,7 @@ def main(
             strict_resume=cfg.strict_resume,
         )
         step_offset = resume_info.step if resume_info else 0
-        wandb_log({"train/step": step_offset}, step_offset)
+        log_metrics({"train/step": step_offset}, step=step_offset)
         adam_kwargs = dict(DEFAULT_ADAM)
         adam_kwargs["weight_decay"] = cfg.weight_decay
         adam_params = sdk.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
@@ -1242,7 +1213,6 @@ def main(
 
         cursor = RawRowCursor(max_rows=len(pair_dataset) * cfg.epochs)
         cursor.resume(resume_info.data_consumed if resume_info else None)
-        runner.start_training()
         step = asyncio.run(
             _train_loop(
                 pair_dataset,
@@ -1256,7 +1226,6 @@ def main(
                 ckpt=ckpt,
                 worker_init_fn=worker_init_fn,
                 on_ref_done=_on_ref_done,
-                runner=runner,
                 training_shape_id=cfg.trainer.training_shape_id,
                 eval_pairs=eval_pairs,
             )
@@ -1280,14 +1249,7 @@ def main(
                     ckpt.promote_latest(cfg.output_model_id, cfg.base_model, checkpoint_name=cp_name)
                 else:
                     ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
-                runner.write_output_model(
-                    model_id=cfg.output_model_id,
-                    checkpoint=cp_name,
-                    job_id=policy_job_id,
-                )
 
-        total_steps = step
-        write_completed(runner, step=step, total_steps=total_steps)
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
         wandb_finish()
         return {"steps": step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}

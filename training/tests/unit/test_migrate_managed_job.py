@@ -7,15 +7,14 @@ import logging
 
 import httpx
 import pytest
+import training.recipes.dpo_loop as dpo_loop
+import training.recipes.orpo_loop as orpo_loop
+import training.recipes.sft_loop as sft_loop
 from fireworks.training.sdk.training_spec import (
     ConstantSchedule,
     CosineSchedule,
     LinearSchedule,
 )
-
-import training.recipes.dpo_loop as dpo_loop
-import training.recipes.orpo_loop as orpo_loop
-import training.recipes.sft_loop as sft_loop
 from training.examples.tools import migrate_managed_job as mmj
 from training.utils.checkpoints import DEFAULT_DCP_SAVE_INTERVAL
 
@@ -276,7 +275,7 @@ def test_dpo_lora_maps_to_serverless_dpo_config(train_file, tmp_path):
     assert (cfg.lora_rank, cfg.batch_size, cfg.learning_rate, cfg.max_seq_len) == (8, 4, 0.00001, 8192)
     assert cfg.epochs == dpo_loop.Config(log_path="x").epochs
     assert cfg.checkpoint_interval_minutes == 30.0 and cfg.dcp_save_interval == 50
-    assert cfg.runner.reference_checkpoint_file == str(tmp_path / "logs" / "reference_checkpoint.json")
+    assert cfg.reference_checkpoint_file == str(tmp_path / "logs" / "reference_checkpoint.json")
     # The held-out dataset is a resource name: warn, don't guess.
     assert cfg.evaluation_dataset == ""
     assert any("--eval-dataset-path" in w for w in plan.warnings)
@@ -302,7 +301,7 @@ def test_dpo_full_parameter_runs_dedicated(train_file, tmp_path):
     assert cfg.epochs == 2
     assert cfg.beta == dpo_loop.Config(log_path="x").beta
     assert cfg.checkpoint_interval_minutes == 0.0
-    assert cfg.runner.reference_checkpoint_file is None
+    assert cfg.reference_checkpoint_file is None
 
 
 def test_orpo_maps_to_dedicated_orpo_config(train_file, tmp_path):

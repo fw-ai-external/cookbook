@@ -102,7 +102,6 @@ def execute(plan: dict) -> dict:
         )
     # Keep paid dependencies out of the local inspection and validation path.
     from training.recipes import sft_loop
-    from training.utils import RunnerConfig
 
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "lesson-plan.json").write_text(json.dumps(plan, indent=2) + "\n")
@@ -123,11 +122,6 @@ def execute(plan: dict) -> dict:
         dcp_save_interval=2 if plan["preset"] == "smoke" else 20,
         output_model_id=plan["output_model_id"],
         render_workers=1,
-        runner=RunnerConfig(
-            status_file=str(run_dir / "status.json"),
-            metrics_file=str(run_dir / "metrics.jsonl"),
-            output_model_path=str(run_dir / "output-model.json"),
-        ),
     )
     result = sft_loop.main(cfg)
     (run_dir / "lesson-result.json").write_text(json.dumps(result, indent=2) + "\n")

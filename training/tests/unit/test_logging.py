@@ -9,11 +9,10 @@ import threading
 import types
 
 import pytest
-
-from training.utils.config import WandBConfig
 from training.utils import logging as logging_utils
+from training.utils.config import WandBConfig
+from training.utils.errors import WandbConfigError
 from training.utils.logging import log_metrics, setup_wandb
-from training.utils.runner import WandbConfigError
 
 
 def _install_fake_wandb(

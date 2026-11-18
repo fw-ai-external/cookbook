@@ -13,15 +13,12 @@ from types import SimpleNamespace
 import httpx
 import pytest
 import tokenizers as tokenizers_lib
+import training.utils.tokenizers as tokenizers
 from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError
 from huggingface_hub.utils import hf_raise_for_status
-from transformers.tokenization_utils_tokenizers import TokenizersBackend
-
-import training.utils.tokenizers as tokenizers
-import training.utils.runner as runner
 from training.renderer.verifier.utils import hf_parity
 from training.renderer.verifier.utils import tokenizer as verifier_tokenizers
-from training.utils.runner import RunnerConfig, RunnerIO
+from transformers.tokenization_utils_tokenizers import TokenizersBackend
 
 
 @contextmanager
@@ -392,32 +389,6 @@ def test_load_tokenizer_applies_kimi_bytes_to_unicode_patch(monkeypatch):
     tokenizers.load_tokenizer("moonshotai/Kimi-K2.5")
 
     assert calls, "load_tokenizer must apply the Kimi tokenizer compat patch"
-
-
-def test_huggingface_unavailability_is_preserved_for_managed_adapter(monkeypatch):
-    status_writes: list[tuple[str, dict]] = []
-
-    with local_status_server(503) as url:
-
-        def from_pretrained(model, **kwargs):
-            raise real_wrapped_tokenizer_http_error(url)
-
-        monkeypatch.setattr(
-            tokenizers.transformers.AutoTokenizer, "from_pretrained", from_pretrained
-        )
-        monkeypatch.setattr(
-            runner.fileio,
-            "write_json",
-            lambda path, payload: status_writes.append((path, payload)),
-        )
-
-        with pytest.raises(RuntimeError) as exc_info:
-            with RunnerIO(RunnerConfig(status_file="status.json")):
-                tokenizers.load_tokenizer("Qwen/Qwen3-8B")
-
-    assert status_writes[-1][0] == "status.json"
-    assert status_writes[-1][1]["code"] == 9
-    assert status_writes[-1][1]["message"] == str(exc_info.value)
 
 
 def _write_tokenizer_dir(

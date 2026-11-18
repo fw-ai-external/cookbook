@@ -37,7 +37,7 @@ from pathlib import Path
 
 import training.recipes.dpo_loop as dpo_loop
 from training.model_defaults import resolve_tokenizer_model
-from training.utils import RunnerConfig, WandBConfig
+from training.utils import WandBConfig
 
 DATASET = Path(__file__).resolve().parent / "preference_train.jsonl"
 
@@ -96,9 +96,7 @@ def build_config(args: argparse.Namespace) -> dpo_loop.Config:
         output_model_id=args.output_model_id,
         # A resumed run must score against the same frozen reference snapshot,
         # so its id is recorded next to the checkpoints' dataloader state.
-        runner=RunnerConfig(
-            reference_checkpoint_file=os.path.join(args.log_path, "reference_checkpoint.json"),
-        ),
+        reference_checkpoint_file=os.path.join(args.log_path, "reference_checkpoint.json"),
         wandb=WandBConfig(entity=args.wandb_entity, project="serverless-dpo"),
     )
 

@@ -6,7 +6,6 @@ import re
 
 import pytest
 import transformers
-
 from training.renderer import get_renderer
 from training.renderer.gemma4 import Gemma4Renderer
 from training.renderer.muse_glimmer import MuseGlimmerOptions, MuseGlimmerRenderer
@@ -21,7 +20,7 @@ from training.utils.decision import (
     render_branch,
     render_state,
 )
-from training.utils.runner import DatasetError
+from training.utils.errors import DatasetError
 
 
 class _CharTokenizer:

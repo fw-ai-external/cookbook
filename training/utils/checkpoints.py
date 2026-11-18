@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 import training.utils.fileio as fileio
-from training.utils.runner import UserConfigError
+from training.utils.errors import UserConfigError
 
 DATALOADER_BASE_NAME = "dataloader.json"
 DATALOADER_HISTORY_KEEP = 20

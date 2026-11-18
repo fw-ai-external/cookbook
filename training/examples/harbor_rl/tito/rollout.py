@@ -42,13 +42,16 @@ from training.examples.harbor_rl.tito.trial import (
     task_name_from_row,
     validate_harbor_retry_exceptions,
 )
+from training.utils.errors import UserConfigError
 from training.utils.phase_tracing import phase_span
 from training.utils.rl import trial_events
-from training.utils.rl.async_rl.errors import RecoverableRolloutError, DiscardTrajectoryError
+from training.utils.rl.async_rl.errors import (
+    DiscardTrajectoryError,
+    RecoverableRolloutError,
+)
 from training.utils.rl.rollout import RolloutRun, RolloutSample
 from training.utils.rl.rollout.lifecycle import ActiveRolloutTasks
 from training.utils.rl.rollout.tito import materialize_tito_trajectory
-from training.utils.runner import UserConfigError
 
 if TYPE_CHECKING:
     from training.utils.rl.rollout.setup import RolloutSetup

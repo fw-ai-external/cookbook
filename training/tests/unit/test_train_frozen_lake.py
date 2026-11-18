@@ -6,9 +6,8 @@ from types import SimpleNamespace
 
 import eval_protocol.integrations.fireworks_v1_completions_client as ep_completions_client
 import pytest
-from eval_protocol.models import EvaluationRow, InputMetadata
-
 import training.examples.rl.frozen_lake.train_frozen_lake as train_module
+from eval_protocol.models import EvaluationRow, InputMetadata
 from training.examples.rl.frozen_lake.frozen_lake_rollout import (
     FrozenLakeToolRolloutProcessor,
 )
@@ -24,9 +23,9 @@ from training.examples.rl.frozen_lake.train_frozen_lake import (
 )
 from training.recipes.async_rl_loop import Config, RolloutSetup
 from training.utils import DeployConfig
+from training.utils.errors import UserConfigError
 from training.utils.rl.losses import build_policy_datums, combine_prompt_groups
 from training.utils.rl.rollout import Rollout, RolloutRun, rollout_to_prompt_group
-from training.utils.runner import UserConfigError
 from training.utils.tokenizers import load_tokenizer
 
 # Two turns: the second prompt is the first prompt + completion + close (90)
