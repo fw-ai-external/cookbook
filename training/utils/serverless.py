@@ -17,6 +17,7 @@ from fireworks.training.sdk import FireworksClient, FiretitanServiceClient
 
 from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.client import DEFAULT_TIMEOUT_S, ReconnectableClient
+from training.utils.sft_runtime import SFTRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -105,13 +106,24 @@ def close_serverless_session(service: FiretitanServiceClient) -> None:
         close_session()
 
 
-def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, stack, close_session_on_exit=False):
+def setup_serverless_training(
+    cfg,
+    *,
+    api_key,
+    base_url,
+    additional_headers,
+    stack,
+    close_session_on_exit=False,
+    runtime: SFTRuntime | None = None,
+):
     """Build the training + checkpoint handles for a serverless LoRA run.
 
-    Returns ``(service, client, ckpt, session_id, max_seq_len)``. The caller
-    may close the returned service; both the service and internal control-plane
-    client are registered on the provided ``stack`` (an ``ExitStack``), including
-    when setup fails after the training session is reserved. Requires
+    Returns ``(service, client, ckpt, session_id, max_seq_len)``. By default,
+    both the service and internal control-plane client are registered on the
+    provided ``stack`` (an ``ExitStack``), including when setup fails after the
+    training session is reserved. With ``runtime``, use the caller's clients
+    without closing either; the caller owns session retention and cleanup.
+    Requires
     ``cfg.lora_rank > 0`` and a concrete ``cfg.max_seq_len`` (there is no training
     shape to resolve sequence length from on this path).
 
@@ -119,7 +131,8 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
     session at teardown, releasing the run's concurrent-run quota slot
     immediately. Opt in only when nothing later needs to resume from or promote
     this run's checkpoints — teardown runs on the crash path too, and a closed
-    session ends that run's checkpoint lifecycle.
+    session ends that run's checkpoint lifecycle. This option cannot be used
+    with a caller-owned runtime.
     """
     if cfg.lora_rank <= 0:
         raise ValueError(
@@ -130,13 +143,19 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
             "serverless mode requires Config.max_seq_len to be set "
             "(there is no training shape to resolve it from)."
         )
-    service = FiretitanServiceClient(
-        base_url=serverless_base_url(base_url),
-        api_key=api_key,
-        default_headers=additional_headers or None,
-        managed_additional_headers=additional_headers,
-    )
-    stack.callback(service.close)
+    if runtime is not None and close_session_on_exit:
+        raise ValueError("caller-owned SFT runtime cannot close its session on exit")
+    if runtime is None:
+        service = FiretitanServiceClient(
+            base_url=serverless_base_url(base_url),
+            api_key=api_key,
+            default_headers=additional_headers or None,
+            managed_additional_headers=additional_headers,
+        )
+        stack.callback(service.close)
+    else:
+        runtime.check_active()
+        service = runtime.service
     if close_session_on_exit:
         # Registered before model creation reserves the session, so a setup
         # failure still releases it; unwinds before ``service.close``.
@@ -145,6 +164,8 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
     # holder in before model creation so create/retrieve and training futures
     # share the narrowly scoped capacity-409 retry policy.
     enable_serverless_supervised_409_retry(service)
+    if runtime is not None:
+        runtime.check_active()
     training_client = service.create_lora_training_client(
         cfg.base_model,
         rank=cfg.lora_rank,
@@ -171,10 +192,14 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
     # gateway (not the serverless surface base_url). cp_client holds a persistent
     # sync httpx client, so register its close on teardown like the dedicated
     # path closes its service client.
-    cp_client = FireworksClient(
-        api_key=api_key, base_url=gateway_root_url(base_url), additional_headers=additional_headers
-    )
-    stack.callback(cp_client.close)
+    if runtime is None:
+        cp_client = FireworksClient(
+            api_key=api_key, base_url=gateway_root_url(base_url), additional_headers=additional_headers
+        )
+        stack.callback(cp_client.close)
+    else:
+        runtime.check_active()
+        cp_client = runtime.checkpoint_client
     account_id = cp_client.account_id
     run_id = getattr(training_client, "run_id", None)
     ckpt = TrainingCheckpoints(
@@ -185,6 +210,7 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
         lora_rank=cfg.lora_rank,
         serverless=True,
         current_run_id=run_id,
+        **({"on_checkpoint_saved": runtime.checkpoint_saved} if runtime is not None else {}),
     )
     # Serverless checkpoints are namespaced under the run that saved them, so
     # another process continues this run with a fully qualified reference.

@@ -45,7 +45,8 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Any, Callable, Protocol
 
 import training.utils.fileio as fileio
 from training.utils.runner import UserConfigError
@@ -505,6 +506,7 @@ class TrainingCheckpoints:
         save_stabilize_s: float = 15.0,
         save_poll_s: float = 3.0,
         current_run_id: str | None = None,
+        on_checkpoint_saved: Callable[[str, Path], None] | None = None,
     ) -> None:
         self._client = client
         self._fw_client = fw_client
@@ -523,6 +525,7 @@ class TrainingCheckpoints:
         # Preserve the authoritative save response for downstream phase handoff.
         self._saved_dcp_paths: dict[str, str] = {}
         self._confirmed_promotable: dict | None = None
+        self._on_checkpoint_saved = on_checkpoint_saved
 
     # -- Save --------------------------------------------------------------
 
@@ -553,6 +556,10 @@ class TrainingCheckpoints:
         That record commits the client half of the recovery point. Ignored
         when ``resumable=False``. ``sampler_metadata`` rides on the sampler
         save (a decision calibration writes the checkpoint's ``decision.json``).
+
+        If configured, ``on_checkpoint_saved`` publishes the exact DCP path
+        and committed manifest before sampler export, including repeated saves.
+        Publication failures propagate; callers can retry without rewriting DCP.
         """
         if not (resumable or promotable):
             raise ValueError("save() requires at least one of resumable/promotable")
@@ -616,6 +623,9 @@ class TrainingCheckpoints:
                         actual_name,
                         name,
                     )
+
+        if resumable and data_consumed is not None and self._on_checkpoint_saved is not None:
+            self._on_checkpoint_saved(self._saved_dcp_paths[name], Path(self._log_path) / "dataloader.json")
 
         if promotable:
             # A hotload delta may already use name. Preserve its published

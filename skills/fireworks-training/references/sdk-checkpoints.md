@@ -144,6 +144,54 @@ selects the newest complete checkpoint/cursor pair before rotating sessions.
 
 Bounded to the newest 20 entries. There is no `checkpoints.jsonl` — never has been, in the new model. The control plane (`FireworksClient.list_checkpoints(job_id)`) is queried at resume / promote time for everything else.
 
+## Caller-owned serverless SFT
+
+An orchestrator can call `sft_loop.main(config, runtime=runtime)` with the
+`SFTRuntime` protocol from `training.utils.sft_runtime`. The runtime supplies
+`service`, `checkpoint_client`, `check_active()`, and
+`checkpoint_saved(reference, cursor_path)`. Both clients must authenticate to
+the same account. The recipe creates a training client on the supplied service
+and leaves both clients open for later stages. The caller retains ownership of
+session cleanup. The default invocation without a runtime is unchanged.
+
+This path requires `serverless=True`, `close_session_on_exit=False`, a local
+`log_path`, and `generation_eval=False`. `check_active()` may raise to stop new
+training submissions, checkpoint saves/loads, or evaluation; operations already
+submitted can finish. Runtime failures propagate, including during evaluation.
+The orchestrator must retain its exclusive execution lease and handle cleanup.
+
+`TrainingCheckpoints(on_checkpoint_saved=...)` invokes the callback after the
+DCP and its `dataloader.json` entry commit, before any sampler export. The
+callback receives the exact DCP save response and local manifest path, including
+when a repeated save reuses that DCP. Durably publish them together before
+returning. A callback failure aborts training without attempting sampler export;
+retrying the same save retries publication. Weights without the matching cursor
+are not a complete recovery point.
+
+For a crash-safe session creation intent, persist a unique `ts-` session ID and
+an ownership nonce before calling
+`FireworksClient.reserve_training_session(session_id, display_name=nonce)`.
+Then attach with
+`FiretitanServiceClient.from_reserved_training_session(full_name,
+expected_display_name=nonce, api_key=..., base_url=...,
+additional_headers=...)`. The factory reads the session and verifies its
+account, name, nonce, and unbound state; it starts fresh SDK counters without
+creating another session. Hold an exclusive caller lease from reservation
+through first model creation. Never use this factory for a bound session:
+recovery creates a new owned session and loads the qualified DCP reference and
+its committed cursor. The existing `session_id=` constructor mode only provides
+heartbeat/shadow access and cannot allocate training clients.
+
+Resolve credentials for each invocation and never persist them in run state.
+`service.close()` stops the heartbeat and closes connections; it does not delete
+the control-plane session. Explicit session deletion invalidates active session
+routes but can leave an expired tombstone with listable checkpoints. Session
+lifetime is separate from checkpoint retention: verify the exact saved DCP or
+sampler checkpoint and its source metadata before recovery, and create a new
+session rather than trying to revive an expired one. Checkpoint bytes remain
+subject to the [serverless retention policy](https://docs.fireworks.ai/fine-tuning/training-api/serverless);
+the local ledger cannot extend that policy.
+
 ## When each axis is used
 
 - `cfg.dcp_save_interval` > 0 → recipe writes resumable DCP checkpoints every N steps.
@@ -342,9 +390,10 @@ run that fails or is interrupted prints the `launch` command that continues
 it: the run's flags plus `--init-from-checkpoint <reference>`. After any other
 stop, build that command from the newest printed reference. The resumed run
 restores the adapter and optimizer state, saves it again in its own session,
-and skips the steps already done. A training session expires soon after its
-run stops, and its checkpoints can't be loaded after that, so ask the user to
-approve the resume right away, as for any launch.
+and skips the steps already done. A session can expire while its saved DCP
+remains available under the serverless retention policy. Verify the exact
+checkpoint and matching cursor before resuming into a new session. Obtain the
+normal launch approval when the resumed work is not already authorized.
 
 ---
 

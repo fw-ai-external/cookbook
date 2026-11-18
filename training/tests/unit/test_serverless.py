@@ -125,6 +125,80 @@ def test_enable_supervised_retry_uses_optional_sdk_hook():
     hook.assert_called_once_with()
 
 
+@pytest.mark.parametrize("fail_setup", [False, True])
+def test_caller_owned_runtime_keeps_clients_open_and_uses_its_account(monkeypatch, tmp_path, fail_setup):
+    service = _FakeService(
+        base_url="https://owned.example.test",
+        api_key="owned-key",
+        default_headers=None,
+        managed_additional_headers=None,
+    )
+    service.close = MagicMock()
+    cp_client = _FakeFireworksClient(
+        api_key="owned-key", base_url="https://owned.example.test", additional_headers=None
+    )
+    cp_client.account_id = "owned-account"
+    runtime = SimpleNamespace(
+        service=service, checkpoint_client=cp_client, check_active=MagicMock(), checkpoint_saved=MagicMock()
+    )
+    monkeypatch.setattr(
+        serverless_utils, "FiretitanServiceClient", MagicMock(side_effect=AssertionError("extra session"))
+    )
+    monkeypatch.setattr(
+        serverless_utils, "FireworksClient", MagicMock(side_effect=AssertionError("environment identity"))
+    )
+    client = MagicMock()
+    factory = MagicMock(
+        side_effect=RuntimeError("client creation failed") if fail_setup else None, return_value=client
+    )
+    monkeypatch.setattr(serverless_utils.ReconnectableClient, "from_training_client", factory)
+    cfg = SimpleNamespace(
+        base_model="accounts/fireworks/models/qwen3-4b",
+        lora_rank=8,
+        max_seq_len=512,
+        step_timeout=None,
+        log_path=str(tmp_path),
+    )
+
+    def setup():
+        with ExitStack() as stack:
+            return serverless_utils.setup_serverless_training(
+                cfg,
+                api_key="wrong-key",
+                base_url="https://wrong.example.test",
+                additional_headers=None,
+                stack=stack,
+                runtime=runtime,
+            )
+
+    if fail_setup:
+        with pytest.raises(RuntimeError, match="client creation failed"):
+            setup()
+    else:
+        actual, _, checkpoint, session_id, _ = setup()
+        assert actual is service and session_id == "ts-1234"
+        assert checkpoint._fw_client._account_id == "owned-account"
+        assert checkpoint._on_checkpoint_saved == runtime.checkpoint_saved
+    service.close.assert_not_called()
+    assert not cp_client.closed
+
+
+def test_caller_owned_runtime_checks_cancellation_before_model_creation(monkeypatch, tmp_path):
+    service = MagicMock()
+    runtime = SimpleNamespace(service=service, check_active=MagicMock(side_effect=RuntimeError("cancelled")))
+    cfg = SimpleNamespace(lora_rank=8, max_seq_len=512)
+    with pytest.raises(RuntimeError, match="cancelled"), ExitStack() as stack:
+        serverless_utils.setup_serverless_training(
+            cfg,
+            api_key="unused",
+            base_url="https://api.example.test",
+            additional_headers=None,
+            stack=stack,
+            runtime=runtime,
+        )
+    service.create_lora_training_client.assert_not_called()
+
+
 def test_enable_supervised_retry_accepts_installed_sdk_service():
     # No session reservation or HTTP request: exercise the installed SDK class
     # in both staged-SDK and published-minimum compatibility runs.

@@ -598,6 +598,8 @@ def _run_main_with_fake_trainer(
     finalization_error: str | None = None,
     checkpoints: TrainingCheckpoints | None = None,
     eval_rows=1,
+    runtime=None,
+    events=None,
     **config_overrides,
 ):
     """Run ``main`` for one epoch of 4 rows (batch_size=2) against a fake trainer.
@@ -605,7 +607,7 @@ def _run_main_with_fake_trainer(
     Returns the ordered train/eval events and the eval rows of metrics.jsonl.
     ``saves`` collects ``(name, kwargs)`` for every checkpoint save.
     """
-    events = []
+    events = [] if events is None else events
     saves = [] if saves is None else saves
     promotions = [] if promotions is None else promotions
     rows = [
@@ -669,7 +671,9 @@ def _run_main_with_fake_trainer(
                 raise RuntimeError("checkpoint promotion unavailable")
             return {"state": "READY"}
 
-    def fake_run_eval(*, eval_data, client, batch_size, step, epoch, metric_prefixes=("eval",)):
+    def fake_run_eval(*, eval_data, client, batch_size, step, epoch, metric_prefixes=("eval",), check_active=None):
+        if check_active is not None:
+            check_active()
         if metric_prefixes == ("eval",):
             events.append(f"eval(step={step}, epoch={epoch})")
         else:
@@ -712,7 +716,7 @@ def _run_main_with_fake_trainer(
 
         def setup_serverless(*args, **kwargs):
             return (
-                FakeService(),
+                FakeService() if runtime is None else runtime.service,
                 FakeClient(),
                 checkpoints if checkpoints is not None else FakeCheckpoints(),
                 "session-1",
@@ -751,7 +755,10 @@ def _run_main_with_fake_trainer(
             output_model_path=str(tmp_path / "output-model.json"),
         ),
     }
-    result = module.main(module.Config(**{**config_kwargs, **config_overrides}))
+    result = module.main(
+        module.Config(**{**config_kwargs, **config_overrides}),
+        **({"runtime": runtime} if runtime is not None else {}),
+    )
 
     records = [json.loads(line) for line in metrics_path.read_text().splitlines()] if metrics_path.exists() else []
     return (
@@ -759,6 +766,60 @@ def _run_main_with_fake_trainer(
         [record for record in records if "eval/loss" in record or "checkpoint_eval/loss" in record],
         result,
     )
+
+
+@pytest.mark.parametrize(
+    "overrides,reason",
+    [
+        ({"serverless": False}, "serverless=True"),
+        ({"serverless": True, "close_session_on_exit": True}, "close_session_on_exit=False"),
+        ({"serverless": True, "generation_eval": True}, "generation_eval"),
+        ({"serverless": True, "log_path": "gs://bucket/logs"}, "local log_path"),
+    ],
+)
+def test_owned_runtime_rejects_unsupported_configuration_before_remote_work(tmp_path, overrides, reason):
+    runtime = SimpleNamespace(check_active=Mock())
+    cfg = module.Config(**{"dataset": "unused.jsonl", "log_path": str(tmp_path), **overrides})
+    with pytest.raises(ValueError, match=reason):
+        module.main(cfg, runtime=runtime)
+    runtime.check_active.assert_not_called()
+
+
+def test_owned_runtime_does_not_close_its_service_after_success(tmp_path, monkeypatch):
+    runtime = SimpleNamespace(service=SimpleNamespace(close=Mock()), check_active=Mock())
+    _, _, result = _run_main_with_fake_trainer(
+        tmp_path, monkeypatch, resume_info=None, runtime=runtime, serverless=True, save_final_checkpoint=True
+    )
+    assert result["steps"] == 2
+    runtime.service.close.assert_not_called()
+    assert runtime.check_active.call_count > 0
+
+
+@pytest.mark.parametrize("cancel_on", ["train", "eval(step=0, epoch=None)"])
+def test_owned_runtime_cancellation_stops_new_training_and_final_completion(tmp_path, monkeypatch, cancel_on):
+    events = []
+
+    def check_active():
+        if cancel_on in events:
+            raise RuntimeError("cancelled by owner")
+
+    runtime = SimpleNamespace(service=SimpleNamespace(close=Mock()), check_active=check_active)
+    with pytest.raises(RuntimeError, match="cancelled by owner"):
+        _run_main_with_fake_trainer(
+            tmp_path,
+            monkeypatch,
+            resume_info=None,
+            runtime=runtime,
+            events=events,
+            serverless=True,
+            save_final_checkpoint=True,
+        )
+    assert events.count("train") == (1 if cancel_on == "train" else 0)
+    assert "save" not in events and "completed" not in events
+    runtime.service.close.assert_not_called()
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert status["code"] != 0
+    assert status["message"] == "cancelled by owner"
 
 
 @pytest.mark.parametrize("serverless", [False, True], ids=["dedicated", "serverless"])
