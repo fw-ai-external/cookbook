@@ -665,6 +665,7 @@ def _build_text_only_rollout_sample(
     routing_matrices: List[str] | None = None,
     top_sampling_references: RoutingReferences | None = None,
     sampling_mask_references: RoutingReferences | None = None,
+    sample_extra_references: RoutingReferences | None = None,
     completion_topk: tuple[List[List[int]], List[List[float]]] | None = None,
     logprobs_echoed: bool,
     reward: float,
@@ -698,6 +699,13 @@ def _build_text_only_rollout_sample(
                 [""] * max(0, len(prompt_token_ids) - 1), sampling_mask_references
             )
             if sampling_mask_references is not None
+            else None
+        ),
+        sample_extra_references=(
+            concat_routing(
+                [""] * max(0, len(prompt_token_ids) - 1), sample_extra_references
+            )
+            if sample_extra_references is not None
             else None
         ),
         raw_logprobs=(
@@ -775,6 +783,7 @@ def sampled_completion_to_rollout_run(
         routing_matrices=getattr(completion, "routing_matrices", None),
         top_sampling_references=getattr(completion, "top_sampling_references", None),
         sampling_mask_references=getattr(completion, "sampling_mask_references", None),
+        sample_extra_references=getattr(completion, "sample_extra_references", None),
         completion_topk=_completion_topk_from_sampled_completion(
             completion, prompt_len=prompt_len, completion_len=len(completion_tokens)
         ),
@@ -1101,6 +1110,7 @@ async def single_turn_renderer_rollout(
         routing_matrices=getattr(c, "routing_matrices", None),
         top_sampling_references=getattr(c, "top_sampling_references", None),
         sampling_mask_references=getattr(c, "sampling_mask_references", None),
+        sample_extra_references=getattr(c, "sample_extra_references", None),
         completion_topk=_completion_topk_from_sampled_completion(
             c, prompt_len=prompt_len, completion_len=len(out_tokens)
         ),

@@ -41,6 +41,7 @@ from training.utils import (
     read_api_extra_headers_env,
     resolve_router_replay_enabled,
 )
+from training.utils.rl.algorithm import server_reinforce
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
 from training.utils.rl.rollout.setup import (
     RolloutFnFactory,
@@ -122,6 +123,7 @@ def add_resource_args(
     shapes: bool = True,
 ) -> None:
     """Dedicated trainer/deployment controls; omitted IDs are SDK-created."""
+    server_reinforce.add_cli_args(parser)
     parser.add_argument("--trainer-job-id", default=None, help="Reattach a trainer")
     parser.add_argument("--deployment-id", default=None, help="Reattach and hot-load a deployment")
     if shapes:
@@ -398,6 +400,11 @@ def set_e2b_request_timeout(seconds: float) -> None:
     e2b.connection_config.REQUEST_TIMEOUT = seconds
 
 
+def reinforce_config(args: argparse.Namespace) -> server_reinforce.ReinforceConfig | None:
+    """Built-in REINFORCE options from ``add_resource_args``; ``None`` keeps GRPO."""
+    return server_reinforce.from_cli_args(args)
+
+
 __all__ = [
     "add_harness_args",
     "add_model_args",
@@ -408,6 +415,7 @@ __all__ = [
     "deployment_rollout_setup",
     "harbor_settings",
     "pin_wandb_run_id",
+    "reinforce_config",
     "require_env",
     "run_sampling_only",
     "score_rows",

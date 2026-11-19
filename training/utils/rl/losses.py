@@ -51,7 +51,10 @@ class PromptGroup:
     sampling_mask_references: List[RoutingReferences | None] = field(
         default_factory=list
     )
-    """Per-datum Parquet top-K sampling references over model-input positions."""
+    sample_extra_references: List[RoutingReferences | None] = field(
+        default_factory=list
+    )
+    """Per-datum Parquet sampling references over model-input positions."""
     completion_lens: List[int] = field(default_factory=list)
     """Per-sample completion lengths in tokens."""
     truncated: List[bool] = field(default_factory=list)
@@ -115,6 +118,9 @@ class PolicyBatch:
     sampling_mask_references: List[RoutingReferences | None] = field(
         default_factory=list
     )
+    sample_extra_references: List[RoutingReferences | None] = field(
+        default_factory=list
+    )
 
     def __post_init__(self) -> None:
         if self.anchor_logprobs is None:
@@ -132,6 +138,7 @@ def combine_prompt_groups(groups: List[PromptGroup]) -> PolicyBatch:
     topk_logprobs: List[List[List[float]]] = []
     references: List[RoutingReferences | None] = []
     mask_references: List[RoutingReferences | None] = []
+    extra_references: List[RoutingReferences | None] = []
     for pg in groups:
         rows = len(pg.data)
         data.extend(pg.data)
@@ -147,6 +154,9 @@ def combine_prompt_groups(groups: List[PromptGroup]) -> PolicyBatch:
         mask_references.extend(
             pg.sampling_mask_references or [None for _ in range(rows)]
         )
+        extra_references.extend(
+            pg.sample_extra_references or [None for _ in range(rows)]
+        )
     return PolicyBatch(
         data=data,
         advantages=advantages,
@@ -158,6 +168,7 @@ def combine_prompt_groups(groups: List[PromptGroup]) -> PolicyBatch:
         inference_topk_logprobs=topk_logprobs,
         top_sampling_references=references,
         sampling_mask_references=mask_references,
+        sample_extra_references=extra_references,
     )
 
 

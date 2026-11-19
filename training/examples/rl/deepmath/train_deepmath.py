@@ -34,6 +34,7 @@ from training.utils import (
     prepare_sampling_messages,
 )
 from training.utils.rl.losses import has_reward_variance
+from training.utils.rl.algorithm import server_reinforce
 from training.utils.rl.rollout import RolloutRun, single_turn_renderer_rollout
 
 logger = logging.getLogger(__name__)
@@ -154,6 +155,7 @@ def make_rollout_fn(setup: RolloutSetup, *, renderer_name: str = "") -> RolloutF
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    server_reinforce.add_cli_args(parser)
     parser.add_argument(
         "--base-model", default="accounts/fireworks/models/qwen3-30b-a3b-instruct-2507"
     )
@@ -219,7 +221,9 @@ def main_cli() -> None:
         raise FileNotFoundError(
             f"Dataset not found at {args.dataset_path}. Run prepare_data.py first."
         )
+    reinforce = server_reinforce.from_cli_args(args)
     config = Config(
+        reinforce=reinforce,
         log_path="./deepmath_logs",
         base_model=args.base_model,
         dataset=args.dataset_path,
@@ -256,7 +260,11 @@ def main_cli() -> None:
     metrics = main(
         config,
         rollout_fn_factory=make_rollout_fn,
-        dynamic_filter_fn=has_reward_variance,
+        dynamic_filter_fn=(
+            None
+            if reinforce is not None and reinforce.sampler_kl_coeff > 0
+            else has_reward_variance
+        ),
     )
     logger.info("Training complete. Final metrics: %s", metrics)
 
