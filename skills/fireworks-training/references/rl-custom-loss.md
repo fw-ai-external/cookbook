@@ -46,14 +46,14 @@ surface, so swapping objectives is one import plus its config:
 | Name | What it is |
 |---|---|
 | `<Name>Config` | Frozen settings, validated on construction |
-| `LOSS_FN`, `loss_fn_config(cfg)` | Module's trainer built-in loss (absent for the client `reinforce`, `score_centering` modules) |
+| `LOSS_FN`, `loss_fn_config(cfg)` | Module's trainer built-in loss (absent for the client `reinforce` module) |
 | `build_datums(batch, cfg)` | Datums for that loss |
 | `metrics(batch, result, cfg)` | `{PREFIX}_ratio_mean`, `{PREFIX}_clip_frac`, `{PREFIX}_kl` |
 | `make_loss_fn(batch, cfg)` | Same objective as a client loss on `batch.data`, same metric names |
 | `NORMALIZATION` | `grad_accumulation_normalization` for `optim_step` (GSPO: `num_sequences`) |
 
 Modules: `grpo` (prefix `ppo`), `gspo`, `dapo`, `cispo`, `dro`, `dppo`,
-`importance_sampling` (prefix `is`), `reinforce`, `score_centering`. `igpo` is
+`importance_sampling` (prefix `is`), `reinforce`. `igpo` is
 an advantage estimator, not a loss; `sao` holds the experimental value-head
 recipe's DIS loss.
 
@@ -94,32 +94,30 @@ MIS rejection must not shrink its denominator. Separate auxiliaries are unweight
 The trainer reports how many tokens TIS clipped or MIS masked; steps log them as
 `train/clip_*` and `train/mask_*` ([`step-metrics.md`](step-metrics.md#server-tismis-clipping)).
 
-## Score-centering paths
+## Trainer-side score centering
 
-Both client-side and server-side SC are supported; neither is selected by default.
+Use the built-in `reinforce` loss with one sampled target per position, raw advantages,
+sampling logprobs and a response mask. Bind the sampler to the same training client.
+The sampler writes replay artifacts to the trainer's shared store and returns
+compact references. Use temperature 1. Extra-sampling SC requires text datums.
+The trainer must advertise built-in REINFORCE and support for the chosen
+score-centering estimator. Complete-support replay also requires
+`supports_target_logprob_support`. Trainer recomputed anchors score the full
+vocabulary. When replay renormalizes over the captured support, skip
+full-vocabulary inference drift comparisons. Capture one estimator per batch.
 
-| Path | API | Objective |
-|---|---|---|
-| Client SC | `score_centering.make_loss_fn` + `forward_backward_custom` | Explicit vanilla policy-gradient correction; partial top-k head/tail approximation. |
-| Built-in REINFORCE + SC | `loss_fn="reinforce"`, `score_centering=True` | Explicit correction after detached none/TIS/MIS weighting; full vocabulary or complete support replay. |
+In the async recipe, set `Config.reinforce` to a
+`server_reinforce.ReinforceConfig` with `ExtraSamplingSC(num_samples=16)` or
+`TopSamplingSC(head_size=128)`. The recipe preflights the selected trainer
+capability before rollout. Existing callers using a probability head must
+explicitly select `top_sampling` on compatible SDK and trainer versions.
+A positive `sampler_kl_coeff` requires score centering and applies to response
+tokens independently of TIS/MIS weighting.
 
-With identical heads, masks and normalization, client SC matches unweighted
-full-vocabulary server SC. The old STE option `train_inference_correction` has
-been removed; server-side `score_centering=True` is supported only on REINFORCE.
-
-The new path requires a compatible SDK release and trainer capabilities
-`supports_reinforce`, `supports_score_centering`, and the capability for the selected estimator.
-The default `extra_sampling` requires `supports_mc_score_centering` and independent draws in
-`sample_extra_references`. Explicit `top_sampling` requires `supports_topk_score_centering`
-and a probability head in `top_sampling_references`. When upgrading legacy requests that used
-`score_centering=True` with a probability head, upgrade both the SDK and trainer and set
-`score_centering_estimator="top_sampling"` explicitly. The async recipe
-checks the selected capability from the trainer handshake at startup. The SDK validates the returned
-reference channel, store and generated-token alignment on each rollout response.
-Send ordinary single-target datums with raw advantages, sampler logprobs and
-an explicit response mask; do not use client SC's expanded datums or preapply TIS.
-A positive `sampler_kl_coeff` requires SC. It adds a sampler KL term on
-response tokens, including zero-advantage tokens, independently of TIS/MIS.
+- `top_sampling_kwargs(k)` records a bounded probability head for `top_sampling`.
+- `extra_sampling_kwargs(k)` records stochastic draws for `extra_sampling`.
+- Add `replay_mask_kwargs(top_p=...)` independently to record the complete
+  sampling support for target-logprob normalization.
 
 ```python
 from training.utils.rl.sampling_support import attach_sampling_mask_references, attach_top_sampling_references
@@ -127,30 +125,17 @@ from training.utils.rl.sampling_support import attach_sampling_mask_references, 
 datums = attach_sampling_mask_references(datums, batch.sampling_mask_references)
 datums = attach_top_sampling_references(datums, batch.top_sampling_references)
 result = policy.forward_backward(datums, "reinforce", loss_fn_config={
-    "score_centering": True, "score_centering_estimator": "top_sampling", "weighting": "tis", "weight_high": 2.0,
+    "score_centering": True, "score_centering_estimator": "top_sampling",
+    "weighting": "tis", "weight_high": 2.0,
     "target_logprob_support": "sampling_support",
 })
 policy.optim_step(adam, grad_accumulation_normalization="num_loss_tokens")
 ```
 
-Built-in SC reads the selected estimator’s Parquet references.
-The example requires complete support captured during rollout. `apply_tis`
-rewrites returned datums, not client SC's `batch.advantages`; use the server
-path for SC combined with TIS/MIS.
-SC accepts a partial probability head in either normalization mode.
-`sampling_support` requires a complete ID-only replay mask.
-SC, none/TIS/MIS weighting and mask replay are independent options and can be
-combined. v1 uses temperature 1; SC/replay are text-only. Do not preweight
-advantages or add PPO/GSPO clipping. Response-mask tokens count even when their
-advantage is zero.
-
-For replay, capture `sampling_mask="parquet_v1"`. For top-sampling SC, additionally request
-`top_sampling_logprobs=128` and `top_sampling_format="parquet_v1"`. The SDK carries
-each through its own field: `sampling_mask_references` for replay and
-`top_sampling_references` for SC; replay-only needs no head.
-The complete mask defines normalization; the bounded head uses approximate
-head/tail SC. Replay requires `sampling_mask`; top-k-only files are rejected.
-Keep loss selection in the caller; the async loop retains its default objective.
+For extra sampling, attach `batch.sample_extra_references` with
+`attach_sample_extra_references` and select `score_centering_estimator="extra_sampling"`.
+Choose stochastic decoding for this estimator. Ordinary `top_k` and `top_p`
+control generation. Replay capture additionally requests the relevant artifact.
 
 ## Recompute the anchor
 
@@ -272,38 +257,17 @@ keep their fixed GRPO objective and do not provision or score references.
 
 ## Replay the sampling support (top-p)
 
-Independent mask/head capture requires `fireworks-ai>=1.2.28` and a compatible trainer.
-
-With `top_p < 1`, train over the recorded sampling support instead of the full
-vocabulary:
+Sample with `replay_mask_kwargs(top_p=0.95)`, convert the rollouts to a
+policy batch, then attach the complete support to the trainer's built-in loss.
 
 ```python
-from training.utils.rl.sampling_support import (
-    attach_top_sampling_references, attach_sampling_mask_references,
-    replay_mask_kwargs, top_sampling_kwargs, sampling_support_loss_fn_config,
-)
+from training.utils.rl.sampling_support import attach_sampling_mask_references, sampling_support_loss_fn_config
 
-sample_kwargs.update(replay_mask_kwargs(top_p=0.95) | top_sampling_kwargs(128))
-...
 datums = attach_sampling_mask_references(objective.build_datums(batch, policy_loss), batch.sampling_mask_references)
-datums = attach_top_sampling_references(datums, batch.top_sampling_references)
 result = policy.forward_backward(
-    datums, "reinforce", loss_fn_config=sampling_support_loss_fn_config(
-        {"score_centering": True, "score_centering_estimator": "top_sampling"}
-    )
+    datums, objective.LOSS_FN, loss_fn_config=sampling_support_loss_fn_config(objective.loss_fn_config(policy_loss))
 )
-result.metrics.update(objective.metrics(batch, result, policy_loss))   # skip inference_drift_metrics
 ```
-
-- `sampling_mask="parquet_v1"` records the complete support (trainer limit
-  20,000); incomplete masks are rejected. `top_sampling_kwargs(128)` requests a separate
-  probability head for SC. Omit `top_sampling_kwargs` for replay without SC.
-- Needs a sampler bound to the trainer's shared storage, a serving image that
-  accepts `sampling_mask="parquet_v1"`, and
-  `training_client.supports_target_logprob_support`.
-- Only server-side losses read the support. Drift against full-vocabulary
-  serving logprobs is meaningless here, so the fork skips the drift call.
-- Do not combine with a recomputed anchor; the snapshot is full-vocabulary.
 
 ## Turn-level advantages (IGPO)
 

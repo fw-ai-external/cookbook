@@ -119,13 +119,7 @@ class _CheckpointLister(Protocol):
     def list_checkpoints(self, job_id: str, *, page_size: int = 200) -> list[dict]: ...
 
     def promote_checkpoint(
-        self,
-        job_id: str,
-        checkpoint_id: str,
-        output_model_id: str,
-        base_model: str,
-        *,
-        hot_load_deployment_id: str | None = None,
+        self, *, name: str, output_model_id: str, base_model: str
     ) -> dict: ...
 
 
@@ -873,7 +867,6 @@ class TrainingCheckpoints:
         output_model_id: str,
         base_model: str,
         *,
-        hot_load_deployment_id: str | None = None,
         checkpoint_name: str | None = None,
     ) -> dict:
         """Promote the newest promotable row on the control plane.
@@ -931,7 +924,6 @@ class TrainingCheckpoints:
             name=full_name,
             output_model_id=output_model_id,
             base_model=base_model,
-            hot_load_deployment_id=hot_load_deployment_id,
         )
 
     # -- Internal ----------------------------------------------------------

@@ -2,7 +2,7 @@ import pytest
 from fireworks.training import sdk
 from fireworks.training.sdk.routing import RoutingReferences
 from training.utils.rl.losses import PolicyBatch, build_policy_datums
-from training.utils.rl.sampling_support import attach_top_sampling_references
+from training.utils.rl.sampling_support import attach_sample_extra_references, attach_top_sampling_references
 
 
 def _datum():
@@ -128,3 +128,17 @@ def test_attach_mask_preserves_independent_head():
     assert result.model_input.top_sampling_references == head.to_dict()
     assert result.model_input.sampling_mask_references is not None
     assert datum.model_input.sampling_mask_references is None
+
+
+def test_extra_sampling_is_independent_of_the_replay_mask():
+    from training.tests._replay_refs import replay_refs
+    from training.utils.rl.sampling_support import attach_sampling_mask_references, extra_sampling_kwargs
+
+    refs = replay_refs(["", "extra"])
+    mask = replay_refs(["", "mask"])
+    datums = attach_sampling_mask_references([_datum()], [mask])
+    (datum,) = attach_sample_extra_references(datums, [refs])
+    assert datum.model_input.sample_extra_references == refs.to_dict()
+    assert datum.model_input.sampling_mask_references == mask.to_dict()
+    assert datum.model_input.top_sampling_references is None
+    assert extra_sampling_kwargs(4)["sample_extra_tokens"] == 4

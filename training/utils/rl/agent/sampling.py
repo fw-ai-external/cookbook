@@ -7,9 +7,9 @@ from typing import Any
 from fireworks.training.sdk.routing import (
     RoutingReferences,
     concat_routing,
-    copy_routing,
 )
 
+from training.utils.rl.router_replay import reference_gaps, require_references
 from training.utils.rl.agent.trajectory import TokenSegment
 from training.utils.rl.rollout.types import RolloutSample
 
@@ -51,13 +51,15 @@ def completion_routes(
     completion: Any,
     *,
     output_len: int,
-) -> list[str] | RoutingReferences | None:
+) -> RoutingReferences | None:
     """Return completion-only routing matrices from an SDK completion."""
     raw_routes = getattr(completion, "routing_matrices", None)
     if raw_routes is None:
         return None
 
-    routes = copy_routing(raw_routes)
+    if not isinstance(raw_routes, RoutingReferences):
+        raise ValueError("R3 requires trainer-shared routing references")
+    routes = raw_routes
     prompt_len = int(completion.prompt_len)
     full_len = len(completion.full_tokens)
     if getattr(completion, "logprobs_echoed", False):
@@ -66,19 +68,12 @@ def completion_routes(
         elif len(routes) == max(0, full_len - 1):
             routes = routes[max(0, prompt_len - 1) :]
 
-    if len(routes) != output_len or (
-        not isinstance(routes, RoutingReferences)
-        and any(route is None for route in routes)
-    ):
+    if len(routes) != output_len:
         raise ValueError(
             "completion routing matrices are misaligned "
             f"({len(routes)} values for {output_len} output tokens)"
         )
-    return (
-        routes
-        if isinstance(routes, RoutingReferences)
-        else [str(route) for route in routes]
-    )
+    return routes
 
 
 def token_segment_to_sample(
@@ -95,41 +90,18 @@ def token_segment_to_sample(
         and len(segment.rollout_raw_log_probs) != response_len
     ):
         raise ValueError("agent segment raw logprobs are misaligned")
-    if (
-        segment.routing_matrices is not None
-        and len(segment.routing_matrices) != response_len
-    ):
-        raise ValueError("agent segment routing matrices are misaligned")
-    if (
-        segment.top_sampling_references is not None
-        and len(segment.top_sampling_references) != response_len
-    ):
-        raise ValueError("agent segment top-K sampling references are misaligned")
-    if (
-        segment.sampling_mask_references is not None
-        and len(segment.sampling_mask_references) != response_len
-    ):
-        raise ValueError("agent segment mask sampling references are misaligned")
-
+    captures = {}
     prompt_len = len(segment.prompt_ids)
+    for key in ("routing_matrices", "top_sampling_references", "sampling_mask_references", "sample_extra_references"):
+        refs = require_references(getattr(segment, key))
+        if refs is None:
+            continue
+        if len(refs) != response_len:
+            raise ValueError(f"agent segment {key} are misaligned")
+        captures[key] = concat_routing(reference_gaps(max(0, prompt_len - 1)), refs)
     raw_logprobs = (
         [0.0] * prompt_len + segment.rollout_raw_log_probs
         if segment.rollout_raw_log_probs is not None
-        else None
-    )
-    routing_matrices = (
-        concat_routing([""] * max(0, prompt_len - 1), segment.routing_matrices)
-        if segment.routing_matrices is not None
-        else None
-    )
-    top_sampling = (
-        concat_routing([""] * max(0, prompt_len - 1), segment.top_sampling_references)
-        if isinstance(segment.top_sampling_references, RoutingReferences)
-        else None
-    )
-    sampling_mask = (
-        concat_routing([""] * max(0, prompt_len - 1), segment.sampling_mask_references)
-        if isinstance(segment.sampling_mask_references, RoutingReferences)
         else None
     )
     return RolloutSample(
@@ -143,9 +115,7 @@ def token_segment_to_sample(
         # Use trainer input coordinates directly. Inferring a legacy
         # completion suffix from the first trainable token is ambiguous after
         # a short response rewrite masks an earlier generated span.
-        routing_matrices=routing_matrices,
-        top_sampling_references=top_sampling,
-        sampling_mask_references=sampling_mask,
+        **captures,
     )
 
 

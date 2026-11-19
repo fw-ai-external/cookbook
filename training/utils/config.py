@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any, Callable, Dict, Literal, Mapping
 
 from fireworks.training.sdk.client import FiretitanTrainingClient
@@ -25,7 +24,7 @@ StepCallback = Callable[[int, Dict[str, float]], None]
 
 
 _REMOVED_ACCELERATOR_CONFIG_FIELDS = frozenset(
-    {"accelerator_type", "accelerator_count"}
+    {"accelerator_type", "accelerator_count", "node_count"}
 )
 
 
@@ -40,7 +39,7 @@ def _reject_removed_accelerator_config(
     names = " and ".join(f"`{name}`" for name in removed)
     raise TypeError(
         f"{config_name} no longer supports {names}. Cookbook clients cannot set "
-        "trainer accelerator type or count; select a training shape with "
+        "trainer hardware or node count; select a training shape with "
         "`training_shape_id` instead."
     )
 
@@ -112,7 +111,6 @@ class TrainerConfig:
     region: str | None = None
     """Optional explicit trainer region. Prefer leaving unset so the backend
     can place the trainer from the validated training shape."""
-    node_count: int | None = None
     timeout_s: float = 3600
     """Post-placement budget for the trainer to become healthy and ready."""
     pending_timeout_s: float = 48 * 60 * 60
@@ -156,32 +154,10 @@ class TrainerConfig:
     """Pin the trainer to a named reservation resource or reservation group."""
 
 
-class WeightSyncScope(Enum):
-    """How trainer weights are synced to the inference deployment.
-
-    ``PER_TRAINER`` (default)
-        Trainer is provisioned first; the deployment is created (or re-wired on
-        resume) to pull weights from that trainer's bucket.  Each trainer gets
-        its own bucket.  On resume, the deployment is re-pointed to the new
-        trainer, which briefly restarts the serving pod.
-
-    ``PER_DEPLOYMENT``
-        Deployment is provisioned first with a stable, deployment-scoped bucket.
-        Trainers are created referencing that deployment so they all write to the
-        same bucket URL.  On resume, a new trainer is created pointing at the
-        same deployment — no serving pod restart required.
-    """
-
-    PER_TRAINER = "per_trainer"
-    PER_DEPLOYMENT = "per_deployment"
-
-
 @dataclass
 class DeployConfig:
     """Inference deployment settings."""
 
-    weight_sync_scope: WeightSyncScope = WeightSyncScope.PER_TRAINER
-    """Controls how trainer weights reach the inference deployment; see :class:`WeightSyncScope`."""
     deployment_id: str | None = None
     """If set, use this existing deployment.  If ``None``, a new deployment
     is auto-created (ID derived from the base model name)."""
@@ -232,7 +208,7 @@ class DeployConfig:
     disable_speculative_decoding: bool = False
     """When true, disable the base model's default draft/EAGLE speculation."""
     wait_for_trainer_before_deployment: bool = False
-    """For ``PER_TRAINER``, wait for trainer capacity before rollout allocation.
+    """Wait for trainer capacity before rollout allocation.
     Avoids idle rollout GPUs while queued, but serializes trainer/deployment boot."""
     replica_count: int | None = None
     """If set, pin the deployment to a fixed replica count."""
@@ -247,6 +223,11 @@ class DeployConfig:
     Recipes choose weight_sync() or save followed by hotload from runtime
     capabilities. Durable checkpoints are saved separately from RDMA.
     """
+
+
+    def __post_init__(self) -> None:
+        if self.reset_prompt_cache not in ("all", "new_session", "none"):
+            raise ValueError("reset_prompt_cache must be 'all', 'new_session' or 'none'")
 
 
 @dataclass

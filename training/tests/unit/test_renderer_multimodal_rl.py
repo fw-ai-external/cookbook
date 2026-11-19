@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from training.tests._replay_refs import replay_refs, replay_rows
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -53,7 +54,7 @@ def test_sampled_completion_to_rollout_run_packs_neutral_contract() -> None:
             finish_reason="length",
             inference_logprobs=[-0.3, -0.4],
             sampling_logprobs=[-0.31, -0.41],
-            routing_matrices=["route-30", "route-40"],
+            routing_matrices=replay_refs(["route-30", "route-40"]),
         ),
         reward=0.75,
     )
@@ -64,51 +65,9 @@ def test_sampled_completion_to_rollout_run_packs_neutral_contract() -> None:
     assert sample.loss_mask == [0, 0, 1, 1]
     assert sample.logprobs == [0.0, 0.0, -0.31, -0.41]
     assert sample.raw_logprobs == [0.0, 0.0, -0.3, -0.4]
-    assert sample.routing_matrices == ["route-30", "route-40"]
+    assert replay_rows(sample.routing_matrices) == ["route-30", "route-40"]
     assert sample.reward == 0.75
     assert sample.finish_reason == "length"
-
-
-def _topk_completion(**overrides) -> SampledCompletion:
-    fields = dict(
-        text="answer",
-        full_tokens=[10, 20, 30, 40],
-        prompt_len=2,
-        inference_logprobs=[-0.3, -0.4],
-        sampling_logprobs=[-0.31, -0.41],
-        inference_topk_token_ids=[[30, 31], [40, 41]],
-        inference_topk_logprobs=[[-0.3, -1.5], [-0.4, -1.6]],
-    )
-    return SampledCompletion(**(fields | overrides))
-
-
-def test_sampled_completion_to_rollout_run_carries_sampler_top_k() -> None:
-    sample = sampled_completion_to_rollout_run(_topk_completion(), reward=1.0).segments[0]
-
-    assert sample.inference_topk_token_ids == [[], [], [30, 31], [40, 41]]
-    assert sample.inference_topk_logprobs == [[], [], [-0.3, -1.5], [-0.4, -1.6]]
-
-
-def test_sampler_top_k_drops_echoed_prompt_rows_and_misaligned_rows() -> None:
-    echoed = _topk_completion(
-        logprobs_echoed=True,
-        inference_logprobs=[-9.0, -0.3, -0.4],
-        sampling_logprobs=[-9.0, -0.31, -0.41],
-        inference_topk_token_ids=[[1, 2], [30, 31], [40, 41]],
-        inference_topk_logprobs=[[-9.0, -9.0], [-0.3, -1.5], [-0.4, -1.6]],
-    )
-    assert sampled_completion_to_rollout_run(echoed, reward=1.0).segments[0].inference_topk_token_ids == [
-        [],
-        [],
-        [30, 31],
-        [40, 41],
-    ]
-
-    short = _topk_completion(inference_topk_token_ids=[[30, 31]], inference_topk_logprobs=[[-0.3, -1.5]])
-    sample = sampled_completion_to_rollout_run(short, reward=1.0).segments[0]
-    assert sample.inference_topk_token_ids is None and sample.inference_topk_logprobs is None
-    no_topk = _topk_completion(inference_topk_token_ids=None, inference_topk_logprobs=None)
-    assert sampled_completion_to_rollout_run(no_topk, reward=1.0).segments[0].inference_topk_token_ids is None
 
 
 def _multimodal_prompt(*, image_location: str | None = None) -> sdk.ModelInput:
@@ -530,7 +489,7 @@ def test_multimodal_router_replay_uses_expanded_datum_boundary():
         prompt_model_input=prompt,
         completion_tokens=[30, 31],
         completion_logprobs=[-0.1, -0.2],
-        routing_matrices=["route-30", "route-31"],
+        routing_matrices=replay_refs(["route-30", "route-31"]),
         reward=1.0,
         finish_reason="stop",
         text="hi",
@@ -546,7 +505,7 @@ def test_multimodal_router_replay_uses_expanded_datum_boundary():
     assert pg is not None
     weights = [float(w) for w in pg.data[0].loss_fn_inputs["weights"].data]
     active = [i for i, w in enumerate(weights) if w > 0]
-    routes = pg.data[0].model_input.routing_matrices
+    routes = replay_rows(pg.data[0].model_input.routing_references)
     assert routes is not None
     assert len(routes) == len(weights)
     assert [routes[i] for i in active] == ["route-30", "route-31"]
@@ -583,7 +542,7 @@ async def test_single_turn_renderer_rollout_parses_completion_tokens_only():
                 finish_reason="stop",
                 inference_logprobs=[-0.3, -0.4],
                 sampling_logprobs=[-0.31, -0.41],
-                routing_matrices=["route-40", "route-50"],
+                routing_matrices=replay_refs(["route-40", "route-50"]),
             )
         ]
 
@@ -604,7 +563,7 @@ async def test_single_turn_renderer_rollout_parses_completion_tokens_only():
     assert segment.logprobs[-2:] == [-0.31, -0.41]
     assert segment.raw_logprobs is not None
     assert segment.raw_logprobs[-2:] == [-0.3, -0.4]
-    assert segment.routing_matrices == ["route-40", "route-50"]
+    assert replay_rows(segment.routing_matrices) == ["route-40", "route-50"]
 
 
 @pytest.mark.asyncio
@@ -633,7 +592,7 @@ async def test_single_turn_renderer_rollout_multimodal_uses_token_in_completions
                 finish_reason="stop",
                 inference_logprobs=[-0.3, -0.4],
                 sampling_logprobs=[-0.31, -0.41],
-                routing_matrices=["route-99", "route-100"],
+                routing_matrices=replay_refs(["route-99", "route-100"]),
             )
         ]
 
@@ -661,7 +620,7 @@ async def test_single_turn_renderer_rollout_multimodal_uses_token_in_completions
     assert segment.prompt_model_input is not None
     assert segment.tokens[-2:] == [99, 100]
     assert segment.logprobs[-2:] == [-0.31, -0.41]
-    assert segment.routing_matrices == ["route-99", "route-100"]
+    assert replay_rows(segment.routing_matrices) == ["route-99", "route-100"]
 
 
 @pytest.mark.asyncio

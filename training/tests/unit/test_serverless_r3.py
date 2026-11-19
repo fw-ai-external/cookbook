@@ -52,20 +52,18 @@ def launch_spec(setup: RolloutSetup) -> TITOSidecarLaunchSpec:
 class ServerlessR3Test(unittest.IsolatedAsyncioTestCase):
     async def test_sidecar_preserves_parquet_binding_across_snapshot_replacement(self) -> None:
         sampler = ServerlessSampler(sampling_client(
-            model="snapshot-a", routing_matrix_format="parquet_v1", r3_store_id="store-a",
+            model="snapshot-a", r3_store_id="store-a",
         ))
         setup = rollout_setup(sampler)
         first = launch_spec(setup)
         self.assertEqual(first.model, "snapshot-a")
-        self.assertEqual(first.routing_matrix_format, "parquet_v1")
         self.assertEqual(first.r3_store_id, "store-a")
         await sampler.replace(sampling_client(
-            model="snapshot-b", routing_matrix_format="parquet_v1", r3_store_id="store-b",
+            model="snapshot-b", r3_store_id="store-b",
         ))
         second = launch_spec(setup)
         self.assertEqual(second.model, "snapshot-b")
         self.assertEqual(first.model, "snapshot-a")
-        self.assertEqual(second.routing_matrix_format, "parquet_v1")
         self.assertEqual(second.r3_store_id, "store-b")
         self.assertEqual(first.r3_store_id, "store-a")
         await sampler.aclose()
@@ -74,7 +72,7 @@ class ServerlessR3Test(unittest.IsolatedAsyncioTestCase):
 
     async def test_sidecar_binding_stays_consistent_while_replacement_drains(self) -> None:
         old = sampling_client(
-            model="snapshot-a", routing_matrix_format="base64_inline", r3_store_id="store-a",
+            model="snapshot-a", r3_store_id="store-a",
         )
         started = asyncio.Event()
         release = asyncio.Event()
@@ -90,7 +88,7 @@ class ServerlessR3Test(unittest.IsolatedAsyncioTestCase):
         sampling = asyncio.create_task(sampler.sample_with_prompt_tokens([1]))
         await started.wait()
         replacing = asyncio.create_task(sampler.replace(sampling_client(
-            model="snapshot-b", routing_matrix_format="parquet_v1", r3_store_id="store-b",
+            model="snapshot-b", r3_store_id="store-b",
         )))
         try:
             await asyncio.sleep(0)
@@ -99,7 +97,6 @@ class ServerlessR3Test(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(setup.model, "snapshot-a")
             spec = launch_spec(setup)
             self.assertEqual(spec.model, "snapshot-b")
-            self.assertEqual(spec.routing_matrix_format, "parquet_v1")
             self.assertEqual(spec.r3_store_id, "store-b")
         finally:
             release.set()
@@ -117,14 +114,12 @@ class ServerlessR3Test(unittest.IsolatedAsyncioTestCase):
         sampler = ServerlessSampler(client)
         spec = launch_spec(rollout_setup(sampler))
         # Negotiation with inference happens inside the sidecar on its first R3 call.
-        self.assertEqual(spec.routing_matrix_format, "base64_inline")
         self.assertEqual(spec.r3_store_id, "store-a")
         await sampler.aclose()
 
-    async def test_legacy_sampler_keeps_inline_fallback(self) -> None:
+    async def test_unbound_sampler_has_no_store(self) -> None:
         sampler = ServerlessSampler(sampling_client())
         spec = launch_spec(rollout_setup(sampler))
-        self.assertEqual(spec.routing_matrix_format, "base64_inline")
         self.assertIsNone(spec.r3_store_id)
         setup = rollout_setup(sampler)
         setup.sampler = SimpleNamespace()

@@ -450,8 +450,10 @@ async def main(
         if cfg.reinforce is not None:
             sample_kwargs.update(server_reinforce.sampling_kwargs(cfg.reinforce))
         sampler_options = {"backend_managed_concurrency": True} if cfg.backend_managed_concurrency else {}
-        sampler = await run_in_thread(service.create_deployment_sampler, tokenizer=tokenizer, **sampler_options)
+        sampler = await run_in_thread(service.create_deployment_sampler, tokenizer=tokenizer, training_client=training_client, **sampler_options)
         stack.push_async_callback(close_in_thread, sampler.close)
+        if router_replay_enabled and not getattr(sampler, "r3_store_id", None):
+            raise ValueError("Router Replay requires a trainer and rollout deployment with shared replay storage")
         # One rollout object serves training and evaluation, so stateful
         # rollouts (sandbox pools, judges) keep a single concurrency budget.
         # Evaluation overlaps training here, so sampler/* includes its requests.

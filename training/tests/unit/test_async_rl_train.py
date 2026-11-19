@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from training.tests._replay_refs import replay_refs
 import asyncio
 import threading
 import time
@@ -793,7 +794,7 @@ def test_discard_error_survives_artifact_worker_serialization() -> None:
 def test_misaligned_r3_rollout_drops_before_group_admission() -> None:
     async def scenario() -> None:
         malformed = _rollout_run()
-        malformed.segments[0].routing_matrices = ["route-1", "route-2"]
+        malformed.segments[0].routing_matrices = replay_refs(["route-1", "route-2"])
 
         async def malformed_r3(_sub_index: int) -> RolloutRun:
             return malformed

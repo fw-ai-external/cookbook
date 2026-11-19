@@ -22,7 +22,7 @@ from fireworks.training.sdk import (
     TrainerJobManager,
 )
 from training.utils import fileio
-from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
+from training.utils.config import DeployConfig, TrainerConfig
 from training.tokenizer_identity import is_code_free_model_name
 
 logger = logging.getLogger(__name__)
@@ -150,13 +150,6 @@ def _firetitan_service_kwargs(
         "region": trainer.region,
         "max_context_length": max_context_length,
         "learning_rate": learning_rate,
-        # Server-side gradient accumulation is deprecated on the Tinker/RLOR
-        # path (the managed config defaults this to 1, which logs a deprecation
-        # warning). Recipes express gradient accumulation as client-side control
-        # flow -- N forward_backward calls per optim_step -- so leave the
-        # server-side knob unset.
-        "gradient_accumulation_steps": None,
-        "node_count": trainer.node_count,
         "custom_image_tag": trainer.custom_image_tag,
         "extra_args": trainer.extra_args,
         "trainer_replica_count": trainer.replica_count,
@@ -214,13 +207,8 @@ def _firetitan_service_kwargs(
             "wait_for_trainer_before_deployment": deployment.wait_for_trainer_before_deployment,
         }
     )
-    if deployment.wait_for_trainer_before_deployment and deployment.weight_sync_scope != WeightSyncScope.PER_TRAINER:
-        raise ValueError("wait_for_trainer_before_deployment requires PER_TRAINER weight sync")
-    if deployment.weight_sync_transport is not None:
-        if deployment.weight_sync_transport != "RDMA":
-            raise ValueError("weight_sync_transport must be 'RDMA' or None")
-        if deployment.weight_sync_scope != WeightSyncScope.PER_TRAINER:
-            raise ValueError("RDMA weight sync requires PER_TRAINER weight sync")
+    if deployment.weight_sync_transport not in (None, "RDMA"):
+        raise ValueError("weight_sync_transport must be 'RDMA' or None")
     return service_kwargs
 
 

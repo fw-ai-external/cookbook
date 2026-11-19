@@ -13,6 +13,7 @@ import zipfile
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
@@ -22,6 +23,8 @@ from fireworks.training.sdk import (
     TITOMetricSummary,
     TITOTrajectoryArtifact,
 )
+from training.examples.harbor_rl.preparation import prepare_harbor_tasks
+from training.examples.harbor_rl.tasks.deep_swe.dataset import inspect_deep_swe
 from training.examples.harbor_rl.harnesses.mimoagent import (
     prepare_tasks as prepare_mimoagent_tasks,
 )
@@ -39,9 +42,6 @@ from training.examples.harbor_rl.harnesses.opencode.constants import (
 )
 from training.examples.harbor_rl.harnesses.pi import prepare_tasks as prepare_pi_tasks
 from training.examples.harbor_rl.harnesses.pi import rollout as pi_rollout
-from training.examples.harbor_rl.tasks.deep_swe import (
-    prepare_tasks as prepare_deep_swe_tasks,
-)
 from training.examples.harbor_rl.tito import sidecar as sidecar_runtime
 from training.examples.harbor_rl.tito import e2b_templates
 from training.examples.harbor_rl.tito import rollout as tito_rollout
@@ -321,11 +321,13 @@ def test_deep_swe_preparation_writes_reproducible_manifest(tmp_path) -> None:
     )
 
     manifest_path = tmp_path / "manifest.json"
-    manifest = prepare_deep_swe_tasks.prepare_deep_swe(
-        repository,
+    manifest = prepare_harbor_tasks(
+        repository / "tasks",
         tmp_path / "prepared",
         manifest_path,
-        opencode_version=DEFAULT_OPENCODE_VERSION,
+        prepare_tasks=partial(prepare_opencode_tasks.prepare, version=DEFAULT_OPENCODE_VERSION),
+        harness={"name": "opencode", "version": DEFAULT_OPENCODE_VERSION},
+        source_manifest=inspect_deep_swe(repository),
     )
     persisted = json.loads(manifest_path.read_text())
     assert persisted == manifest
@@ -585,7 +587,7 @@ def test_full_sequence_router_replay_enables_incremental_prompt_capture(monkeypa
     setup = _setup(tmp_path)
     setup.sample_kwargs["echo"] = True
     _patch_runner(monkeypatch, tmp_path)
-    setup.sampler = SimpleNamespace(routing_matrix_format="parquet_v1", r3_store_id="shared-test")
+    setup.sampler = SimpleNamespace(r3_store_id="shared-test")
     rollout.make_rollout_fn(setup, harbor=_harbor(tmp_path))
     spec = sidecar_runtime.build_launch_spec(
         setup,
@@ -594,7 +596,6 @@ def test_full_sequence_router_replay_enables_incremental_prompt_capture(monkeypa
         call_classifier="all_policy",
         metadata={},
     )
-    assert spec.routing_matrix_format == "parquet_v1"
     assert spec.r3_store_id == "shared-test"
     assert spec.sampling_defaults["incremental_prompt_routing"] is True
 
@@ -838,7 +839,7 @@ def test_sidecar_serve_closes_runtime_when_trajectory_creation_fails(
     spec_path.write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "bundle_digest": "bundle-digest",
                 "inference_base_url": "https://deployment.example",
                 "api_key": "deployment-key",

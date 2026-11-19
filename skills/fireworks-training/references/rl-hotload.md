@@ -9,18 +9,18 @@ RL is the main consumer of hotload: the recipe publishes updated weights to the 
 initial hotload and another hotload after every optimizer step. It intentionally
 has no sync-cadence or conditional-initial-sync knob. Async off-policy admission
 is controlled by `max_head_offpolicy_versions`, not by delaying weight sync.
-`weight_sync_timeout` controls the hotload timeout; the *scope* (who owns the
-GCS bucket) is set on `DeployConfig.weight_sync_scope`.
+`weight_sync_timeout` controls the hotload timeout.
 
-For the current user-facing lifecycle, see [Dedicated Training](https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md). This file is the deep scope-mismatch and recovery reference.
+For the current user-facing lifecycle, see [Dedicated Training](https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md). This file is the trainer-first debugging and recovery reference.
 
 ## Transport negotiation
 
-The managed SDK selects RDMA automatically only for eligible dedicated
-full-parameter training when the trainer and every inference replica advertise
-`supports_rdma_weight_sync=true`. The advertisements come from the existing
-create-model and hotload-status responses. Missing or unknown values mean
-unsupported; LoRA always uses save → FILE hotload.
+The managed SDK selects RDMA automatically for eligible dedicated training
+when the trainer and every inference replica advertise
+`supports_rdma_weight_sync=true`. Dedicated LoRA also requires every replica to
+advertise `supports_rdma_lora_weight_sync=true`. The create-model and
+hotload-status responses carry these capabilities. Missing or unknown values
+mean the corresponding capability is unavailable.
 
 Deployments using gateway shard fan-out stay on FILE: its existing aggregated
 status identifies that path, and its publication responses do not carry the
@@ -45,12 +45,10 @@ branch calls `policy.weight_sync()`; its FILE branch calls
 completion. [`recipes/rl_loop.py`](../../../training/recipes/rl_loop.py) shows this usage.
 The compatibility option
 `weight_sync_transport="RDMA"` does not override capability checks. Do not
-infer support from an image tag or retry an RDMA transfer failure as FILE.
-The SDK's `weight_sync()` rechecks inference support before each publication
-and uses the existing save/hotload operations when support disappears. Callers
-do not reconnect or implement transport fallback. Reused deployments keep their
-existing RDMA enablement setting. Errors after RDMA publication is accepted
-are surfaced rather than retried as FILE.
+infer support from an image tag. The SDK's `weight_sync()` rechecks inference
+support before each publication. Once RDMA is enabled or selected, capability
+loss and publication failures surface as errors. Reused deployments keep their
+existing RDMA enablement setting.
 
 Each completed recipe publication logs `Weight sync completed: RDMA` or
 `Weight sync completed: FILE`. Use this result to identify the transport that
@@ -59,49 +57,41 @@ prove a later publication used RDMA.
 
 RDMA publications are temporary and do not create promotable sampler
 checkpoints. Keep explicit resumable/promotable checkpoint saves enabled when
-needed. The bucket scopes and incremental snapshot chain below describe FILE
+needed. The trainer-owned bucket and incremental snapshot chain below describe FILE
 publication and durable sampler checkpoints.
 
-## Weight sync scope: PER_TRAINER vs PER_DEPLOYMENT
+## Debug a trainer-first deployment
 
-`DeployConfig.weight_sync_scope` (a `WeightSyncScope` enum) controls who owns the GCS bucket and what happens on resume. Mixing scopes on the same trainer ↔ deployment pair is the historical cause of `Hotload failed` and `checkpoint not found in GCS`. The **server now catches most mix-ups at `CreateDeployment` / `CreateRlorTrainerJob` time** (see [Server-side validation](#server-side-validation)), so runtime-level failures are rare in modern runs. They can still surface on trainers created with `--skip-validations` or from pre-validation runs.
+1. Start the trainer using a training shape. For manual SDK provisioning, keep
+   the returned trainer endpoint and its full `job_name`. A backend placement
+   decision may take time. The cookbook's `wait_for_trainer_before_deployment=True`
+   waits for trainer readiness before allocating rollout capacity.
+2. Create the deployment with `DeploymentConfig(hot_load_trainer_job=endpoint.job_name, ...)`.
+   With cookbook-managed runs, `build_service_client` makes the attachment.
+   Leave placement unset unless the caller needs an explicit trainer region.
+   The control plane colocates the rollout deployment.
+3. Compare the deployment's `hotLoadTrainerJob` to the trainer's full resource
+   name. Verify the account, base model, deployment shape and ready state. On
+   resume, pass the intended `DeployConfig(deployment_id=...)` and trainer
+   identity. Allow the SDK to finish reattachment and readiness checks.
+4. Publish once. For FILE, record the exact sampler snapshot returned and
+   check the deployment reports that snapshot. For RDMA, record the version
+   returned by `weight_sync()`. Sample only after publication completes.
+5. When migrating a deployment-owned run, restore its durable checkpoint to
+   a trainer-first run and create the rollout deployment against that trainer.
+   Preserve the previous resources until the restored run publishes and samples.
 
-### PER_TRAINER (default)
+| Gateway or hotload symptom | What to check |
+|---|---|
+| `hotload flow mismatch` or `hot_load_bucket_url ... conflicts with hot_load_trainer_job` | The existing trainer or rollout uses the deployment-owned layout. Restore from its durable checkpoint and create a trainer-first pair. |
+| Snapshot not found or serving reports a different snapshot | Check that the deployment's trainer attachment matches the writer and its bucket. Wait for the rollout to finish reattaching before publishing again. |
+| `FILE fallback is not allowed` | Check trainer and rollout readiness and compare their RDMA capabilities. For a dedicated LoRA run, verify RDMA LoRA support on each replica. If the trainer RDMA endpoint returns 404 or 405, use a compatible trainer image. |
+| Replay references missing or a shared-store mismatch | Compare the trainer and sampler's `r3_store_id` and inspect the sampler request ID. Keep the validated trainer and deployment versions together and recapture expired references. |
+| Serving rejects a replay mask or score-centering capture | Check the rollout image pinned by the exact deployment shape version and the trainer capability for the selected loss. Use a validated shape pair with shared-storage capture support. |
 
-```python
-DeployConfig(weight_sync_scope=WeightSyncScope.PER_TRAINER, ...)
-```
-
-1. Create the trainer via `TrainerJobManager.create_and_wait(...)`.
-2. Create the deployment via `DeploymentManager.create_or_get(DeploymentConfig(hot_load_trainer_job=<trainer_job>, ...))`.
-   The deployment copies the trainer's bucket URL at creation. The Training API SDK marks cookbook-created serving
-   deployments as training deployments, which is required for deployment shape versions pinned by training shapes.
-3. The **trainer owns** the checkpoints. Promote reads them from the trainer's bucket without any deployment ID.
-4. On resume, the deployment is re-attached to the new trainer (PATCH `hotLoadTrainerJob`), which briefly restarts the serving pod.
-
-Bucket path: `gs://.../rl-checkpoints/{account}/trainer-{trainer_id}/`. Good when one trainer feeds multiple deployments, or for clean per-run isolation.
-
-The managed SDK path overlaps trainer readiness with deployment creation. Set `DeployConfig.wait_for_trainer_before_deployment=True` to wait for trainer capacity before allocating rollout GPUs (requires an SDK that honors the flag).
-
-### PER_DEPLOYMENT
-
-```python
-DeployConfig(weight_sync_scope=WeightSyncScope.PER_DEPLOYMENT, ...)
-```
-
-1. The deployment is created with its own `hot_load_bucket_url` (or auto-filled by the server from `deployment_id`).
-2. Each trainer is launched with `hot_load_deployment_id=<deployment-id>` pointing at that deployment's bucket.
-3. The **deployment owns** the bucket.
-
-Bucket path: `gs://.../rl-checkpoints/{account}/{deployment_id}/`. Good when you want to re-use a warmed-up deployment across multiple sequential trainer runs without a deployment restart — the bucket URL is stable, each new trainer just writes to it. Trade-off: the deployment is keyed to one bucket, so you can't fan a single trainer out to multiple deployments.
-
-### How to tell which scope a run used
-
-- `cfg.deployment.weight_sync_scope` / `cfg.deployment.hot_load_trainer_job` set ⇒ `PER_TRAINER`.
-- Trainer launch args include `hot_load_deployment_id=<...>` ⇒ `PER_DEPLOYMENT`.
-- Neither ⇒ trainer and deployment are unrelated; no hotload.
-
-The two scopes are mutually exclusive for the same trainer ↔ deployment pair.
+For an internal run, search Chronosphere by trainer name, deployment name and
+sampler request ID. Capture the first create, attachment or publication error
+along with the shape versions and snapshot identity.
 
 ## The knobs
 
@@ -220,7 +210,7 @@ For full-parameter FILE weight sync, the first sampler save is `base` (full weig
 
 Separate from hotload: DCP saves persist the full train state (weights + optimizer) so you can resume training if the job dies. `0` (default) = off — if your run crashes mid-training, there is no intermediate resume point. Set this if your run is long enough that a crash is painful.
 
-## Two deployments, one trainer (PER_TRAINER only)
+## Two deployments, one trainer
 
 On-policy sampler + held-out eval deployment is a common pattern. Both copy the trainer's `hotLoadBucketUrl` at creation, and both can hotload snapshots saved by the same trainer.
 
@@ -237,25 +227,6 @@ eval_dep = deploy_mgr.create_or_get(DeploymentConfig(
     min_replica_count=0,                              # scale down when idle
 ))
 ```
-
-`PER_DEPLOYMENT` couples each run to one deployment, so this fan-out is a `PER_TRAINER`-only capability.
-
-## Server-side validation
-
-The control plane catches bucket-scope mix-ups at `CreateDeployment` / `CreateRlorTrainerJob` time and rejects the call with a message that names both resources and suggests the fix. The error links back to the user-facing docs page.
-
-> **Note on wording:** the server still emits "trainer-first" and "deployment-first" in these error strings. They correspond to `PER_TRAINER` and `PER_DEPLOYMENT` bucket scope respectively. Treat the error strings as opaque; the cookbook standardises on the enum wording.
-
-| Error | Root cause | Recovery |
-|---|---|---|
-| `hotload flow mismatch: trainer wants deployment-first (hot_load_deployment_id=X) but deployment Y is trainer-first (hot_load_trainer_job=Z)` | Trying to launch a `PER_DEPLOYMENT` trainer against a `PER_TRAINER` deployment. The two scopes are mutually exclusive. | Drop `hot_load_deployment_id` from the trainer, or drop `hot_load_trainer_job` from the deployment — pick one scope. |
-| `hotload flow mismatch: trainer T is deployment-first-keyed for deployment D, but you're trying to use it as the source for deployment Y` | Pointing a new deployment's `hot_load_trainer_job` at a `PER_DEPLOYMENT` trainer whose bucket URL is keyed by a different deployment. | Use a `PER_TRAINER` trainer (no `hot_load_deployment_id`) as the source. |
-| `hot_load_bucket_url %q conflicts with hot_load_trainer_job %s; set exactly one` | CreateDeployment got both fields. | Drop whichever field is wrong. `PER_TRAINER` deployments set `hot_load_trainer_job` only. |
-| `hot_load_bucket_url %q conflicts with hot_load_trainer_job %s; update hot_load_trainer_job instead, or clear it first` | UpdateDeployment got both fields. | Clear `hot_load_bucket_url` first, then PATCH `hot_load_trainer_job`. |
-
-These fire at the gateway, before any DB row is written. You won't see pods silently hotloading nothing for these classes.
-
-The structural / reachability errors (`invalid FW_HOSTED hot_load_bucket_url`, `FW_HOSTED hot_load_bucket_url must use gs:// scheme`, `path must start with rl-checkpoints/{account}/`, `configured FW_HOSTED hot_load bucket is not reachable`, `control plane lacks permission to read the configured FW_HOSTED hot_load bucket`) are also rejected at the gateway. The last two don't echo the bucket name (server-managed; not caller-provided) — for those, reach out to Fireworks support; the other three are user URL issues and the error text tells you what to fix.
 
 ## Trainer deletion and retention
 
@@ -274,7 +245,7 @@ After retention, both `list_checkpoints` and `promote_checkpoint` return `NOT_FO
 
 ## Promoting a checkpoint
 
-One field — the `name` from the list response. Works identically for `PER_TRAINER` and `PER_DEPLOYMENT` runs, alive or within retention.
+Pass the exact `name` from the checkpoint list while the trainer is alive or within retention.
 
 ```python
 entries = client.list_checkpoints(job_id=trainer_endpoint.job_name)
@@ -286,29 +257,7 @@ client.promote_checkpoint(
 )
 ```
 
-The server parses the trainer id out of `name` and reads `dbJob.HotLoadBucketUrl` as the single source of truth — which was populated at trainer-create time regardless of which scope was used. No `trainer_job_id`, no `checkpoint_id` split, no `hot_load_deployment_id` guess.
-
-The legacy `promote_checkpoint.py --hot-load-deployment-id` flag is no longer needed: the API covers both scopes. It remains for deployments that predate the stored-bucket-URL migration; new runs should not use it (passing it now emits a `DeprecationWarning`). The cookbook also no longer writes a `checkpoints.jsonl` registry — the control plane is the source of truth.
-
-## Bucket mismatch: trainer wrote to a different bucket than the deployment watches
-
-Caught proactively before hotload is even attempted:
-
-```
-[save_weights_for_sampler] Bucket mismatch — the deployment will not find this
-snapshot and hotload will fail. Trainer wrote to gs://<trainer-bucket>/..., but
-the deployment's hot_load_bucket_url is gs://<deployment-bucket>/...
-```
-
-Root cause: `PER_TRAINER` and `PER_DEPLOYMENT` got crossed — the deployment was created pointing at one bucket, and this trainer is writing to another. With server-side validation, this almost always means the trainer was created with `--skip-validations` or is from a run predating validation; the normal path would have been rejected at `CreateRlorTrainerJob` time.
-
-Two recovery options:
-
-1. **Re-attach the existing deployment to this trainer.** When the deployment is warmed up / serving traffic and you don't want to re-provision. The SDK-managed service path handles re-attach when an existing `cfg.deployment.deployment_id` is passed alongside a fresh `PER_TRAINER` trainer: the SDK PATCHes `hot_load_trainer_job`, waits for the serving pod's rolling restart, reconciles the deployment shape, and re-runs the one-time deployment-state check. `training/recipes/async_rl_loop.py` is the reference call shape.
-
-2. **Create a fresh deployment with `hot_load_trainer_job=<this trainer>`.** Simpler and safer when you don't need to preserve the existing deployment. The new deployment inherits the trainer's bucket at creation so no mismatch.
-
-If neither applies or you can't determine which scope the run used, reach out to Fireworks support — server-side state is sometimes needed to untangle.
+The gateway resolves checkpoint storage from the trainer recorded in the checkpoint name.
 
 ## Runtime hotload mismatch or stale deployment attachment
 
@@ -324,29 +273,10 @@ Recovery:
 
 1. Full-parameter training: force the next sampler sync to `checkpoint_type="base"` before collecting more rollouts. If the trainer process already stopped, resume from the latest DCP checkpoint first. In the SDK-managed recipes, use the normal recipe path; if calling the SDK directly, call `save_weights_for_sampler(..., checkpoint_type="base")` and hotload that returned snapshot identity.
 2. LoRA training: `checkpoint_type` is not the fix. LoRA sampler saves are full adapter snapshots, so a snapshot mismatch means the deployment attachment is stale. Reattach the deployment through the SDK-managed cookbook path or create a fresh deployment tied to the current trainer.
-3. If reusing a deployment intentionally, use `DeployConfig(deployment_id=..., weight_sync_scope=WeightSyncScope.PER_TRAINER)` with the cookbook service path so the SDK patches `hot_load_trainer_job`, waits for the serving restart, and resets the sampler chain before the next rollout.
+3. If reusing a deployment intentionally, use `DeployConfig(deployment_id=...)` with the cookbook service path so the SDK patches `hot_load_trainer_job`, waits for the serving restart, and resets the sampler chain before the next rollout.
 4. If there is no usable DCP checkpoint, there is no clean "continue from last step" recovery. Start a fresh run or work with Fireworks support to inspect server-side state.
 
 Agent-assisted debugging: first search the Fireworks training cookbook skill for hotload recovery. If the cookbook is not available locally, clone `https://github.com/fw-ai-external/cookbook` and search `cookbook/skills`.
-
-## Self-check when hotload fails
-
-Symptom: `Hotload did not complete within <N>s` or `Hotload failed for snapshot <id>` or `checkpoint "<name>" not found in GCS`.
-
-1. **First, check the SDK version matches the cookbook's pin** (see the
-   [execution workflow](../../configure/SKILL.md#execution-workflow)).
-2. **Check if it's a retention-expired trainer.** `list_checkpoints` / `promote_checkpoint` returning `NOT_FOUND` > 30 days after delete is expected — the row is gone and the checkpoints in GCS have been GC'd too.
-3. **If the error shows expected snapshot `S` but a different current deployment snapshot:** use [Runtime hotload mismatch or stale deployment attachment](#runtime-hotload-mismatch-or-stale-deployment-attachment).
-4. **If the trainer is alive or within retention:** most remaining causes are a `PER_TRAINER` vs `PER_DEPLOYMENT` bucket-scope mix-up on a `--skip-validations` trainer or a pre-validation run. Ask:
-   - Was this deployment created with its own `hot_load_bucket_url` (i.e. `PER_DEPLOYMENT` scope), and then later attached to a `PER_TRAINER` trainer?
-   - Was the trainer originally launched with `hot_load_deployment_id`, and is something now also setting `hot_load_trainer_job` on the deployment?
-
-   Either answer means the trainer's bucket and the deployment's bucket disagree. Use one of the [bucket mismatch recovery](#bucket-mismatch-trainer-wrote-to-a-different-bucket-than-the-deployment-watches) options.
-5. If neither applies, or you're unsure how to untangle it, reach out to Fireworks support. Server-side recovery (re-pointing a deployment's bucket, recovering an orphaned sampler blob, looking up a legacy deployment ID) is handled by the Fireworks team.
-
-## Picking a scope: don't blind-copy `hot_load_deployment_id`
-
-Agents sometimes copy old cookbook snippets that reference `hot_load_deployment_id` into a new run. Only do so if you deliberately want `PER_DEPLOYMENT` (re-using a warmed deployment across sequential trainers). For a single run or a fan-out pattern, `PER_TRAINER` is the right default — set `hot_load_trainer_job` on the deployment and leave `hot_load_deployment_id` unset.
 
 ## See also
 
