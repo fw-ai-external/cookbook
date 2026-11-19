@@ -139,7 +139,7 @@ class _ControlPlane:
     def list_checkpoints(self, trainer_id):
         return list(self.rows)
 
-    def promote_checkpoint(self, *, name, output_model_id, base_model, hot_load_deployment_id=None):
+    def promote_checkpoint(self, *, name, output_model_id, base_model):
         checkpoint_id = name.rsplit("/", 1)[-1]
         if len(checkpoint_id) > 63:
             raise RuntimeError(f"id length ({len(checkpoint_id)}) must not exceed 63 characters")

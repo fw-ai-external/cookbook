@@ -339,8 +339,10 @@ async def main(
             router_replay=router_replay_enabled,
         )
 
-        sampler = await run_in_thread(service.create_deployment_sampler, tokenizer=tokenizer)
+        sampler = await run_in_thread(service.create_deployment_sampler, tokenizer=tokenizer, training_client=training_client)
         stack.push_async_callback(close_in_thread, sampler.close)
+        if router_replay_enabled and not getattr(sampler, "r3_store_id", None):
+            raise ValueError("Router Replay requires a trainer and rollout deployment with shared replay storage")
         # One rollout object serves training and evaluation, so stateful
         # rollouts (sandbox pools, judges) keep a single concurrency budget.
         rollout_fn = rollout_fn_factory(

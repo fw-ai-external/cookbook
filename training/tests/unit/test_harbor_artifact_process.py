@@ -1,5 +1,6 @@
 """Real artifact-process values, failure recovery and input-file lifetime."""
 
+from training.tests._replay_refs import replay_refs, replay_rows
 import asyncio
 import hashlib
 import json
@@ -109,6 +110,8 @@ def test_transient_worker_crash_retries_current_trial(pool, tmp_path):
 
 def test_worker_crash_does_not_fail_queued_trials(pool, tmp_path):
     async def check():
+        # Keep cold worker import time outside the crash handshake timeout.
+        await pool.run(os.getpid)
         started = tmp_path / "started"
         crash = asyncio.create_task(pool.run(_crash_after_signal, started))
         async with asyncio.timeout(10):
@@ -178,7 +181,7 @@ def _write_artifact(root: Path, *, routing: bool) -> HarborTrialOutcome:
         exact_completion_ids=(3, 4),
         inference_logprobs=(-0.1, -0.3),
         sampling_logprobs=(-0.2, -0.4),
-        routing_matrices=("route-3", "route-4") if routing else None,
+        routing_matrices=replay_refs(("route-3", "route-4")) if routing else None,
         response_id="response-one",
         finish_reason="stop",
         prompt_disposition="new_segment",
@@ -268,7 +271,7 @@ def test_process_returns_exact_rollout_values(pool, tmp_path, routing, debug):
     assert segment.raw_logprobs == [0.0, 0.0, -0.1, -0.3]
     assert segment.loss_mask == [0, 0, 1, 1]
     assert segment.reward == result.reward == 0.75
-    assert segment.routing_matrices == (["", "route-3", "route-4"] if routing else None)
+    assert replay_rows(segment.routing_matrices) == (["", "route-3", "route-4"] if routing else None)
 
 
 def test_artifact_failures_leave_worker_usable(pool, tmp_path):
@@ -354,7 +357,7 @@ def test_pi_process_reconciles_lifecycle_and_timeout_metadata(pool, tmp_path):
     result = asyncio.run(convert())
     assert result.rollout.metadata["pi_abandoned_turn_count"] == 0
     assert result.rollout.metadata["harness_tool_timeout_count"] == 1
-    assert result.rollout.segments[0].routing_matrices == ["", "route-3", "route-4"]
+    assert replay_rows(result.rollout.segments[0].routing_matrices) == ["", "route-3", "route-4"]
 
 
 def test_drain_bound_discards_a_wedged_worker(pool, tmp_path, monkeypatch):

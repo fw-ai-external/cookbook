@@ -49,12 +49,6 @@ def parse_args():
     parser.add_argument("--ref-cache-concurrency", type=int, default=8)
     parser.add_argument("--ref-cache-batch-size", type=int, default=512)
     parser.add_argument(
-        "--weight-sync-interval",
-        type=int,
-        default=0,
-        help="Deprecated and ignored by DPO; kept for CLI compatibility.",
-    )
-    parser.add_argument(
         "--dcp-save-interval",
         type=int,
         default=None,

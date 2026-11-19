@@ -129,18 +129,13 @@ trajectory and do not close it or build another sampler. The recipes call the
 factory once; evaluation reuses that rollout with `evaluation=True`, so sandbox
 pools and judges keep one concurrency budget.
 
-R3 uses the same sampler setup. Format negotiation belongs in the SDK: it
-selects Parquet when the SDK, trainer, and inference support it and the trainer
-and inference share an R3 store. Older peers use inline routing. Parquet R3
-files expire six hours after creation by default; override retention with
-`r3_ttl_seconds` in sampling kwargs when needed.
+Bind replay captures to the training client. It supplies the shared store
+that inference writes and the trainer reads. The sampler returns compact
+Parquet references. Set `r3_ttl_seconds` to override artifact retention.
 
-Sampler wrappers must expose the underlying sampler's `routing_matrix_format`
-and `r3_store_id`, including after snapshot replacement. Harbor reads these
-and the current `model` from `RolloutSetup.sampler` together when launching a
-TITO sidecar, so a new R3 binding is not paired with an old snapshot. Samplers
-without `model` retain `RolloutSetup.model`. Omitting the R3 properties silently
-falls back to inline routing even when the SDK negotiated Parquet.
+Sampler wrappers must expose the underlying `r3_store_id` and the current
+`model` together after each snapshot replacement. Harbor copies that pair to
+the sidecar before it samples. Missing shared storage prevents replay capture.
 
 The rollout may optionally declare any of these keyword parameters when it
 needs dataset position context: `cursor_index`, `row_index`, `epoch`,
@@ -269,9 +264,7 @@ early-access base model rejects that GET with 403). The model probe still runs
 when there is no trainer answer: a trainer that predates the field (`None`), or
 a path with no trainer at all -- e.g. Harbor sampling-only scoring
 (`harbor_rl/common.py`), which calls the resolver without `training_client`. There a 403/404
-takes the last-resort path below rather than failing. `routing_matrix_format`
-(`parquet_v1`) is the R3 wire format and is advertised for dense models too, so
-it is not an on/off signal.
+takes the last-resort path below rather than failing. The shared-store binding controls replay capture.
 
 When the trainer did not report and the model probe returns 403/404 (the
 record is not visible to the caller), the recipes request R3 and log a warning.

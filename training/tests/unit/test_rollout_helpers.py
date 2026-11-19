@@ -12,6 +12,7 @@ Locks in the token / logprob alignment contract:
 
 from __future__ import annotations
 
+from training.tests._replay_refs import replay_refs, replay_rows
 import dataclasses
 from types import SimpleNamespace
 
@@ -160,11 +161,11 @@ def test_agent_routes_use_full_model_input_after_leading_response_is_masked(
         loss_mask=[0, 0, 1],
         rollout_log_probs=[0.0, 0.0, -0.3],
         rollout_raw_log_probs=[0.0, 0.0, -0.4],
-        routing_matrices=["", "", "route-30"],
+        routing_matrices=replay_refs(["", "", "route-30"]),
     )
     sample = token_segment_to_sample(segment, reward=1.0)
 
-    assert sample.routing_matrices == ["", "", "", "route-30"]
+    assert replay_rows(sample.routing_matrices) == ["", "", "", "route-30"]
 
     group = rollout_to_prompt_group(
         Rollout(runs=[RolloutRun(segments=[sample])]),
@@ -173,7 +174,7 @@ def test_agent_routes_use_full_model_input_after_leading_response_is_masked(
     )
 
     assert group is not None
-    assert group.data[0].model_input.routing_matrices == [
+    assert replay_rows(group.data[0].model_input.routing_references) == [
         "",
         "",
         "",

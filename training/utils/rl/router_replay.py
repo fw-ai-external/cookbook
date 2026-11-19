@@ -1,76 +1,50 @@
-"""Router Replay (R3) alignment utilities for MoE models.
-
-Aligns routing matrices from inference to training model_input positions so
-the same expert routing decisions are replayed during training.
-"""
+"""Align compact trainer-shared router replay references to model-input positions."""
 
 from __future__ import annotations
 
-import logging
-from typing import List, Optional
+from fireworks.training.sdk.routing import RoutingReferences, concat_routing
 
-from fireworks.training.sdk.routing import concat_routing, copy_routing
 
-logger = logging.getLogger(__name__)
+def require_references(value: RoutingReferences | None) -> RoutingReferences | None:
+    if value is not None and not isinstance(value, RoutingReferences):
+        raise ValueError("Replay requires trainer-shared routing references")
+    return value
 
-def build_r3_routing_matrices(
-    routing_matrices: Optional[List[str]],
-    prompt_len: int,
-    model_input_len: int,
-    completion_only: bool = True,
-) -> List[str]:
-    """Build routing matrices aligned to model_input positions.
 
-    Supports echo mode (full sequence) and legacy mode (completion-only,
-    padded with empty strings for prompt positions).
-
-    Args:
-        completion_only: If True, blank out prompt-position routing matrices
-            so the server uses its own routing for prompt tokens and only
-            replays inference routing for completion tokens.
-    """
-    if not routing_matrices:
-        # Preserve the caller's R3 intent for the SDK request-boundary check.
-        return []
-
-    rm = copy_routing(routing_matrices)
-
-    if len(rm) != model_input_len:
-        expected = max(0, model_input_len - (prompt_len - 1))
-        if len(rm) != expected:
-            logger.warning(
-                "R3: routing_matrices length (%d) != expected (%d). "
-                "prompt_len=%d, model_input_len=%d. Alignment may be off.",
-                len(rm),
-                expected,
-                prompt_len,
-                model_input_len,
-            )
-            # Preserve the mismatch for the SDK request-boundary check.
-            return rm
-        rm = concat_routing([""] * (prompt_len - 1), rm)
-
-    if completion_only:
-        prefix_len = max(0, prompt_len - 1)
-        rm = concat_routing([""] * prefix_len, rm[prefix_len:])
-
-    return rm
+def reference_gaps(length: int) -> RoutingReferences:
+    """A single contiguous gap for prompt, tool or masked positions."""
+    return RoutingReferences(
+        length, (), ({"input_token_start": 0, "count": length},) if length else ()
+    )
 
 
 def validate_r3_routing_matrices(
-    routing_matrices: Optional[List[str]],
+    routing_matrices: RoutingReferences | None,
     prompt_len: int,
     model_input_len: int,
 ) -> None:
-    """Reject missing or misaligned R3 data before async rollout admission."""
-    if not routing_matrices:
-        raise ValueError("R3 routing_matrices are missing or empty")
-
-    expected = max(0, model_input_len - (prompt_len - 1))
+    """Require a full-sequence or completion-only routing capture."""
+    if not isinstance(routing_matrices, RoutingReferences) or not len(routing_matrices):
+        raise ValueError("R3 requires nonempty trainer-shared routing references")
+    expected = max(0, model_input_len - max(0, prompt_len - 1))
     if len(routing_matrices) not in {model_input_len, expected}:
         raise ValueError(
-            "R3 routing_matrices length mismatch: "
-            f"got {len(routing_matrices)}, expected {model_input_len} "
-            f"full-sequence or {expected} completion-only values "
-            f"(prompt_len={prompt_len}, model_input_len={model_input_len})"
+            f"R3 routing_matrices length mismatch: got {len(routing_matrices)}, expected "
+            f"{model_input_len} full-sequence or {expected} completion-only values"
         )
+
+
+def build_r3_routing_matrices(
+    routing_matrices: RoutingReferences,
+    prompt_len: int,
+    model_input_len: int,
+    completion_only: bool = True,
+) -> RoutingReferences:
+    """Align capture rows and represent prompt positions as a compact gap."""
+    validate_r3_routing_matrices(routing_matrices, prompt_len, model_input_len)
+    prefix_len = max(0, prompt_len - 1)
+    if len(routing_matrices) != model_input_len:
+        return concat_routing(reference_gaps(prefix_len), routing_matrices)
+    if completion_only:
+        return concat_routing(reference_gaps(prefix_len), routing_matrices[prefix_len:])
+    return routing_matrices

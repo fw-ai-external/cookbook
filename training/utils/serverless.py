@@ -63,22 +63,8 @@ class ServerlessCheckpointClient:
         )
 
     def promote_checkpoint(
-        self,
-        job_id: str | None = None,
-        checkpoint_id: str | None = None,
-        output_model_id: str | None = None,
-        base_model: str | None = None,
-        *,
-        name: str | None = None,
-        hot_load_deployment_id: str | None = None,
+        self, *, name: str, output_model_id: str, base_model: str
     ) -> dict:
-        # TrainingCheckpoints.promote_latest passes the full session checkpoint
-        # resource name via ``name=``; hot_load_deployment_id is not used here.
-        if name is None:
-            raise ValueError(
-                "serverless promotion requires the full session checkpoint "
-                "resource name (name=accounts/.../trainingSessions/.../checkpoints/...)"
-            )
         return self._fw.promote_session_checkpoint(
             name=name, output_model_id=output_model_id, base_model=base_model
         )

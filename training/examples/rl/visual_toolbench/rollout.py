@@ -27,7 +27,9 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
 from fireworks.training import sdk
-from fireworks.training.sdk.routing import routing_has_gaps
+from fireworks.training.sdk.routing import concat_routing, routing_has_gaps
+
+from training.utils.rl.router_replay import reference_gaps, require_references
 
 from training.examples.rl.visual_toolbench.image_tools import (
     TOOL_SPECS,
@@ -188,7 +190,8 @@ def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
     # Held-out evaluation samples with the benchmark's settings and needs no
     # Router Replay.
     eval_sample_kwargs = {
-        key: value for key, value in train_sample_kwargs.items() if key not in ("include_routing_matrix", "echo")
+        key: value for key, value in train_sample_kwargs.items() if key not in ("include_routing_matrix", "echo", "sampling_mask", "top_sampling_logprobs",
+                                                             "top_sampling_format", "sample_extra_tokens", "sample_extra_format")
     }
     eval_sample_kwargs.update(task.eval_sample_kwargs())
 
@@ -341,7 +344,7 @@ def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
                 if raw_logprobs is None:
                     return None
 
-                routing_matrices = getattr(completion, "routing_matrices", None)
+                routing_matrices = require_references(getattr(completion, "routing_matrices", None))
                 if router_replay_requested:
                     if not routing_matrices:
                         raise RuntimeError(
@@ -371,6 +374,11 @@ def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
                         "sampling_logprobs": sampling_logprobs,
                         "raw_logprobs": raw_logprobs,
                         "routing_matrices": routing_matrices,
+                        "captures": {
+                            key: concat_routing(reference_gaps(prompt_len - 1), require_references(refs))
+                            for key in ("top_sampling_references", "sampling_mask_references", "sample_extra_references")
+                            if (refs := getattr(completion, key, None)) is not None
+                        },
                         "finish_reason": finish_reason,
                     }
                 )
@@ -477,6 +485,7 @@ def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
                 text=last_answer,
                 prompt_model_input=seg["model_input"],
                 routing_matrices=seg["routing_matrices"],
+                **seg["captures"],
                 raw_logprobs=([0.0] * len(seg["text_prefix_ids"]) + seg["raw_logprobs"]),
             )
             for seg in segments

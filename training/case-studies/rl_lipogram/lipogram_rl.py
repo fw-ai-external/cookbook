@@ -38,7 +38,7 @@ from fireworks.training.sdk import (
     FiretitanServiceClient,
     validate_output_model_id,
 )
-from fireworks.training.sdk.routing import copy_routing, routing_model_input_kwargs
+from fireworks.training.sdk.routing import RoutingReferences, routing_model_input_kwargs
 
 # Registers the cookbook-local renderers ("kimi_k3", "kimi_k3_disable_thinking", ...).
 import training.renderer  # noqa: F401
@@ -61,6 +61,7 @@ from lipogram_rewards import lipogram_reward, llm_judge, require_judge_key
 from reward_state import initial_phase, save_phase_state, completed_score  # noqa: E402
 from training.utils import phase_span, resolve_router_replay_enabled
 from training.utils.rl.router_replay import (
+    require_references,
     build_r3_routing_matrices,
     validate_r3_routing_matrices,
 )
@@ -1111,7 +1112,7 @@ class ServerlessAntislopRL:
         for result, prompt, row in zip(results, prompts, batch):
             tokens_g: list[list[int]] = []
             logprobs_g: list[list[float]] = []
-            routing_matrices_g: list[list[str] | None] = []
+            routing_matrices_g: list[RoutingReferences | None] = []
             rewards_g: list[float] = []
             try:
                 scored = []
@@ -1135,7 +1136,7 @@ class ServerlessAntislopRL:
                 logprobs_g.append([float(x) for x in logprobs])
                 routing_matrices = getattr(seq, "routing_matrices", None)
                 routing_matrices_g.append(
-                    copy_routing(routing_matrices)
+                    require_references(routing_matrices)
                 )
                 rewards_g.append(reward)
                 raw_rewards.append(reward)

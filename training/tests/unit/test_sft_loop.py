@@ -908,7 +908,6 @@ def test_terminal_step_resume_promotes_loaded_checkpoint_not_newer_export(
         name=rows[0]["name"],
         output_model_id="trained-model",
         base_model="accounts/fireworks/models/qwen3-8b",
-        hot_load_deployment_id=None,
     )
     assert result["steps"] == 9
 

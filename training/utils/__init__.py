@@ -46,7 +46,6 @@ __all__ = [
     "DeployConfig",
     "EvalFn",
     "WeightSyncConfig",
-    "WeightSyncScope",
     "ConcurrencyConfig",
     "TrainerConfig",
     "GcsJsonlRenderDataset",
@@ -139,7 +138,6 @@ from training.utils.config import (
     TrainerConfig,
     WandBConfig,
     WeightSyncConfig,
-    WeightSyncScope,
 )
 from training.utils.data import (
     RLPromptDataset,

@@ -1268,7 +1268,7 @@ class TestPromoteLatest:
         ckpt.promote_latest("output", "base", checkpoint_name=checkpoint_name)
 
         fw.promote_checkpoint.assert_called_once_with(
-            name=target["name"], output_model_id="output", base_model="base", hot_load_deployment_id=None
+            name=target["name"], output_model_id="output", base_model="base"
         )
 
     @pytest.mark.parametrize("serverless", [False, True])
@@ -1332,7 +1332,6 @@ class TestPromoteLatest:
             name="accounts/a/rlorTrainerJobs/job-1/checkpoints/step-10",
             output_model_id="my-model",
             base_model="accounts/a/models/qwen3-1p7b-bf16",
-            hot_load_deployment_id=None,
         )
 
     def test_serverless_promote_latest_uses_current_run_only(self, log_dir):

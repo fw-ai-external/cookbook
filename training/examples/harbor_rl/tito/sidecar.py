@@ -134,7 +134,6 @@ class TITOSidecarLaunchSpec:
     debug_max_local_bytes: int | None
     debug_min_free_bytes: int | None
     debug_redact_text: bool
-    routing_matrix_format: str = "base64_inline"
     r3_store_id: str | None = None
     backend_managed_concurrency: bool = False
 
@@ -431,8 +430,7 @@ def build_launch_spec(
         sampling_defaults["incremental_prompt_routing"] = True
     debug_enabled = settings.debug_enabled
     return TITOSidecarLaunchSpec(
-        schema_version=2,
-        routing_matrix_format=getattr(setup.sampler, "routing_matrix_format", "base64_inline"),
+        schema_version=3,
         r3_store_id=getattr(setup.sampler, "r3_store_id", None),
         backend_managed_concurrency=getattr(setup.sampler, "concurrency_controller", False) is None,
         bundle_digest=bundle.digest,
@@ -909,7 +907,7 @@ async def serve(spec_path: Path) -> None:
     )
 
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
-    if spec.get("schema_version") != 2:
+    if spec.get("schema_version") != 3:
         raise ValueError("unsupported sidecar launch spec")
     bundle_manifest = json.loads(
         (Path(SIDECAR_BUNDLE_ROOT) / "manifest.json").read_text(encoding="utf-8")
@@ -933,8 +931,12 @@ async def serve(spec_path: Path) -> None:
         tokenizer=tokenizer,
         **({"backend_managed_concurrency": True} if spec.get("backend_managed_concurrency", False) else {}),
     )
-    sampler.routing_matrix_format = spec.get("routing_matrix_format", "base64_inline")
-    sampler.r3_store_id = spec.get("r3_store_id")
+    if store_id := spec.get("r3_store_id"):
+        sampler.negotiate_routing_matrix_format("parquet_v1", store_id)
+    elif any((spec.get("sampling_defaults") or {}).get(key) for key in (
+        "include_routing_matrix", "top_sampling_logprobs", "sampling_mask", "sample_extra_tokens"
+    )):
+        raise ValueError("Replay capture requires a sampler bound to the trainer shared store")
     observer = None
     if bool(spec.get("debug_enabled")):
         observer = TITOLocalDebugSink(

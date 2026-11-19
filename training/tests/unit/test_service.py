@@ -15,7 +15,7 @@ import pytest
 from types import SimpleNamespace
 
 from training.utils import service
-from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
+from training.utils.config import DeployConfig, TrainerConfig
 from training.utils.service import build_service_client, resolve_router_replay_enabled
 
 
@@ -152,7 +152,6 @@ def _trainer_config(**overrides) -> TrainerConfig:
         cleanup_reference_on_close=False,
         use_reservation=True,
         region="US_OHIO_1",
-        node_count=2,
         custom_image_tag="0.0.0-dev",
         extra_args=["--test-flag"],
         replica_count=4,
@@ -505,8 +504,6 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "region": "US_OHIO_1",
             "max_context_length": 4096,
             "learning_rate": 1e-5,
-            "gradient_accumulation_steps": None,
-            "node_count": 2,
             "custom_image_tag": "0.0.0-dev",
             "extra_args": ["--test-flag"],
             "trainer_replica_count": 4,
@@ -856,6 +853,7 @@ def test_trainer_region_becomes_sdk_region():
     [
         ("accelerator_type", "NVIDIA_B200"),
         ("accelerator_count", 8),
+        ("node_count", 2),
     ],
 )
 def test_trainer_config_rejects_removed_accelerator_fields(field_name, value):
@@ -868,24 +866,9 @@ def test_trainer_config_rejects_removed_accelerator_fields(field_name, value):
         TrainerConfig(**{field_name: value})
 
 
-def test_build_service_client_rejects_trainer_wait_without_per_trainer():
-    with pytest.raises(ValueError, match="wait_for_trainer_before_deployment"):
-        build_service_client(
-            api_key="k",
-            base_url="https://api",
-            additional_headers=None,
-            base_model="accounts/acct/models/base",
-            tokenizer_model=None,
-            max_lora_rank=None,
-            max_context_length=None,
-            learning_rate=1e-5,
-            trainer=TrainerConfig(training_shape_id="ts-x"),
-            deployment=DeployConfig(
-                deployment_id="dep-1",
-                wait_for_trainer_before_deployment=True,
-                weight_sync_scope=WeightSyncScope.PER_DEPLOYMENT,
-            ),
-        )
+def test_removed_deployment_first_scope_is_rejected():
+    with pytest.raises(TypeError, match="weight_sync_scope"):
+        DeployConfig(weight_sync_scope="per_deployment")
 
 
 def test_build_service_client_forwards_trainer_wait(monkeypatch):

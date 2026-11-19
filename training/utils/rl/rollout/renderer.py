@@ -56,9 +56,9 @@ from fireworks.training import sdk
 from fireworks.training.sdk.routing import (
     RoutingReferences,
     concat_routing,
-    copy_routing,
 )
 
+from training.utils.rl.router_replay import reference_gaps, require_references
 from training.utils.rl.rollout.types import RolloutRun, RolloutSample
 from training.utils.supervised import (
     _extract_text_token_ids,
@@ -536,34 +536,6 @@ def _trim_echoed_prompt(
     return values
 
 
-def _completion_topk_from_sampled_completion(
-    completion: Any, *, prompt_len: int, completion_len: int
-) -> tuple[List[List[int]], List[List[float]]] | None:
-    """Return completion-only sampler top-k rows, or ``None`` if not requested or misaligned."""
-    ids = getattr(completion, "inference_topk_token_ids", None)
-    logprobs = getattr(completion, "inference_topk_logprobs", None)
-    if not ids or not logprobs:
-        return None
-    ids = _trim_echoed_prompt(
-        list(ids), completion, prompt_len=prompt_len, completion_len=completion_len
-    )
-    logprobs = _trim_echoed_prompt(
-        list(logprobs), completion, prompt_len=prompt_len, completion_len=completion_len
-    )
-    if len(ids) != completion_len or len(logprobs) != completion_len:
-        logger.warning(
-            "single_turn_renderer_rollout: dropping sampler top-k with misaligned length "
-            "(got %d/%d, expected %d assistant tokens).",
-            len(ids),
-            len(logprobs),
-            completion_len,
-        )
-        return None
-    return [[int(v) for v in row] for row in ids], [
-        [float(v) for v in row] for row in logprobs
-    ]
-
-
 def _completion_logprobs_from_sampled_completion(
     completion: Any,
     *,
@@ -662,11 +634,10 @@ def _build_text_only_rollout_sample(
     completion_tokens: List[int],
     completion_logprobs: List[float],
     raw_completion_logprobs: List[float] | None = None,
-    routing_matrices: List[str] | None = None,
+    routing_matrices: RoutingReferences | None = None,
     top_sampling_references: RoutingReferences | None = None,
     sampling_mask_references: RoutingReferences | None = None,
     sample_extra_references: RoutingReferences | None = None,
-    completion_topk: tuple[List[List[int]], List[List[float]]] | None = None,
     logprobs_echoed: bool,
     reward: float,
     finish_reason: str,
@@ -685,25 +656,25 @@ def _build_text_only_rollout_sample(
         finish_reason=finish_reason,
         text=text,
         routing_matrices=(
-            copy_routing(routing_matrices) if routing_matrices is not None else None
+            require_references(routing_matrices)
         ),
         top_sampling_references=(
             concat_routing(
-                [""] * max(0, len(prompt_token_ids) - 1), top_sampling_references
+                reference_gaps(max(0, len(prompt_token_ids) - 1)), top_sampling_references
             )
             if top_sampling_references is not None
             else None
         ),
         sampling_mask_references=(
             concat_routing(
-                [""] * max(0, len(prompt_token_ids) - 1), sampling_mask_references
+                reference_gaps(max(0, len(prompt_token_ids) - 1)), sampling_mask_references
             )
             if sampling_mask_references is not None
             else None
         ),
         sample_extra_references=(
             concat_routing(
-                [""] * max(0, len(prompt_token_ids) - 1), sample_extra_references
+                reference_gaps(max(0, len(prompt_token_ids) - 1)), sample_extra_references
             )
             if sample_extra_references is not None
             else None
@@ -711,16 +682,6 @@ def _build_text_only_rollout_sample(
         raw_logprobs=(
             [0.0] * len(prompt_token_ids) + raw_completion_logprobs
             if raw_completion_logprobs is not None
-            else None
-        ),
-        inference_topk_token_ids=(
-            [[] for _ in prompt_token_ids] + completion_topk[0]
-            if completion_topk
-            else None
-        ),
-        inference_topk_logprobs=(
-            [[] for _ in prompt_token_ids] + completion_topk[1]
-            if completion_topk
             else None
         ),
     )
@@ -771,6 +732,9 @@ def sampled_completion_to_rollout_run(
             sampling_mask_references=getattr(
                 completion, "sampling_mask_references", None
             ),
+            sample_extra_references=getattr(
+                completion, "sample_extra_references", None
+            ),
             reward=reward,
             finish_reason=getattr(completion, "finish_reason", "stop"),
             text=getattr(completion, "text", ""),
@@ -784,9 +748,6 @@ def sampled_completion_to_rollout_run(
         top_sampling_references=getattr(completion, "top_sampling_references", None),
         sampling_mask_references=getattr(completion, "sampling_mask_references", None),
         sample_extra_references=getattr(completion, "sample_extra_references", None),
-        completion_topk=_completion_topk_from_sampled_completion(
-            completion, prompt_len=prompt_len, completion_len=len(completion_tokens)
-        ),
         logprobs_echoed=False,
         reward=reward,
         finish_reason=getattr(completion, "finish_reason", "stop"),
@@ -800,9 +761,10 @@ def _build_multimodal_rollout_sample(
     completion_tokens: List[int],
     completion_logprobs: List[float],
     raw_completion_logprobs: List[float] | None = None,
-    routing_matrices: List[str] | None = None,
+    routing_matrices: RoutingReferences | None = None,
     top_sampling_references: RoutingReferences | None = None,
     sampling_mask_references: RoutingReferences | None = None,
+    sample_extra_references: RoutingReferences | None = None,
     reward: float,
     finish_reason: str,
     text: str,
@@ -832,20 +794,27 @@ def _build_multimodal_rollout_sample(
         prompt_model_input=prompt_model_input,
         top_sampling_references=(
             concat_routing(
-                [""] * max(0, prompt_model_input.length - 1), top_sampling_references
+                reference_gaps(max(0, prompt_model_input.length - 1)), top_sampling_references
             )
             if top_sampling_references is not None
             else None
         ),
         sampling_mask_references=(
             concat_routing(
-                [""] * max(0, prompt_model_input.length - 1), sampling_mask_references
+                reference_gaps(max(0, prompt_model_input.length - 1)), sampling_mask_references
             )
             if sampling_mask_references is not None
             else None
         ),
+        sample_extra_references=(
+            concat_routing(
+                reference_gaps(max(0, prompt_model_input.length - 1)), sample_extra_references
+            )
+            if sample_extra_references is not None
+            else None
+        ),
         routing_matrices=(
-            copy_routing(routing_matrices) if routing_matrices is not None else None
+            require_references(routing_matrices)
         ),
         raw_logprobs=(
             [0.0] * len(prompt_text_ids) + list(raw_completion_logprobs)
@@ -1061,6 +1030,7 @@ async def single_turn_renderer_rollout(
             routing_matrices=getattr(c, "routing_matrices", None),
             top_sampling_references=getattr(c, "top_sampling_references", None),
             sampling_mask_references=getattr(c, "sampling_mask_references", None),
+            sample_extra_references=getattr(c, "sample_extra_references", None),
             reward=reward,
             finish_reason=getattr(c, "finish_reason", "stop"),
             text=getattr(c, "text", ""),
@@ -1111,9 +1081,6 @@ async def single_turn_renderer_rollout(
         top_sampling_references=getattr(c, "top_sampling_references", None),
         sampling_mask_references=getattr(c, "sampling_mask_references", None),
         sample_extra_references=getattr(c, "sample_extra_references", None),
-        completion_topk=_completion_topk_from_sampled_completion(
-            c, prompt_len=prompt_len, completion_len=len(out_tokens)
-        ),
         logprobs_echoed=False,
         reward=reward,
         finish_reason=getattr(c, "finish_reason", "stop"),

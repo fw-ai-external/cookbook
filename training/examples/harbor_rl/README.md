@@ -55,8 +55,6 @@ installer CLIs also accept optional `--manifest` for generic Harbor datasets.
 `train_opencode.py --prepare-harbor-tasks --harbor-dataset ./local-tasks`
 uses the same interface before loading training/evaluation rows and writes
 `run-dir/preparation.json`; omitting the flag keeps the prepared/registry path.
-The old `tasks.deep_swe.prepare_tasks` command remains a deprecated OpenCode
-compatibility entry point; new runners should use the composition above.
 
 Sampling settings in `RolloutSetup.sample_kwargs` are authoritative for MiMo,
 Mini-SWE, Pi and OpenCode: the shared TITO sidecar overrides agent-supplied

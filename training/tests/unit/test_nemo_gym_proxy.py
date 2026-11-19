@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from training.tests._replay_refs import replay_refs, replay_rows
 import argparse
 import asyncio
 import inspect
@@ -129,7 +130,7 @@ def test_admission_defaults_and_segments(monkeypatch: Any) -> None:
 
 @pytest.mark.parametrize("routes", [["route-7", "route-8"], ["bad-route-count"], None])
 def test_moe_routing_and_group_admission(monkeypatch: Any, routes: Any) -> None:
-    sampler = StubSampler(routes)
+    sampler = StubSampler(replay_refs(routes))
     proxy = make_proxy(monkeypatch, sampler)
     proxy._initial_sampler = None
 
@@ -153,7 +154,7 @@ def test_moe_routing_and_group_admission(monkeypatch: Any, routes: Any) -> None:
                 router_replay_completion_only=True,
             )
             assert group is not None
-            assert group.data[0].model_input.routing_matrices[-2:] == routes
+            assert replay_rows(group.data[0].model_input.routing_references)[-2:] == routes
         finally:
             await proxy.close()
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Pressure test: adaptive concurrency + deprecated max_concurrency compat.
+"""Pressure test: adaptive and fixed concurrency.
 
 Two runs on the same deployment:
   1. AdaptiveConcurrencyController (primary path)
-  2. max_concurrency=16 (deprecated compat — must emit DeprecationWarning)
+  2. FixedConcurrencyController(16)
 
 Each run: 8 steps × 32 prompts × 8 completions = 2048 requests, 128 max tokens.
 
@@ -18,7 +18,6 @@ import os
 import asyncio
 import logging
 import time
-import warnings
 
 import transformers
 
@@ -164,26 +163,9 @@ async def main():
     ok2, err2, expected2 = await run_pressure(sampler2, "fixed")
     sampler2.close()
 
-    # -- Test 3: Deprecated max_concurrency (backward compat) ------------------
-    logger.info(">>> TEST 3: max_concurrency (deprecated compat)")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        sampler3 = DeploymentSampler(
-            inference_url=BASE_URL, model=inference_model,
-            api_key=API_KEY, tokenizer=tokenizer,
-            max_concurrency=16,
-        )
-        deprecation_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-        assert deprecation_warnings, "Expected DeprecationWarning for max_concurrency but got none"
-        logger.info("DeprecationWarning correctly emitted: %s", deprecation_warnings[0].message)
-
-    ok3, err3, expected3 = await run_pressure(sampler3, "deprecated-compat")
-    sampler3.close()
-
     # -- Assertions ------------------------------------------------------------
     assert ok1 == expected1, f"[adaptive] Expected {expected1}, got {ok1} (errors: {err1})"
     assert ok2 == expected2, f"[fixed] Expected {expected2}, got {ok2} (errors: {err2})"
-    assert ok3 == expected3, f"[deprecated-compat] Expected {expected3}, got {ok3} (errors: {err3})"
 
     logger.info("ALL TESTS PASSED")
 

@@ -22,7 +22,6 @@ from training.examples.harbor_rl.harnesses.mini_swe import (
 from training.examples.harbor_rl.preparation import prepare_harbor_tasks
 from training.examples.harbor_rl.tasks.deep_swe.dataset import inspect_deep_swe
 from training.examples.harbor_rl.records import tree_sha256
-from training.examples.harbor_rl.tasks.deep_swe import prepare_tasks
 
 
 @pytest.fixture
@@ -160,25 +159,6 @@ def test_installer_cli_manifest_is_optional(
         manifest = json.loads(manifest_path.read_text())
         assert manifest["harness"] == {"name": harness, "version": "1.2.3"}
         assert manifest["task_count"] == 2
-
-
-def test_legacy_opencode_wrapper_preserves_old_manifest(
-    source_repository: Path,
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "manifest.json"
-    with pytest.warns(DeprecationWarning, match="runner's selected installer"):
-        manifest = prepare_tasks.prepare_deep_swe(
-            source_repository,
-            tmp_path / "prepared",
-            path,
-            opencode_version=DEFAULT_OPENCODE_VERSION,
-        )
-    assert json.loads(path.read_text()) == manifest
-    assert manifest["opencode_version"] == DEFAULT_OPENCODE_VERSION
-    assert (
-        manifest["source"]["remote"] == "https://github.com/datacurve-ai/deep-swe.git"
-    )
 
 
 def test_source_drift_is_rejected_before_preparation(

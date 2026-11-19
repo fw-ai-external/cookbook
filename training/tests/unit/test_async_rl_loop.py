@@ -320,7 +320,7 @@ def test_main_injects_sampler_and_advantages_and_closes_before_service(
         def create_training_client(self, *_args, **_kwargs):
             return object()
 
-        def create_deployment_sampler(self, *, tokenizer, **kwargs):
+        def create_deployment_sampler(self, *, tokenizer, training_client, **kwargs):
             assert tokenizer is expected_tokenizer
             assert kwargs == (
                 {"backend_managed_concurrency": True} if backend_managed else {}
@@ -456,8 +456,6 @@ def _policy_group(*, advantage: float = 1.0):
         rewards=[1.0],
         inf_logprobs=[[0.0, -0.3, -0.1]],
         raw_inf_logprobs=[[0.0, -0.4, -0.2]],
-        inference_topk_token_ids=[[[1, 2, 3, 4, 5]] * 3],
-        inference_topk_logprobs=[[[-3.0] * 5] * 3],
     )
 
 
@@ -489,7 +487,7 @@ def _run_train_group(monkeypatch, cfg, group, policy, setups=None, heartbeat=Non
                 supports_mc_score_centering=True, validate_loss_capabilities=lambda *args: preflights.append(args)
             )
 
-        def create_deployment_sampler(self, *, tokenizer):
+        def create_deployment_sampler(self, *, tokenizer, training_client):
             return SimpleNamespace(model="m", base_url="u", close=lambda: None)
 
         def hotload_sampler_snapshot(self, path):
