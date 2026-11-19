@@ -127,9 +127,11 @@ python -m training.examples.sft.train_sft --help
 The `eval` and `dev` extras install `eval-protocol==0.3.33` from PyPI,
 which supports the tested LiteLLM 1.105.0 release.
 
-Each recipe's `Config` dataclass documents its fields. Leave `TrainerConfig()`
-empty for SDK-selected defaults, or set `training_shape_id`; deployments resolve
-their shape from the training shape. Weight sync, shapes, HSDP replicas,
+Each recipe's `Config` dataclass documents its fields. Trainer-only recipes
+(SFT, DPO, ORPO, embedding) can leave `TrainerConfig()` empty so the backend
+picks a shape. Recipes that create a deployment (RL, distillation) need
+`training_shape_id`, because the deployment takes its shape from it; see
+[`sdk-shapes.md`](../skills/fireworks-training/references/sdk-shapes.md) to find one. Weight sync, shapes, HSDP replicas,
 reservations and distillation teachers are covered by the
 [skills](../skills/GETTING-STARTED.md) and the
 [configuration reference](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/reference).

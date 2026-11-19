@@ -73,7 +73,7 @@ Always required on `Config` (with `trainer=TrainerConfig(...)`):
   models. Unknown or ambiguous aliases and other recipes require an explicit
   value. Explicit values always take precedence; this table is not an availability list.
 - `log_path` — directory for `dataloader.json` and logs
-- `trainer.training_shape_id` — optional override; leave unset for auto-selection. `accelerator_type` and `accelerator_count` are unsupported; do not set manual `node_count` (see [`sdk-shapes.md`](sdk-shapes.md))
+- `trainer.training_shape_id` — required when the run creates a deployment (RL, distillation), because the deployment shape comes from it; trainer-only recipes (SFT, DPO, ORPO, embedding) may leave it unset for backend selection. `accelerator_type` and `accelerator_count` are unsupported; do not set manual `node_count` (see [`sdk-shapes.md`](sdk-shapes.md))
 - `trainer.use_reservation` — optional, default `True`. Tries reservation
   capacity first; set `False` to use shared trainer capacity. A
   full-parameter DPO reference trainer inherits the option and tries

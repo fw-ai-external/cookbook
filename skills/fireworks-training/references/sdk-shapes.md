@@ -11,18 +11,38 @@ hand-set when a shape is in use.
 
 ## Training shape
 
-By default, recipes auto-select the smallest validated training shape that can
-fit the configured model and context length:
+Whether `cfg.trainer.training_shape_id` can stay unset depends on whether the
+run creates a deployment:
+
+| Run | `training_shape_id` unset |
+| --- | --- |
+| Trainer only (SFT, DPO, ORPO, embedding) | Works: backend trainer creation picks a validated shape. |
+| Creates a new deployment (`rl_loop`, `async_rl_loop`, distillation, any recipe with a sampler) | Fails after the trainer is created: the SDK takes the deployment shape only from the training-shape profile, so it raises `Cannot create a managed deployment without a deployment shape`. |
+| Reattaches to an existing `deployment.deployment_id` | Works: the deployment already has its shape. |
+
+So for any run that creates a deployment, set the shape:
 
 ```python
-cfg.trainer.training_shape_id = None
+cfg.trainer.training_shape_id = "accounts/fireworks/trainingShapes/qwen3-4b-minimum"
 ```
 
-Set `cfg.trainer.training_shape_id` only when you need an explicit override:
+To find one, call the read-only lookup in `training.utils`, which returns the
+newest validated shape for the base model and tuning mode:
 
 ```python
-cfg.trainer.training_shape_id = "accounts/fireworks/trainingShapes/ts-qwen3-8b-policy"
+import os
+
+from fireworks.training.sdk.trainer import TrainerJobManager
+from training.utils import auto_select_training_shape
+
+mgr = TrainerJobManager(api_key=os.environ["FIREWORKS_API_KEY"])
+shape_id = auto_select_training_shape(
+    mgr, base_model="accounts/fireworks/models/qwen3-4b", lora_rank=0  # 64 for LoRA
+)
 ```
+
+Recipes do not call this lookup themselves. `firectl training-shape list`
+(below) lists the same shapes.
 
 The recipe then does:
 
