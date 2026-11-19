@@ -65,11 +65,11 @@ def test_older_sdk_rejects_replay(monkeypatch):
 def test_sampling_support_kwargs_and_loss_config():
     from training.utils.rl.sampling_support import (
         replay_mask_kwargs,
-        sc_head_kwargs,
+        top_sampling_kwargs,
         sampling_support_loss_fn_config,
     )
 
-    assert (replay_mask_kwargs(top_p=0.95) | sc_head_kwargs(64)) == {
+    assert (replay_mask_kwargs(top_p=0.95) | top_sampling_kwargs(64)) == {
         "top_p": 0.95,
         "sampling_mask": "parquet_v1",
         "top_sampling_logprobs": 64,
@@ -88,25 +88,25 @@ def test_sampling_support_kwargs_and_loss_config():
     with pytest.raises(ValueError, match="top_p"):
         replay_mask_kwargs(top_p=0.0)
     with pytest.raises(ValueError, match="k"):
-        sc_head_kwargs(0)
+        top_sampling_kwargs(0)
 
 
 @pytest.mark.parametrize("value", [0, -1, 20001, True, 1.5])
 def test_invalid_sc_head_width(value):
-    from training.utils.rl.sampling_support import sc_head_kwargs
+    from training.utils.rl.sampling_support import top_sampling_kwargs
 
     with pytest.raises(ValueError, match="k"):
-        sc_head_kwargs(value)
+        top_sampling_kwargs(value)
 
 
 def test_sc_only_capture_and_width_match_trainer():
-    from training.utils.rl.sampling_support import sc_head_kwargs
+    from training.utils.rl.sampling_support import top_sampling_kwargs
 
-    assert sc_head_kwargs(20000) == {
+    assert top_sampling_kwargs(20000) == {
         "top_sampling_logprobs": 20000,
         "top_sampling_format": "parquet_v1",
     }
-    assert "sampling_mask" not in sc_head_kwargs(128)
+    assert "sampling_mask" not in top_sampling_kwargs(128)
 
 
 def test_attach_mask_preserves_independent_head():

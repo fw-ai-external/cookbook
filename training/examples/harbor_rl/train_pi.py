@@ -72,6 +72,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def build_config(args: argparse.Namespace, *, run_dir: Path, row_count: int) -> Config:
     return Config(
+        reinforce=common.reinforce_config(args),
         log_path=str(run_dir / "logs"),
         base_model=args.base_model,
         learning_rate=args.learning_rate,

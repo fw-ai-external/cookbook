@@ -467,9 +467,10 @@ def _logprob_output(rows):
     )
 
 
-def _run_train_group(monkeypatch, cfg, group, policy, setups=None, heartbeat=None):
+def _run_train_group(monkeypatch, cfg, group, policy, setups=None, heartbeat=None, preflights=None):
     """Drive ``main`` until its first ``train_group`` returns."""
     outputs = []
+    preflights = [] if preflights is None else preflights
 
     def rollout_fn_factory(setup):
         if setups is not None:
@@ -484,7 +485,9 @@ def _run_train_group(monkeypatch, cfg, group, policy, setups=None, heartbeat=Non
             pass
 
         def create_training_client(self, *_args, **_kwargs):
-            return object()
+            return SimpleNamespace(
+                supports_mc_score_centering=True, validate_loss_capabilities=lambda *args: preflights.append(args)
+            )
 
         def create_deployment_sampler(self, *, tokenizer):
             return SimpleNamespace(model="m", base_url="u", close=lambda: None)
@@ -640,10 +643,88 @@ def test_train_group_runs_server_grpo_on_the_rollout_anchor(monkeypatch) -> None
     assert result.metrics["active_tokens"] == 2
 
 
+@pytest.mark.parametrize("weighting", ["none", "tis", "mis"])
+def test_train_group_submits_reinforce_sc_with_sampler_denominator(monkeypatch, weighting) -> None:
+    from training.utils.rl.algorithm.server_reinforce import (
+        ExtraSamplingSC,
+        ReinforceConfig,
+    )
+
+    from fireworks.training.sdk.routing import RoutingReferences
+
+    calls, setups, preflights = [], [], []
+    group = _policy_group()
+    file = {"store_id": "test", "file_id": "mc", "format": "parquet_v1", "row_count": 2}
+    references = RoutingReferences.from_dict(
+        {
+            "length": 3,
+            "files": [file],
+            "spans": [
+                {"input_token_start": 0, "count": 1},
+                {"input_token_start": 1, "count": 2, "file_index": 0, "file_row_start": 0},
+            ],
+        }
+    )
+    group.sample_extra_references = [references]
+
+    class Policy:
+        default_timeout = 3600
+        supports_rdma_weight_sync = False
+
+        def submit_forward_backward(self, data, loss_fn, loss_fn_config=None):
+            calls.append((data, loss_fn, loss_fn_config))
+
+            async def result_async(timeout=None):
+                return SimpleNamespace(
+                    metrics={},
+                    loss_fn_outputs=_logprob_output(
+                        [[-0.4, -0.2, -0.1]]
+                    ).loss_fn_outputs,
+                )
+
+            return SimpleNamespace(result_async=result_async)
+
+        def forward(self, *_args, **_kwargs):
+            pytest.fail("built-in REINFORCE needs no separate anchor forward")
+
+    _run_train_group(
+        monkeypatch,
+        _config(
+            reinforce=ReinforceConfig(
+                score_centering=ExtraSamplingSC(2),
+                weighting=weighting,
+                sampler_kl_coeff=0.01,
+            )
+        ),
+        group,
+        Policy(),
+        setups=setups,
+        preflights=preflights,
+    )
+
+    ((data, loss_fn, config),) = calls
+    assert preflights == [(loss_fn, config)]
+    assert loss_fn == "reinforce"
+    assert config == {
+        "score_centering": True,
+        "score_centering_estimator": "extra_sampling",
+        "weighting": weighting,
+        "sampler_kl_coeff": 0.01,
+        "target_logprob_support": "full_vocabulary",
+    }
+    actual = data[0].loss_fn_inputs
+    assert actual["logprobs"].data == pytest.approx(group.inf_logprobs[0])
+    assert data[0].model_input.sample_extra_references == references.to_dict()
+    assert actual["response_mask"].data == [0, 1, 1]
+    assert setups[0].sample_kwargs["sample_extra_tokens"] == 2
+    assert setups[0].sample_kwargs["sample_extra_format"] == "parquet_v1"
+    assert "top_sampling_logprobs" not in setups[0].sample_kwargs
+
+
 def test_group_preparation_and_submission_leave_event_loop_responsive(monkeypatch) -> None:
     heartbeat = threading.Event()
     main_thread = threading.get_ident()
-    original_build = async_rl_loop.objective.build_datums
+    original_build = async_rl_loop.grpo.build_datums
 
     def slow_build(*args):
         assert threading.get_ident() != main_thread
@@ -667,5 +748,5 @@ def test_group_preparation_and_submission_leave_event_loop_responsive(monkeypatc
 
             return SimpleNamespace(result_async=result_async)
 
-    monkeypatch.setattr(async_rl_loop.objective, "build_datums", slow_build)
+    monkeypatch.setattr(async_rl_loop.grpo, "build_datums", slow_build)
     _run_train_group(monkeypatch, _config(), _policy_group(), Policy(), heartbeat=heartbeat)

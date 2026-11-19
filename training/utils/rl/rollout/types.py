@@ -103,9 +103,11 @@ class RolloutSample:
     """Sampler top-k logprobs aligned with ``inference_topk_token_ids``."""
     top_sampling_references: RoutingReferences | None = None
     sampling_mask_references: RoutingReferences | None = None
-    """Parquet references to the sampler's top-K distribution over model-input
-    positions (``tokens[:-1]``): position ``t`` holds the distribution that
-    produced ``tokens[t + 1]``; positions without a sampled token are gaps."""
+    sample_extra_references: RoutingReferences | None = None
+    """Parquet references to the sampler's top-K distribution, mask or extra draws
+    over model-input positions (``tokens[:-1]``): position ``t`` holds the row for
+    the distribution that produced ``tokens[t + 1]``; positions without a sampled
+    token are gaps."""
 
 
 @dataclass
@@ -289,16 +291,17 @@ def _validate_segment(
 
     top_sampling = segment.top_sampling_references
     sampling_mask = segment.sampling_mask_references
-    if top_sampling is not None and not isinstance(top_sampling, RoutingReferences):
-        raise ValueError(
-            f"Run {run_index} segment {segment_index}: top_sampling_references "
-            "must be Parquet RoutingReferences."
-        )
-    if sampling_mask is not None and not isinstance(sampling_mask, RoutingReferences):
-        raise ValueError(
-            f"Run {run_index} segment {segment_index}: sampling_mask_references "
-            "must be Parquet RoutingReferences."
-        )
+    sample_extra = segment.sample_extra_references
+    for name, references in (
+        ("top_sampling_references", top_sampling),
+        ("sampling_mask_references", sampling_mask),
+        ("sample_extra_references", sample_extra),
+    ):
+        if references is not None and not isinstance(references, RoutingReferences):
+            raise ValueError(
+                f"Run {run_index} segment {segment_index}: {name} "
+                "must be Parquet RoutingReferences."
+            )
 
     if segment.prompt_model_input is not None:
         n = len(segment.tokens)
@@ -307,6 +310,11 @@ def _validate_segment(
                 f"Run {run_index} segment {segment_index}: multimodal "
                 "tokens/logprobs/loss_mask mismatch "
                 f"({n} / {len(segment.logprobs)} / {len(segment.loss_mask)})."
+            )
+        if sample_extra is not None:
+            raise ValueError(
+                f"Run {run_index} segment {segment_index}: extra-draw references "
+                "are text-only."
             )
         if top_sampling is not None:
             prompt_text_len = sum(
@@ -374,6 +382,11 @@ def _validate_segment(
         raise ValueError(
             f"Run {run_index} segment {segment_index}: mask sampling references "
             f"must cover model-input positions ({len(sampling_mask)} / {n - 1})."
+        )
+    if sample_extra is not None and len(sample_extra) != n - 1:
+        raise ValueError(
+            f"Run {run_index} segment {segment_index}: extra-draw references "
+            f"must cover model-input positions ({len(sample_extra)} / {n - 1})."
         )
     if not any(mask_value > 0 for mask_value in segment.loss_mask):
         raise ValueError(
@@ -443,6 +456,7 @@ def rollout_to_prompt_group(
     inference_topk_logprobs_aligned: List[List[List[float]]] = []
     top_sampling_references: List[RoutingReferences | None] = []
     sampling_mask_references: List[RoutingReferences | None] = []
+    sample_extra_references: List[RoutingReferences | None] = []
     completion_lens: List[int] = []
     truncated: List[bool] = []
     per_sample_prompt_lens: List[int] = []
@@ -521,6 +535,7 @@ def rollout_to_prompt_group(
                 inference_topk_logprobs_aligned.append([])
                 top_sampling_references.append(s.top_sampling_references)
                 sampling_mask_references.append(s.sampling_mask_references)
+                sample_extra_references.append(s.sample_extra_references)
                 completion_lens.append(sum(1 for w in target_mask if w > 0))
                 truncated.append(s.finish_reason == "length")
                 continue
@@ -591,6 +606,7 @@ def rollout_to_prompt_group(
             inference_topk_logprobs_aligned.append(target_topk_logprobs)
             top_sampling_references.append(s.top_sampling_references)
             sampling_mask_references.append(s.sampling_mask_references)
+            sample_extra_references.append(s.sample_extra_references)
             completion_lens.append(sum(1 for m in s.loss_mask if m > 0))
             truncated.append(s.finish_reason == "length")
 
@@ -607,6 +623,7 @@ def rollout_to_prompt_group(
         inference_topk_logprobs=inference_topk_logprobs_aligned,
         top_sampling_references=top_sampling_references,
         sampling_mask_references=sampling_mask_references,
+        sample_extra_references=sample_extra_references,
         completion_lens=completion_lens,
         truncated=truncated,
         prompt=None,
