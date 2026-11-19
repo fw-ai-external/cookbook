@@ -260,11 +260,10 @@ its `create_model` response advertises `supports_router_replay`, exposed as
 `training_client.supports_router_replay` and consumed by
 `resolve_router_replay_enabled(training_client=...)`, so recipes that pass the
 bound training client decide R3 without GETting the base model (a private
-early-access base model rejects that GET with 403). The model probe still runs
-when there is no trainer answer: a trainer that predates the field (`None`), or
-a path with no trainer at all -- e.g. Harbor sampling-only scoring
-(`harbor_rl/common.py`), which calls the resolver without `training_client`. There a 403/404
-takes the last-resort path below rather than failing. The shared-store binding controls replay capture.
+early-access base model rejects that GET with 403). Training recipes still probe
+the model when the trainer predates the field (`None`). The shared-store
+binding controls replay capture. Harbor `--sampling-only` scoring runs without
+Router Replay because it submits no trajectories to a trainer.
 
 When the trainer did not report and the model probe returns 403/404 (the
 record is not visible to the caller), the recipes request R3 and log a warning.
