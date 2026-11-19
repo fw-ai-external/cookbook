@@ -238,7 +238,51 @@ The dataset is JSONL of prompts (`messages`) plus exactly the fields the selecte
 Trainer↔inference divergence silently wrecks RL. Required reading: https://docs.fireworks.ai/fine-tuning/rl-rollout-integration#numerics-alignment
 - Match **precision/quantization** between trainer checkpoints and the deployment shape.
 - Measure **logprob divergence** between trainer forward and rollout inference on the same tokens.
-- **MoE → Router Replay (R3):** align the top-K experts the router picks. Inference returns them via `include_routing_matrix: true` + `logprobs: true`, and rollout assembly attaches them to the trainer datums. The RL loops request completion-only R3 automatically for MoE base models. https://docs.fireworks.ai/guides/rollout-inference#moe-router-replay
+- **MoE → Router Replay (R3):** align the top-K experts the router picks. The RL loops request completion-only R3 automatically for MoE base models and attach the rollout's routing references to trainer datums.
+
+### Migrate inline R3 to shared storage
+
+**Inline R3 can be much slower**, especially for long rollouts or large
+training batches. It puts a base64 routing matrix for every captured token
+in the inference response and sends those matrices back in the training
+request. That increases payload size and adds parsing and decoding on the
+CPU. Shared-storage R3 writes the matrices to NFS as Parquet. The rollout
+returns compact file and span references that the trainer reads directly.
+
+1. Use a training shape and rollout deployment that support shared-storage
+   R3. For dedicated runs, create the trainer first and attach the rollout to
+   it. Confirm `training_client.r3_store_id` is set and matches the store
+   reported by `sampler.r3_store_id`. See [trainer-first setup](rl-hotload.md#debug-a-trainer-first-deployment).
+2. For a custom SDK loop, bind the deployment sampler to the policy's
+   training client. The SDK selects the shared-storage transport.
+
+   ```python
+   sampler = service.create_deployment_sampler(training_client=training_client)
+   try:
+       (completion,) = await sampler.sample_with_prompt_tokens(
+           prompt_token_ids,
+           n=1,
+           max_tokens=128,
+           logprobs=True,
+           include_routing_matrix=True,
+           echo=False,
+       )
+   finally:
+       sampler.close()
+   ```
+
+   For direct HTTP calls, send `routing_matrix_format: "parquet_v1"` and
+   `logprobs: true` in the body and set `x-fireworks-r3-store-id` to the
+   trainer's store ID. A request with only `include_routing_matrix: true`
+   selects inline R3.
+3. Check one rollout before starting the full run. The SDK's
+   `completion.routing_matrices` should contain a `RoutingReferences` object
+   with files in the trainer's store. A finished HTTP choice should contain
+   `routing_references` and `routing_matrix_format: "parquet_v1"`. Preserve
+   reference spans through rollout assembly and verify the trainer consumes
+   them in a small training step. Recapture stored inline trajectories and
+   expired references. If the rollout rejects Parquet or returns inline data,
+   check that the trainer and rollout versions both support the shared store.
 
 ## Critical rules
 

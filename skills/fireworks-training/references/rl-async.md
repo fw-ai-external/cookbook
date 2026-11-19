@@ -252,8 +252,8 @@ routes for generated tokens without the serving cost of `echo=True`. A fork
 that needs full-sequence replay sets `echo=True` and passes
 `router_replay_completion_only=False` to `AsyncRLCoordinator` (default `True`);
 expect lower throughput, because `echo=True` with logprobs disables prompt
-KV-cache reuse. For Harbor/TITO prompt
-capture, see the [agentic rollout example](rl-agentic.md#cookbook-example).
+KV-cache reuse. For custom samplers, see [migrating inline R3 to shared storage](training-api.md#migrate-inline-r3-to-shared-storage).
+For Harbor/TITO prompt capture, see the [agentic rollout example](rl-agentic.md#cookbook-example).
 
 Dense models skip R3 automatically. The MoE decision comes from the trainer:
 its `create_model` response advertises `supports_router_replay`, exposed as

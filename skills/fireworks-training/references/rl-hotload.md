@@ -86,7 +86,7 @@ publication and durable sampler checkpoints.
 | `hotload flow mismatch` or `hot_load_bucket_url ... conflicts with hot_load_trainer_job` | The existing trainer or rollout uses the deployment-owned layout. Restore from its durable checkpoint and create a trainer-first pair. |
 | Snapshot not found or serving reports a different snapshot | Check that the deployment's trainer attachment matches the writer and its bucket. Wait for the rollout to finish reattaching before publishing again. |
 | `FILE fallback is not allowed` | Check trainer and rollout readiness and compare their RDMA capabilities. For a dedicated LoRA run, verify RDMA LoRA support on each replica. If the trainer RDMA endpoint returns 404 or 405, use a compatible trainer image. |
-| Replay references missing or a shared-store mismatch | Compare the trainer and sampler's `r3_store_id` and inspect the sampler request ID. Keep the validated trainer and deployment versions together and recapture expired references. |
+| Replay references missing or a shared-store mismatch | Compare the trainer and sampler's `r3_store_id` and inspect the sampler request ID. Keep the validated trainer and deployment versions together and recapture expired references. Follow the [R3 migration checks](training-api.md#migrate-inline-r3-to-shared-storage) if the client still returns inline routing matrices. |
 | Serving rejects a replay mask or score-centering capture | Check the rollout image pinned by the exact deployment shape version and the trainer capability for the selected loss. Use a validated shape pair with shared-storage capture support. |
 
 For an internal run, search Chronosphere by trainer name, deployment name and
