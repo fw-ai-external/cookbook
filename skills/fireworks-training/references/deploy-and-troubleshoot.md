@@ -189,7 +189,7 @@ firectl deployment delete <DEPLOYMENT_ID> --ignore-checks                       
 Training and inference are different code paths; mismatched numerics cause logprob/output drift (and in RL, wasted rollouts):
 - **Match precision/quantization** (FP8 / BF16 / FP4) between trainer checkpoints and the deployment shape.
 - **Measure logprob divergence** on the same tokens.
-- **MoE → Router Replay (R3):** divergence often comes from the router picking different top-K experts; pass `include_routing_matrix: true` + `logprobs: true`. Docs: [Numerics alignment](https://docs.fireworks.ai/fine-tuning/rl-rollout-integration#numerics-alignment), [MoE Router Replay](https://docs.fireworks.ai/guides/rollout-inference#moe-router-replay).
+- **MoE → Router Replay (R3):** divergence can come from the router picking different top-K experts. [Bind the sampler to the trainer and verify shared-storage R3](training-api.md#migrate-inline-r3-to-shared-storage). See [Numerics alignment](https://docs.fireworks.ai/fine-tuning/rl-rollout-integration#numerics-alignment).
 
 ## Benchmark: base vs fine-tuned
 
