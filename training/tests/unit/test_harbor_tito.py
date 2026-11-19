@@ -474,9 +474,6 @@ def test_sampling_only_builds_rollout_setup_without_trainer(
 
     monkeypatch.setattr(recipe_common, "load_tokenizer", load_tokenizer)
     monkeypatch.setattr(recipe_common, "DeploymentSampler", Sampler)
-    monkeypatch.setattr(
-        recipe_common, "resolve_router_replay_enabled", lambda **_: True
-    )
 
     async def rollout_fn(*_args, **_kwargs):
         return None
@@ -524,7 +521,7 @@ def test_sampling_only_builds_rollout_setup_without_trainer(
     assert captured["sampler_closed"] is True
     assert setup.sample_kwargs["max_seq_len"] == 4096
     assert setup.sample_kwargs["top_k"] == 0
-    assert setup.sample_kwargs["include_routing_matrix"] is True
+    assert "include_routing_matrix" not in setup.sample_kwargs
     assert captured["evaluate_kwargs"]["max_concurrency"] is None
     assert captured["closed"] is rollout_fn
 
@@ -825,38 +822,17 @@ def test_quiesce_harness_rejects_multiline_process_signature() -> None:
         )
 
 
-def test_sidecar_serve_closes_runtime_when_trajectory_creation_fails(
+def test_moe_sampling_only_sidecar_starts_and_closes_on_trajectory_failure(
     monkeypatch, tmp_path
 ) -> None:
     from training.renderer import tito as renderer_runtime
 
     bundle_root = tmp_path / "bundle"
-    bundle_root.mkdir()
+    bundle = _fake_bundle(bundle_root)
     (bundle_root / "manifest.json").write_text(
-        json.dumps({"sha256": "bundle-digest"}), encoding="utf-8"
+        json.dumps({"sha256": bundle.digest}), encoding="utf-8"
     )
     spec_path = tmp_path / "spec.json"
-    spec_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 3,
-                "bundle_digest": "bundle-digest",
-                "inference_base_url": "https://deployment.example",
-                "api_key": "deployment-key",
-                "model": "policy",
-                "renderer_name": "renderer",
-                "max_context_tokens": 4096,
-                "max_output_tokens": 1024,
-                "sampling_defaults": {},
-                "max_masked_tokens": 1024,
-                "on_other_mismatch": "new_segment",
-                "call_classifier": "tools_present",
-                "trajectory_metadata": {},
-                "debug_enabled": False,
-            }
-        ),
-        encoding="utf-8",
-    )
 
     class FakeSampler:
         instance = None
@@ -888,6 +864,10 @@ def test_sidecar_serve_closes_runtime_when_trajectory_creation_fails(
 
     import fireworks.training.sdk as training_sdk
 
+    monkeypatch.setenv("FIREWORKS_API_KEY", "deployment-key")
+    monkeypatch.setattr(recipe_common, "load_tokenizer", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(recipe_common, "DeploymentSampler", FakeSampler)
+    monkeypatch.setattr(training_sdk.FireworksClient, "model_is_moe", lambda *_args: True)
     monkeypatch.setattr(sidecar_runtime, "SIDECAR_BUNDLE_ROOT", str(bundle_root))
     monkeypatch.setattr(sidecar_runtime, "SIDECAR_PID_PATH", str(tmp_path / "pid"))
     monkeypatch.setattr(training_sdk, "DeploymentSampler", FakeSampler)
@@ -898,6 +878,22 @@ def test_sidecar_serve_closes_runtime_when_trajectory_creation_fails(
         "build_sidecar_tito_renderer",
         lambda *_args, **_kwargs: object(),
     )
+
+    with recipe_common.deployment_rollout_setup(
+        base_model="accounts/example/models/moe-policy",
+        deployment_id="accounts/example/deployments/policy",
+        tokenizer_model="tokenizer",
+        tokenizer_revision=None,
+        max_completion_tokens=1024,
+        max_seq_len=4096,
+        temperature=1.0,
+        sample_timeout=60,
+        completions_per_prompt=1,
+    ) as setup:
+        spec = sidecar_runtime.build_launch_spec(
+            setup, bundle, _tito(), call_classifier="tools_present", metadata={}
+        )
+        spec_path.write_text(sidecar_runtime.launch_spec_json(spec), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="trajectory setup failed"):
         asyncio.run(sidecar_runtime.serve(spec_path))

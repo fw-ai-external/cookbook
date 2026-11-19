@@ -39,7 +39,6 @@ from training.utils import (
     DeployConfig,
     TrainerConfig,
     read_api_extra_headers_env,
-    resolve_router_replay_enabled,
 )
 from training.utils.rl.algorithm import server_reinforce
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
@@ -235,8 +234,7 @@ def deployment_rollout_setup(
     """Yield the ``RolloutSetup`` ``async_rl_loop`` would build, without a trainer.
 
     The setup owns a sampler on ``deployment_id`` that is closed on exit.
-    Router Replay is requested only for MoE base models (a dense deployment
-    rejects the routing request).
+    Scoring does not submit trajectories to a trainer, so Router Replay is off.
     """
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
@@ -247,13 +245,7 @@ def deployment_rollout_setup(
         temperature=temperature,
         max_seq_len=max_seq_len,
         http_timeout=sample_timeout,
-        router_replay=resolve_router_replay_enabled(
-            requested=True,
-            api_key=api_key,
-            base_url=base_url,
-            additional_headers=headers,
-            base_model=base_model,
-        ),
+        router_replay=False,
     )
     sampler = DeploymentSampler(
         inference_url=base_url,
