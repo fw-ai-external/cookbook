@@ -86,13 +86,23 @@ def is_model_unavailable(status: int, body: str) -> bool:
 
 
 # A deployment with no running replica (for example a preemptible one that was
-# just preempted) answers 503 DEPLOYMENT_SCALING_UP with Retry-After: 60 until
-# a replica is back. At busy times that can take hours. By default a row keeps
+# just preempted) fails requests until a replica is back: a 503 from its load
+# balancer ("no healthy upstream", Retry-After: 5), a 502 or 504 from the
+# gateway, or a dropped connection. A scaled-to-zero multi-region deployment
+# answers 503 DEPLOYMENT_SCALING_UP with Retry-After: 60 instead. At busy times
+# a replica can take hours to come back. By default a row keeps
 # retrying for up to a day, with no limit on the number of retries, so the time
 # limit is the one that ends retries.
 DEFAULT_MAX_BACKOFF = 60.0
 DEFAULT_MAX_RETRY_TIME = 86400.0
 RETRY_LOG_INTERVAL = 30.0
+# After one of these failures on your own deployment, a row's next retry reads
+# the deployment's state instead of resending the request, and keeps doing so
+# while the state is PREEMPTED. None of the responses says the deployment was
+# preempted, so the state is the only way to tell.
+NO_REPLICA_STATUS = frozenset({502, 503, 504})
+# A deployment in one of these states won't serve again, so the run stops.
+GONE_STATES = frozenset({"DELETING", "DELETED", "FAILED"})
 
 # Serverless capacity is shared with other customers, so keep a single run
 # from flooding it; a dedicated deployment is only the customer's own traffic.
@@ -154,6 +164,21 @@ def deployment_request(
         if attempt + 1 < attempts:
             time.sleep(2**attempt)
     raise RuntimeError(last)
+
+
+def deployment_state(cfg: Config, name: str) -> str | None:
+    """Returns the deployment's state, or None when it can't be read right now.
+    Raises FatalError when the deployment is gone."""
+    try:
+        deployment = deployment_request(cfg, name, "GET")
+    except RuntimeError:
+        return None
+    if deployment is None:
+        raise FatalError(f"deployment {name} not found")
+    state = deployment.get("state")
+    if state in GONE_STATES:
+        raise FatalError(f"deployment {name} is {state}")
+    return state
 
 
 def delete_deployment(cfg: Config, name: str) -> bool:
@@ -333,12 +358,15 @@ def post_json(
     payload: dict[str, Any],
     on_retry=None,
     stop: threading.Event | None = None,
+    deployment: str | None = None,
 ) -> dict[str, Any]:
     """POSTs payload, retrying transient failures until --max-retries or
     --max-retry-time runs out. Raises RequestError when it gives up on the row
     and FatalError when no row can succeed. on_retry(error) runs before each
     retry. When stop is set, it raises Stopped instead of starting or waiting
-    for another attempt."""
+    for another attempt. deployment is the --model's deployment, if any: after
+    a failure in NO_REPLICA_STATUS or a dropped connection, a retry reads its
+    state and resends only once it is not PREEMPTED."""
     url = f"{cfg.base_url.rstrip('/')}/{endpoint}"
     data = json.dumps(payload).encode()
     headers = {
@@ -347,6 +375,7 @@ def post_json(
         "User-Agent": "fireworks-batch-migration/1.0",
     }
     started = time.monotonic()
+    check_state = False
     for attempt in itertools.count():
         retry_after: float | None = None
         # A retry gets only what is left of --max-retry-time, so a slow attempt
@@ -360,30 +389,39 @@ def post_json(
             raise Stopped
         if cfg.throttle is not None:
             cfg.throttle.wait(stop)
-        try:
-            request = urllib.request.Request(
-                url, data=data, headers=headers, method="POST"
-            )
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return json.loads(response.read())
-        except urllib.error.HTTPError as e:
-            body = read_error_body(e)
-            if e.code in FATAL_STATUS or is_model_unavailable(e.code, body):
-                raise FatalError(f"HTTP {e.code}: {body or e.reason}") from None
-            last = RequestError(str(e.code), body or str(e.reason))
-            if not is_retryable_status(e.code):
-                raise last from None
-            retry_after = retry_after_seconds(e.headers)
-            if cfg.throttle is not None and e.code in SHARED_BACKOFF_STATUS:
-                cfg.throttle.pause(backoff_seconds(cfg, attempt, retry_after))
-        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
-            # Includes timeouts, resets and IncompleteRead: a replica that is
-            # preempted mid-response drops the connection.
+        if check_state and deployment_state(cfg, deployment) == "PREEMPTED":
+            # Still preempted: back off and read the state again, not resend.
             last = RequestError(
-                "connection_error", f"{type(e).__name__}: {getattr(e, 'reason', e)}"
+                "deployment_preempted", f"deployment {deployment} is PREEMPTED"
             )
-        except ValueError as e:  # not JSON, or not UTF-8
-            last = RequestError("invalid_response", f"response was not JSON: {e}")
+        else:
+            check_state = False
+            try:
+                request = urllib.request.Request(
+                    url, data=data, headers=headers, method="POST"
+                )
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    return json.loads(response.read())
+            except urllib.error.HTTPError as e:
+                body = read_error_body(e)
+                if e.code in FATAL_STATUS or is_model_unavailable(e.code, body):
+                    raise FatalError(f"HTTP {e.code}: {body or e.reason}") from None
+                last = RequestError(str(e.code), body or str(e.reason))
+                if not is_retryable_status(e.code):
+                    raise last from None
+                retry_after = retry_after_seconds(e.headers)
+                if cfg.throttle is not None and e.code in SHARED_BACKOFF_STATUS:
+                    cfg.throttle.pause(backoff_seconds(cfg, attempt, retry_after))
+                check_state = deployment is not None and e.code in NO_REPLICA_STATUS
+            except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+                # Includes timeouts, resets and IncompleteRead: a replica that is
+                # preempted mid-response drops the connection.
+                last = RequestError(
+                    "connection_error", f"{type(e).__name__}: {getattr(e, 'reason', e)}"
+                )
+                check_state = deployment is not None
+            except ValueError as e:  # not JSON, or not UTF-8
+                last = RequestError("invalid_response", f"response was not JSON: {e}")
         if cfg.max_retries is not None and attempt >= cfg.max_retries:
             break
         wait = backoff_seconds(cfg, attempt, retry_after)
@@ -615,7 +653,141 @@ class Stats:
     interrupted: bool = False
 
 
-def run(args: argparse.Namespace, cfg: Config) -> Stats:
+# The job states a Fireworks job reports, so tools that read Batch job states
+# can read the job log too.
+STATE_RUNNING = "JOB_STATE_RUNNING"
+STATE_COMPLETED = "JOB_STATE_COMPLETED"
+STATE_FAILED = "JOB_STATE_FAILED"
+STATE_CANCELLED = "JOB_STATE_CANCELLED"
+# How often a running job logs its row counts, so the log shows it is alive.
+PROGRESS_LOG_INTERVAL = 60.0
+
+
+def utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def state_for_exit(exit_code: int) -> str:
+    """The job state an exit status means."""
+    if exit_code in (0, 3):
+        return STATE_COMPLETED
+    if exit_code >= 128:
+        return STATE_CANCELLED
+    return STATE_FAILED
+
+
+class JobLog:
+    """Appends the run's events to a JSONL job log.
+
+    Every line has the time, the run number, the event and the job state, so
+    the last line says where the job stands and the lines before it say how it
+    got there. Events: start, progress (row counts every
+    PROGRESS_LOG_INTERVAL seconds), retry (the latest retry reason, at most
+    every RETRY_LOG_INTERVAL seconds) and end (the exit status and the error,
+    if any). A rerun of the same command appends to the same log as the next
+    run. A log that can't be written is reported once and doesn't stop the run.
+    """
+
+    def __init__(self, path: str, args: argparse.Namespace):
+        self.path = path
+        self._lock = threading.Lock()
+        self._warned = False
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.run = self._last_run() + 1
+        self._start_line = {
+            "model": args.model,
+            "input": args.input,
+            "output": args.output,
+            "errors": args.errors or args.output + ".errors.jsonl",
+        }
+
+    def _last_run(self) -> int:
+        """The run number of the last readable line, or 0 for a new log."""
+        try:
+            with open(self.path, "rb") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            return 0
+        for line in reversed(lines):
+            try:
+                run = json.loads(line).get("run")
+            except (ValueError, AttributeError):
+                continue
+            if isinstance(run, int) and not isinstance(run, bool):
+                return run
+        return 0
+
+    @staticmethod
+    def _rows(stats: Stats) -> dict[str, int]:
+        return {
+            "succeeded": stats.succeeded,
+            "failed": stats.failed,
+            "skipped": stats.skipped,
+            "outstanding": stats.outstanding,
+            "retries": stats.retries,
+        }
+
+    def event(self, event: str, state: str = STATE_RUNNING, **fields: Any) -> None:
+        line = {
+            "time": utc_now(),
+            "run": self.run,
+            "event": event,
+            "state": state,
+            **fields,
+        }
+        data = json.dumps(line, ensure_ascii=False) + "\n"
+        with self._lock:
+            try:
+                with open(self.path, "a+b") as f:
+                    # A run killed mid-line leaves a fragment; start on a new
+                    # line so only that fragment is unreadable.
+                    if f.seek(0, os.SEEK_END) > 0:
+                        f.seek(-1, os.SEEK_END)
+                        if f.read(1) != b"\n":
+                            f.write(b"\n")
+                    f.write(data.encode())
+            except OSError as e:
+                if not self._warned:
+                    self._warned = True
+                    print(
+                        f"Warning: can't write the job log {self.path}: {e}",
+                        file=sys.stderr,
+                    )
+
+    def start(self) -> None:
+        self.event("start", **self._start_line)
+
+    def watch(self, stats: Stats, interval: float = PROGRESS_LOG_INTERVAL) -> None:
+        """Logs the row counts every interval seconds until unwatch()."""
+
+        def loop() -> None:
+            while not self._stop.wait(interval):
+                self.event("progress", rows=self._rows(stats))
+
+        self._thread = threading.Thread(target=loop, daemon=True)
+        self._thread.start()
+
+    def unwatch(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+
+    def retry(self, message: str) -> None:
+        self.event("retry", message=message)
+
+    def end(self, exit_code: int, stats: Stats, error: str | None = None) -> None:
+        """Logs how the run ended. The state follows the exit status."""
+        self.event(
+            "end",
+            state_for_exit(exit_code),
+            exit_code=exit_code,
+            error=error,
+            rows=self._rows(stats),
+        )
+
+
+def run(args: argparse.Namespace, cfg: Config, log: JobLog | None = None) -> Stats:
     errors_path = args.errors or args.output + ".errors.jsonl"
     repair_tail(args.output)
     repair_tail(errors_path)
@@ -631,10 +803,13 @@ def run(args: argparse.Namespace, cfg: Config) -> Stats:
 
     out, err = Writer(args.output), Writer(errors_path)
     stats = Stats()
+    if log is not None:
+        log.watch(stats)
     lock = threading.Lock()
     started = time.time()
     stop = threading.Event()
     last_retry_log = [0.0]
+    deployment = deployment_name(cfg.model)
 
     def count(ok: bool) -> None:
         """Counts a finished row and prints progress every --progress-every rows."""
@@ -659,13 +834,18 @@ def run(args: argparse.Namespace, cfg: Config) -> Stats:
             if now - last_retry_log[0] < RETRY_LOG_INTERVAL:
                 return
             last_retry_log[0] = now
-        print(f"Retrying after {e.code}: {e.message[:200]}", file=sys.stderr)
+        message = f"Retrying after {e.code}: {e.message[:200]}"
+        print(message, file=sys.stderr)
+        if log is not None:
+            log.retry(message)
 
     def process(job: Job) -> None:
         if stop.is_set():
             return  # left unrecorded, so a rerun sends it
         try:
-            result = post_json(cfg, job.endpoint, job.payload, on_retry, stop)
+            result = post_json(
+                cfg, job.endpoint, job.payload, on_retry, stop, deployment
+            )
             out.write(format_success(job, result))
             ok = True
         except Stopped:
@@ -770,6 +950,8 @@ def run(args: argparse.Namespace, cfg: Config) -> Stats:
             drop_old_ids(errors_path, err.start, unresolved & recorded)
         # Earlier failures that still have no new result in this run.
         stats.outstanding = len(unresolved - recorded)
+        if log is not None:
+            log.unwatch()
     return stats
 
 
@@ -857,6 +1039,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "checks, so use it only with a deployment created for this run.",
     )
     p.add_argument(
+        "--job-log",
+        help="JSONL file to append the job's events to: start, row counts every 60 seconds, "
+        "retry reasons, and the end with its state (JOB_STATE_COMPLETED, _FAILED or "
+        "_CANCELLED), exit status and error. A rerun of the same command appends to the "
+        "same log as the next run.",
+    )
+    p.add_argument(
         "--progress-every",
         type=int,
         default=100,
@@ -891,10 +1080,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    log = JobLog(args.job_log, args) if args.job_log else None
+    if log is not None:
+        log.start()
+
+    def finish(exit_code: int, stats: Stats, error: str | None = None) -> int:
+        if log is not None:
+            log.end(exit_code, stats, error)
+        return exit_code
+
     api_key = os.environ.get("FIREWORKS_API_KEY")
     if not api_key:
         print("Set FIREWORKS_API_KEY first.", file=sys.stderr)
-        return 2
+        return finish(2, Stats(), "FIREWORKS_API_KEY is not set")
     cfg = Config(
         base_url=args.base_url,
         api_key=api_key,
@@ -918,7 +1116,7 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGTERM, on_sigterm)
     try:
-        stats = run(args, cfg)
+        stats = run(args, cfg, log)
     except KeyboardInterrupt:
         # Stopped before run() reached its own handler, for example while
         # reading earlier results on a rerun. Nothing new was sent yet.
@@ -946,6 +1144,7 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         keep_note("the run was stopped")
+        finish(128 + stopped_by[0], stats, "stopped by a signal")
         # Don't wait for requests still in flight; their rows are resent on rerun.
         os._exit(128 + stopped_by[0])
     if stats.fatal:
@@ -956,7 +1155,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         keep_note("the run stopped early")
-        return 2
+        return finish(2, stats, stats.fatal)
     print(
         f"Finished: {stats.succeeded} succeeded, {stats.failed} failed, {stats.skipped} skipped (already done). "
         f"{stats.outstanding} rows still failed from earlier runs and were not resent. "
@@ -967,7 +1166,12 @@ def main(argv: list[str] | None = None) -> int:
     # Exit 1 while any row lacks a result, including earlier failures.
     if stats.failed or stats.outstanding:
         keep_note("some rows have no result")
-        return 1
+        missing = stats.failed + stats.outstanding
+        return finish(
+            1,
+            stats,
+            f"{missing} rows have no result; rerun the same command to retry them",
+        )
     if deployment is not None:
         try:
             deleted = delete_deployment(cfg, deployment)
@@ -978,7 +1182,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"{deployment} --ignore-checks`.",
                 file=sys.stderr,
             )
-            return 3
+            return finish(
+                3,
+                stats,
+                f"every row has a result, but deleting {deployment} failed: {e}",
+            )
         if deleted:
             print(
                 f"Deleted {deployment}. To undo, run `firectl deployment undelete "
@@ -987,7 +1195,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             print(f"{deployment} was already deleted.", file=sys.stderr)
-    return 0
+    return finish(0, stats)
 
 
 if __name__ == "__main__":

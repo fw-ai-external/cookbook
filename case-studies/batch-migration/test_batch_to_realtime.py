@@ -23,6 +23,10 @@ class FakeServer:
         self.delete_status = 200
         # What a GET of the deployment returns; None answers 404.
         self.deployment_state: str | None = "READY"
+        # GETs of the deployment seen, and after how many a PREEMPTED
+        # deployment turns READY again (None: never).
+        self.gets = 0
+        self.ready_after_gets: int | None = None
         self.lock = threading.Lock()
         server = self
 
@@ -31,9 +35,18 @@ class FakeServer:
                 pass
 
             def do_GET(self):
-                if server.deployment_state is None:
+                with server.lock:
+                    server.gets += 1
+                    if (
+                        server.deployment_state == "PREEMPTED"
+                        and server.ready_after_gets is not None
+                        and server.gets >= server.ready_after_gets
+                    ):
+                        server.deployment_state = "READY"
+                    state = server.deployment_state
+                if state is None:
                     return self._send(404, {"error": {"message": "not found"}})
-                return self._send(200, {"state": server.deployment_state})
+                return self._send(200, {"state": state})
 
             def do_DELETE(self):
                 with server.lock:
@@ -62,6 +75,20 @@ class FakeServer:
                     return self._send(
                         429, {"error": "rate limited"}, {"Retry-After": "0"}
                     )
+                if "no-replica" in text and server.deployment_state in (
+                    "PREEMPTED",
+                    "DELETED",
+                ):
+                    # What a deployment without a Ready replica answers: its
+                    # load balancer's plain-text 503.
+                    data = b"no healthy upstream"
+                    self.send_response(503)
+                    self.send_header("Content-Type", "text/plain")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Retry-After", "0")
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return None
                 if "fail-once-503" in text and attempt < 1:
                     return self._send(503, {"error": "replica preempted"})
                 if "drop-once" in text and attempt < 1:
@@ -473,9 +500,10 @@ def test_resume_after_partial_last_line(tmp_path, server):
         ],
     )
     assert (stats.skipped, stats.succeeded) == (1, 1)
-    assert [r["custom_id"] for r in out] == ["a", "b"], (
-        "b is readable, not glued to the fragment"
-    )
+    assert [r["custom_id"] for r in out] == [
+        "a",
+        "b",
+    ], "b is readable, not glued to the fragment"
 
 
 def test_rerun_does_not_duplicate_invalid_line_errors(tmp_path, server):
@@ -913,7 +941,7 @@ def test_stop_during_startup_exits_cleanly(tmp_path, monkeypatch, capsys):
     # the normal interrupted exit, not escape as a traceback.
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
 
-    def interrupted_run(args, cfg):
+    def interrupted_run(args, cfg, log=None):
         raise KeyboardInterrupt
 
     def fake_exit(code):
@@ -1180,3 +1208,282 @@ def test_rerun_after_delete_does_not_delete_again(
     assert code == 0
     assert server.deletes == []
     assert "already deleted" in capsys.readouterr().err
+
+
+# --job-log
+
+
+def run_with_log(tmp_path, server, rows, *extra):
+    inp = tmp_path / "in.jsonl"
+    if rows is not None:
+        write_jsonl(inp, rows)
+    return b2r.main(
+        [
+            "--input",
+            str(inp),
+            "--output",
+            str(tmp_path / "out.jsonl"),
+            "--model",
+            "m",
+            "--base-url",
+            server.url,
+            "--initial-backoff",
+            "0",
+            "--max-backoff",
+            "0",
+            "--progress-every",
+            "0",
+            "--job-log",
+            str(tmp_path / "job.log.jsonl"),
+            *extra,
+        ]
+    )
+
+
+def read_log(tmp_path):
+    return read_jsonl(tmp_path / "job.log.jsonl")
+
+
+def test_job_log_records_start_and_end_and_counts_reruns(tmp_path, server, monkeypatch):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    rows = [{"custom_id": c, "body": {"messages": chat(c)}} for c in ("a", "b")]
+
+    assert run_with_log(tmp_path, server, rows) == 0
+    assert run_with_log(tmp_path, server, rows) == 0
+    log = read_log(tmp_path)
+
+    assert [(line["run"], line["event"], line["state"]) for line in log] == [
+        (1, "start", "JOB_STATE_RUNNING"),
+        (1, "end", "JOB_STATE_COMPLETED"),
+        (2, "start", "JOB_STATE_RUNNING"),
+        (2, "end", "JOB_STATE_COMPLETED"),
+    ]
+    assert log[0]["output"] == str(tmp_path / "out.jsonl")
+    assert log[0]["errors"] == str(tmp_path / "out.jsonl") + ".errors.jsonl"
+    assert log[1]["exit_code"] == 0
+    assert log[1]["error"] is None
+    assert log[1]["rows"] == {
+        "succeeded": 2,
+        "failed": 0,
+        "skipped": 0,
+        "outstanding": 0,
+        "retries": 0,
+    }
+    # The rerun found both rows done.
+    assert log[3]["rows"]["skipped"] == 2
+    assert all(line["time"].endswith("Z") for line in log)
+
+
+def test_job_log_records_rows_without_a_result_as_failed(tmp_path, server, monkeypatch):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    rows = [
+        {"custom_id": "a", "body": {"messages": chat("a")}},
+        {"custom_id": "b", "body": {"messages": chat("bad-request")}},
+    ]
+
+    assert run_with_log(tmp_path, server, rows) == 1
+
+    end = read_log(tmp_path)[-1]
+    assert end["event"] == "end"
+    assert end["state"] == "JOB_STATE_FAILED"
+    assert end["exit_code"] == 1
+    assert end["rows"]["succeeded"] == 1
+    assert end["rows"]["failed"] == 1
+    assert "1 rows have no result" in end["error"]
+
+
+def test_job_log_records_why_a_run_stopped_early(tmp_path, server, monkeypatch):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "bad")
+    rows = [{"custom_id": "a", "body": {"messages": chat("unauthorized")}}]
+
+    assert run_with_log(tmp_path, server, rows) == 2
+
+    end = read_log(tmp_path)[-1]
+    assert end["state"] == "JOB_STATE_FAILED"
+    assert end["exit_code"] == 2
+    assert end["error"]
+
+
+def test_job_log_records_a_missing_api_key(tmp_path, server, monkeypatch):
+    monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
+
+    assert run_with_log(tmp_path, server, []) == 2
+
+    end = read_log(tmp_path)[-1]
+    assert end["state"] == "JOB_STATE_FAILED"
+    assert end["error"] == "FIREWORKS_API_KEY is not set"
+
+
+def test_job_log_records_retry_reasons(tmp_path, server, monkeypatch):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    rows = [{"custom_id": "a", "body": {"messages": chat("fail-once-503")}}]
+
+    assert run_with_log(tmp_path, server, rows) == 0
+
+    [retry] = [line for line in read_log(tmp_path) if line["event"] == "retry"]
+    assert retry["state"] == "JOB_STATE_RUNNING"
+    assert retry["message"].startswith("Retrying after 503")
+
+
+def test_job_log_logs_progress_while_running(tmp_path):
+    import time
+
+    args = b2r.parse_args(
+        ["--input", "in.jsonl", "--output", "out.jsonl", "--model", "m"]
+    )
+    log = b2r.JobLog(str(tmp_path / "job.log.jsonl"), args)
+    stats = b2r.Stats()
+    stats.succeeded = 5
+
+    log.watch(stats, interval=0.01)
+    try:
+        deadline = time.monotonic() + 5
+        while not read_log(tmp_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        log.unwatch()
+
+    progress = read_log(tmp_path)[0]
+    assert progress["event"] == "progress"
+    assert progress["state"] == "JOB_STATE_RUNNING"
+    assert progress["rows"]["succeeded"] == 5
+
+
+def test_a_line_cut_off_by_a_killed_run_does_not_spoil_the_next(tmp_path):
+    path = tmp_path / "job.log.jsonl"
+    path.write_text('{"run": 3, "event": "start"}\n{"run": 3, "event": "prog')
+    args = b2r.parse_args(
+        ["--input", "in.jsonl", "--output", "out.jsonl", "--model", "m"]
+    )
+
+    log = b2r.JobLog(str(path), args)
+    log.start()
+
+    lines = path.read_text().splitlines()
+    assert lines[1] == '{"run": 3, "event": "prog'
+    assert json.loads(lines[2])["run"] == 4
+
+
+def test_a_job_log_that_cannot_be_written_does_not_stop_the_run(
+    tmp_path, server, monkeypatch, capsys
+):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    rows = [{"custom_id": "a", "body": {"messages": chat("a")}}]
+    (tmp_path / "job.log.jsonl").mkdir()  # a directory can't be appended to
+
+    assert run_with_log(tmp_path, server, rows) == 0
+
+    assert capsys.readouterr().err.count("can't write the job log") == 1
+
+
+@pytest.mark.parametrize(("signame", "code"), [("SIGINT", 130), ("SIGTERM", 143)])
+def test_job_log_records_a_stopped_run_as_cancelled(tmp_path, server, signame, code):
+    import signal
+    import subprocess
+    import time
+
+    rows = [
+        {"custom_id": f"wait{i}", "body": {"messages": chat(f"always-scaling-up {i}")}}
+        for i in range(4)
+    ]
+    inp, log_path = tmp_path / "in.jsonl", tmp_path / "job.log.jsonl"
+    write_jsonl(inp, rows)
+    cmd = [
+        sys.executable,
+        b2r.__file__,
+        "--input",
+        str(inp),
+        "--output",
+        str(tmp_path / "out.jsonl"),
+        "--model",
+        "m",
+        "--base-url",
+        server.url,
+        "--progress-every",
+        "0",
+        "--job-log",
+        str(log_path),
+    ]
+    env = {**os.environ, "FIREWORKS_API_KEY": "test-key"}
+    p = subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE, text=True)
+    deadline = time.monotonic() + 20
+    while not log_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    time.sleep(0.3)
+    p.send_signal(getattr(signal, signame))
+    p.communicate(timeout=10)
+
+    log = read_log(tmp_path)
+    assert p.returncode == code
+    assert log[0]["event"] == "start"
+    assert log[-1]["event"] == "end"
+    assert log[-1]["state"] == "JOB_STATE_CANCELLED"
+    assert log[-1]["exit_code"] == code
+
+
+DEPLOYMENT = "accounts/fireworks/models/m#accounts/acct/deployments/dep"
+
+
+def test_preempted_deployment_reads_state_instead_of_resending(tmp_path, server):
+    server.deployment_state = "PREEMPTED"
+    server.ready_after_gets = 3
+    stats, _, _ = run(
+        tmp_path,
+        server,
+        [{"custom_id": "a", "body": {"messages": chat("no-replica")}}],
+        model=DEPLOYMENT,
+    )
+    assert (stats.succeeded, stats.failed) == (1, 0)
+    # One request failed, the retries read the state until it left PREEMPTED,
+    # and only then was the request sent again.
+    assert server.attempts[json.dumps(chat("no-replica"), sort_keys=True)] == 2
+    assert server.gets == 3
+    assert stats.retries == 3
+
+
+def test_row_gives_up_while_preempted_like_any_retry(tmp_path, server):
+    server.deployment_state = "PREEMPTED"
+    stats, _, err = run(
+        tmp_path,
+        server,
+        [{"custom_id": "a", "body": {"messages": chat("no-replica")}}],
+        "--max-retries",
+        "3",
+        model=DEPLOYMENT,
+    )
+    assert (stats.succeeded, stats.failed) == (0, 1)
+    assert err[0]["error"]["code"] == "deployment_preempted"
+    assert server.attempts[json.dumps(chat("no-replica"), sort_keys=True)] == 1
+
+
+def test_deleted_deployment_stops_the_run(tmp_path, server):
+    server.deployment_state = "DELETED"
+    stats, out, err = run(
+        tmp_path,
+        server,
+        [{"custom_id": "a", "body": {"messages": chat("no-replica")}}],
+        model=DEPLOYMENT,
+    )
+    assert "DELETED" in stats.fatal
+    assert (out, err) == ([], [])  # left unrecorded, so a rerun sends it
+
+
+def test_ready_deployment_is_resent_after_reading_its_state(tmp_path, server):
+    stats, _, _ = run(
+        tmp_path,
+        server,
+        [{"custom_id": "a", "body": {"messages": chat("fail-once-503")}}],
+        model=DEPLOYMENT,
+    )
+    assert (stats.succeeded, stats.retries) == (1, 1)
+    assert server.gets == 1
+
+
+def test_serverless_model_never_reads_a_deployment(tmp_path, server):
+    stats, _, _ = run(
+        tmp_path,
+        server,
+        [{"custom_id": "a", "body": {"messages": chat("fail-once-503")}}],
+    )
+    assert (stats.succeeded, stats.retries) == (1, 1)
+    assert server.gets == 0
