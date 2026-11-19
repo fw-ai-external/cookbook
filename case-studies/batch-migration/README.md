@@ -148,10 +148,17 @@ The `error.code` in a failed row is one of:
     the time left, so a row never runs much past `--max-retry-time` after its
     first attempt.
   - **Preemption:** a preemptible deployment can lose its replica mid-run.
-    Until the replica is rescheduled, requests fail with dropped connections or
-    with 503 `DEPLOYMENT_SCALING_UP` and `Retry-After: 60`. The defaults ride
-    out up to a day of that. If rescheduling takes longer, raise
-    `--max-retry-time`, or rerun the same command afterward.
+    Until the replica is rescheduled, requests fail with a 503 from the
+    deployment's load balancer (`no healthy upstream`), a 502 or 504, or a
+    dropped connection; none of them says the deployment was preempted. So when
+    `--model` names your deployment, a row's next retry after one of these
+    reads the deployment's state instead of resending, and keeps reading it
+    while the state is `PREEMPTED` (on accounts that have that state). The
+    row resends once the deployment leaves `PREEMPTED`. These retries use the
+    same backoff and limits as any other, and a row that runs out records
+    `deployment_preempted`. A deleted or failed deployment stops the run with
+    exit status 2. The defaults ride out up to a day; if rescheduling takes
+    longer, raise `--max-retry-time`, or rerun the same command afterward.
   - **Bad key or model:** a 401 (bad key), or the gateway's 404 saying the
     model or deployment isn't available, stops the whole run with exit
     status 2 instead of failing every row. Rows not yet sent are left
@@ -190,6 +197,88 @@ If the process is killed in the middle of writing a row, the rerun first
 repairs the file: it removes the incomplete last line (and sends that row
 again), so both files stay valid JSONL for strict readers. Unreadable lines
 anywhere else are reported as a warning, not removed.
+
+## Job log
+
+Pass `--job-log job.log.jsonl` and the script appends the run's events to
+that file, one JSON object per line. The last line says where the job stands;
+the lines before it say how it got there.
+
+```jsonl
+{"time": "2026-11-15T09:10:00Z", "run": 2, "event": "start", "state": "JOB_STATE_RUNNING", "model": "accounts/<ACCOUNT_ID>/models/<MODEL>#accounts/<ACCOUNT_ID>/deployments/<DEPLOYMENT_ID>", "input": "batch_input.jsonl", "output": "results.jsonl", "errors": "results.jsonl.errors.jsonl"}
+{"time": "2026-11-15T09:11:00Z", "run": 2, "event": "progress", "state": "JOB_STATE_RUNNING", "rows": {"succeeded": 412, "failed": 3, "skipped": 1200, "outstanding": 0, "retries": 57}}
+{"time": "2026-11-15T09:11:20Z", "run": 2, "event": "retry", "state": "JOB_STATE_RUNNING", "message": "Retrying after 429: {\"error\": ... rate limited ...}"}
+{"time": "2026-11-15T13:40:05Z", "run": 2, "event": "end", "state": "JOB_STATE_COMPLETED", "exit_code": 0, "error": null, "rows": {"succeeded": 8800, "failed": 0, "skipped": 1200, "outstanding": 0, "retries": 230}}
+```
+
+| `event` | When | What it adds |
+|---|---|---|
+| `start` | The run starts | The model and the input, output and errors files |
+| `progress` | Every 60 seconds | `rows`: this run's counts so far |
+| `retry` | A row is retried, at most every 30 seconds | `message`: the latest reason, such as a 429 while rate limited or `deployment_preempted` while the deployment is `PREEMPTED` |
+| `end` | The run ends | `exit_code`, `error` (why it failed or stopped, or `null`) and the final `rows` |
+
+- **`state`** is `JOB_STATE_RUNNING` until the `end` line, which sets it from
+  the exit status:
+
+  | Exit status | `state` |
+  |---|---|
+  | 0 | `JOB_STATE_COMPLETED` |
+  | 3 | `JOB_STATE_COMPLETED`; `error` says the deployment delete failed |
+  | 1 | `JOB_STATE_FAILED`: some rows have no result, and a rerun retries them |
+  | 2 | `JOB_STATE_FAILED`; `error` says why the run stopped early |
+  | 130 or 143 | `JOB_STATE_CANCELLED` |
+
+- **`rows`** counts this run. `skipped` is the rows that already had a result
+  from an earlier run, and `outstanding` is the earlier failures that this run
+  didn't resend.
+- **`run`** counts how many times the job has been started. A rerun of the
+  same command appends to the same log as the next run. Use one log per job.
+- **A last line that isn't `end` and is more than a minute old** means the
+  process died without a chance to log its end, for example when its machine
+  was lost. Rerun the same command to continue.
+
+To see where a job stands, read the last line:
+
+```bash
+tail -n 1 job.log.jsonl
+```
+
+A line cut off by a killed run is left as it is, and the next run starts on a
+new line, so skip lines that aren't valid JSON when you read the log. The
+script reports a log it can't write once, on stderr, and keeps running.
+
+## Running it as a job
+
+The script is one job run: start it, stop it, rerun it to continue. A job
+platform such as a Cloud Run job, a Kubernetes Job, or a systemd service can
+manage it like a Batch job:
+
+- **Cancel:** stop the run. The platform sends SIGTERM, and the script exits
+  at once with 143, leaving its unfinished rows unrecorded. For a Cloud Run
+  job, that's `gcloud run jobs executions cancel <EXECUTION>`.
+- **Retry a lost run:** let the platform start the same command again when a
+  run exits with a status other than 0, for example a Cloud Run job's
+  `--max-retries`. The rerun sends only the rows without a result. Exit 2
+  repeats until you fix the key or the model, so watch for it rather than
+  retrying it forever.
+- **Deadline:** set the platform's timeout, for example a Cloud Run job's
+  `--task-timeout`. Check the platform's documentation for its maximum. A run
+  that hits it gets SIGTERM, like a cancel, and is recorded as
+  `JOB_STATE_CANCELLED`.
+- **How many run at once:** that's the platform's to limit. The script's
+  `--concurrency` only limits requests within one run.
+- **Keep the files across runs:** a retry continues only if it sees the
+  earlier run's `--output`, errors file and `--job-log`. A container's own
+  disk goes away with it, so keep them on storage that outlives the run. On
+  Cloud Run, either mount a volume, or copy the files down from Cloud Storage
+  before the run and back up after it. If you copy them, also copy them up
+  every few minutes while the run goes on, since a run that's killed never
+  reaches the copy at the end. The script appends to `--output` and
+  `--job-log`, and rewrites the errors file in place on a rerun, so check how
+  your volume handles appends and file replacement before you rely on a mount.
+- **See every job:** keep each job's log under one prefix, and read the last
+  line of each.
 
 ## Tests
 
