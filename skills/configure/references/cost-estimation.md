@@ -19,14 +19,12 @@ Shape and catalog context (not rates):
 
 ## Temporary Muse Glimmer SFT promotion
 
-Source: <https://docs.fireworks.ai/fine-tuning/models> — "Muse Glimmer 30B SFT
-is free via UI and Serverless Training API until 11/30. No credit card
-required." For jobs started before `2026-12-01T00:00:00-08:00`, these training
-lines for `accounts/fireworks/models/muse-glimmer-30b` are promotional `$0`:
+Source: <https://docs.fireworks.ai/fine-tuning/models>. For jobs started
+before `2026-12-01T00:00:00-08:00`, this training line for
+`accounts/fireworks/models/muse-glimmer-30b` is promotional `$0`:
 
 | Covered | Surface |
 |---|---|
-| LoRA SFT | Managed SFT (UI, or the same managed job created through the SDK/API) |
 | LoRA SFT | Serverless Training API |
 
 It does not cover full-parameter SFT, RL, DPO, Managed RFT, Dedicated trainers, deployments,
@@ -58,9 +56,7 @@ that exception past the deadline or into a non-promotional vision estimate.
 
 | Workload | Skill action |
 |---|---|
-| Managed SFT or DPO | Resolve rendered tokens, tuning mode, and live rate; calculate |
-| Managed ORPO | Do not calculate until its billing contract is documented |
-| Promotional Muse Glimmer Managed SFT or Serverless SFT before the deadline | Return a `$0` SFT training line; price excluded work separately |
+| Promotional Muse Glimmer Serverless SFT before the deadline | Return a `$0` SFT training line; price excluded work separately |
 | Serverless LoRA SFT | Resolve trainer tokens and live rate; calculate a planning range |
 | Serverless LoRA DPO | Calculate an unpadded baseline with policy train and one-time reference prefill |
 | Dedicated SFT or DPO | Do not calculate. Point to the public cost estimator |
@@ -144,39 +140,12 @@ Priority order (same as `configure/SKILL.md` source precedence):
 Never copy rates into `SKILL.md`, this file, or the run manifest as durable
 truth — only snapshot what was used for **this** estimate.
 
-## Managed estimates
-
-Read the current rate at estimation time. Never rely on a remembered rate.
-Unless the live pricing source states otherwise, training rates are USD per
-1 million billed tokens and all cost results are USD.
-
-```text
-billable_tokens_per_run = rendered_dataset_tokens × epochs
-cost_per_run = billable_tokens_per_run / 1M × current rate
-total_cost = cost_per_run × candidate_runs
-planning_range = total_cost × [0.7, 1.3]
-```
-
-For SFT, use the final rendered dataset and account for masking, multi-turn
-unrolling, and reasoning traces. For DPO, include both chosen and rejected
-sequences according to current billing documentation. Use the published rate
-for the resolved LoRA or full-parameter mode.
-
-For `N` preference pairs, `E` epochs, average prompt tokens `P`, chosen tokens
-`C`, and rejected tokens `R`:
-
-```text
-pair_tokens = 2P + C + R
-policy_tokens = N × E × pair_tokens
-reference_tokens = N × pair_tokens
-```
-
-The managed DPO rate includes the managed method premium. Do not add a separate
-reference line to the published managed rate.
-
 ## Serverless estimates
 
-Serverless trainer work is token-priced and has no idle GPU charge.
+Serverless trainer work is token-priced and has no idle GPU charge. Read the
+current rate at estimation time; never rely on a remembered rate. Unless the
+live pricing source states otherwise, training rates are USD per
+1 million billed tokens and all cost results are USD.
 
 ```text
 trainer_tokens_per_run = tokens sent to forward or forward_backward × optimizer passes
@@ -242,7 +211,7 @@ Return **Cost result:** `Not calculated`. Send the user to
 or to <https://fireworks.ai/contact-training> if the estimator URL is not live
 yet or the page cannot cover the workload.
 
-## Ancillary lines (Managed / Serverless only)
+## Ancillary lines (Serverless only)
 
 When the approved plan includes paid eval inference, pair generation, or a
 post-training deployment, add separate line items with live inference rates.
@@ -279,7 +248,7 @@ Append under `## Approved plan` in `run.md` (see
 ```yaml
 estimated_cost:
   level: L0 | L1 | L2 | L3
-  route: managed-sft | managed-dpo | managed-orpo | serverless-sft | serverless-dpo | dedicated-sft | dedicated-dpo | vision-sft | vision-dpo | training-api-rl | embedding | igpo | distillation | managed-rft
+  route: serverless-sft | serverless-dpo | dedicated-sft | dedicated-dpo | vision-sft | vision-dpo | training-api-rl | embedding | igpo | distillation | managed-rft
   pricing_source: https://fireworks.ai/pricing
   pricing_fetched_at_utc:
   recommended_path:

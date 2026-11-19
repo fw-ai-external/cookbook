@@ -46,9 +46,6 @@ You have a model that is accurate but **does not sound right**, and it is easier
 answers is better* than to write the ideal one. That is preference tuning: brand voice, tone,
 helpfulness, less rambling. And you want to understand the mechanism, not just call an API.
 
-**If you only want to ship**, use managed DPO jobs instead: [`../dpo_style/`](https://github.com/fw-ai-external/cookbook/tree/main/training/case-studies/dpo_style) does the
-same training server-side in four SDK calls. Read that one to *use* DPO; read this one to *understand*
-it, because here every number in the log has a line of code you can point at.
 
 ## What the notebook does
 

@@ -36,13 +36,14 @@ answer to `triage_category` (`job_state`, `error_message`, `quality`,
 
 ## Path: Job state
 
-1. Identify resource family: SFT or DPO job, or Training API session. Managed RFT
-   has been removed, so no managed RFT job can be running; for questions about one,
-   see `../fireworks-training/references/managed-rft-operations.md`.
-2. Read-only `get` through the SDK (`client.supervised_fine_tuning_jobs.get`;
-   `pip install fireworks-ai` into a venv if it is missing) or
-   `firectl ... get <id> -o json` — note state, timestamps,
-   `job_progress` (percent, epoch), and `status.message`. Fetch metrics files
+1. Identify resource family: Training API session (serverless or dedicated
+   trainer). Managed SFT, DPO, ORPO, and RFT no longer accept jobs, so none can
+   be newly running; for a question about an old one, read it once and point
+   new runs at the Training API (`training/examples/tools/README.md` covers
+   migrating a managed job; RFT: `../fireworks-training/references/managed-rft-operations.md`).
+2. Read-only `get` through the SDK (`pip install fireworks-ai` into a venv if it
+   is missing) or `firectl ... get <id> -o json` — note state, timestamps,
+   step progress, and `status.message`. Fetch metrics files
    as in `../../fireworks-training/references/execution-notes.md`.
 3. Compare state vs progress (state alone lies — see error-reference). Then
    say which class the evidence points to, and why: **platform or capacity**
@@ -51,14 +52,12 @@ answer to `triage_category` (`job_state`, `error_message`, `quality`,
    quota, or parameter). If the record cannot tell them apart, say so and
    name the one read that would. `UNKNOWN / NOT PROVIDED` means the field was
    not observed; never restate it as "no error", "no message", or another
-   confirmed absence. A `PENDING` Managed SFT or DPO job whose status starts
-   "Waiting for a serverless training slot" is queued behind the account's
-   concurrent-run quota. Open Serverless Training API sessions use the same
-   quota, do not appear in job lists, and hold their slot until the session
-   expires or its owner calls `service.delete_training_session()`, so check
-   the user's own recent sessions before suspecting anyone
-   else. List jobs with a `filter` on the base model rather than paging the
-   whole account.
+   confirmed absence. A Serverless Training API create that fails with 429
+   "maximum concurrent serverless training runs" is blocked by the account's
+   per-base-model concurrent-run quota. Open sessions do not appear in job
+   lists and hold their slot until the session expires or its owner calls
+   `service.delete_training_session()`, so check the user's own recent
+   sessions before suspecting anyone else.
 4. If no progress past the approved timeout → report the numeric evidence,
    what remains unknown, and the smallest next read. Do not replace without
    cancel + user approval. Give the full escalation bundle only when the stall

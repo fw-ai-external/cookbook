@@ -39,9 +39,6 @@ class CostEstimationContractTest(unittest.TestCase):
         self.assertEqual(
             routes,
             {
-                "managed-sft": "calculate",
-                "managed-dpo": "calculate",
-                "managed-orpo": "not-calculated",
                 "serverless-sft": "calculate",
                 "serverless-dpo": "calculate-unpadded-baseline",
                 "dedicated-sft": "not-calculated",
@@ -59,19 +56,15 @@ class CostEstimationContractTest(unittest.TestCase):
         self.assertIn("reference through a\nsampling client", REFERENCE)
         self.assertIn("Managed RFT | Excluded", REFERENCE)
         self.assertIn("Dedicated SFT or DPO | Do not calculate", REFERENCE)
-        self.assertIn("Managed ORPO | Do not calculate", REFERENCE)
+        self.assertNotIn("Managed SFT", REFERENCE)
+        self.assertNotIn("Managed ORPO", REFERENCE)
         self.assertIn("Embedding, IGPO, or distillation", REFERENCE)
         self.assertIn("Vision SFT or DPO | Do not calculate", REFERENCE)
 
     def test_formulas_include_run_multipliers_and_serverless_reference_cost(
         self,
     ) -> None:
-        self.assertIn(
-            "billable_tokens_per_run = rendered_dataset_tokens × epochs", REFERENCE
-        )
         self.assertIn("rates are USD per\n1 million billed tokens", REFERENCE)
-        self.assertIn("total_cost = cost_per_run × candidate_runs", REFERENCE)
-        self.assertIn("planning_range = total_cost × [0.7, 1.3]", REFERENCE)
         self.assertIn(
             "trainer_tokens_per_run = tokens sent to forward or forward_backward × optimizer passes",
             REFERENCE,
@@ -117,7 +110,6 @@ class CostEstimationContractTest(unittest.TestCase):
             "accounts/fireworks/models/muse-glimmer-30b",
             "2026-12-01T00:00:00-08:00",
             "https://docs.fireworks.ai/fine-tuning/models",
-            "| LoRA SFT | Managed SFT",
             "| LoRA SFT | Serverless Training API |",
             "It does not cover full-parameter SFT, RL, DPO, Managed RFT,",
             "$0` for the SFT training line",
@@ -128,7 +120,7 @@ class CostEstimationContractTest(unittest.TestCase):
             self.assertIn(marker, REFERENCE)
         self.assertNotIn("| RL | Serverless Training API |", REFERENCE)
         self.assertIn("RL is not covered", " ".join(SKILL.split()))
-        self.assertIn("(Managed SFT, Serverless Training API SFT)", " ".join(SKILL.split()))
+        self.assertIn("(Serverless Training API SFT)", " ".join(SKILL.split()))
         self.assertIn("Price excluded operations separately", " ".join(SKILL.split()))
         self.assertIn("Promotional / Planning range", OUTPUT_TEMPLATE)
         self.assertIn("| Cost result | $0 /", OUTPUT_TEMPLATE)
@@ -144,7 +136,7 @@ class CostEstimationContractTest(unittest.TestCase):
         self.assertIn("baseline", SKILL.lower())
         self.assertIn("all-uncached reference", SKILL.lower())
         self.assertIn("Do not calculate Dedicated SFT or DPO", SKILL)
-        self.assertIn("Do not calculate Managed ORPO", SKILL)
+        self.assertIn("Managed SFT, DPO, and ORPO no longer accept jobs", SKILL)
         self.assertIn("RL, embedding, IGPO, and distillation", SKILL)
         self.assertIn("Do not calculate vision SFT, DPO, or RL", SKILL)
         self.assertIn("does not replace the mandatory final-plan", SKILL)
@@ -164,35 +156,6 @@ class CostEstimationContractTest(unittest.TestCase):
 
     def test_shared_cost_vectors(self) -> None:
         vectors = {vector["name"]: vector for vector in VECTORS}
-
-        sft = vectors["managed-sft"]
-        sft_tokens = (
-            sft["items"]
-            * sft["epochs"]
-            * (sft["prompt_tokens"] + sft["response_tokens"])
-        )
-        sft_center = sft_tokens / 1_000_000 * sft["rate_per_million"]
-        self.assertEqual(sft_tokens, sft["expected_tokens"])
-        self.assertEqual(sft_center, sft["expected_center"])
-        self.assertEqual(sft_center * 0.7, sft["expected_low"])
-        self.assertEqual(sft_center * 1.3, sft["expected_high"])
-
-        managed_dpo = vectors["managed-dpo"]
-        managed_pair_tokens = (
-            2 * managed_dpo["prompt_tokens"]
-            + managed_dpo["chosen_tokens"]
-            + managed_dpo["rejected_tokens"]
-        )
-        managed_dpo_tokens = (
-            managed_dpo["items"] * managed_dpo["epochs"] * managed_pair_tokens
-        )
-        managed_dpo_center = (
-            managed_dpo_tokens / 1_000_000 * managed_dpo["rate_per_million"]
-        )
-        self.assertEqual(managed_dpo_tokens, managed_dpo["expected_tokens"])
-        self.assertEqual(managed_dpo_center, managed_dpo["expected_center"])
-        self.assertAlmostEqual(managed_dpo_center * 0.7, managed_dpo["expected_low"])
-        self.assertAlmostEqual(managed_dpo_center * 1.3, managed_dpo["expected_high"])
 
         serverless_sft = vectors["serverless-sft"]
         serverless_sft_tokens = (

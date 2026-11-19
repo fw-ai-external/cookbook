@@ -33,7 +33,7 @@ Do you have labeled ground-truth outputs?
 |--------|-------------|----------|
 | **SFT** | Labeled `messages` (the ideal output) | Classification, extraction, style/format, tool-call shaping. The default. |
 | **DPO** | preferred vs non-preferred responses | Aligning tone/quality when you can rank two answers but can't write the one true answer. |
-| **ORPO** | preferred vs non-preferred responses (same shape as DPO) | Same signal as DPO but **no reference model**. Use managed `dpo-job --loss-method ORPO` for standard runs; custom Training API work starts from the pinned `training/recipes/orpo_loop.py`. |
+| **ORPO** | preferred vs non-preferred responses (same shape as DPO) | Same signal as DPO but **no reference model**. Run it on the Training API, starting from the pinned `training/recipes/orpo_loop.py`. |
 | **RFT** | Prompts + an evaluator/reward (0.0–1.0) | Verifiable tasks (math, code, agents) with few labels. |
 
 ## SFT format
@@ -123,14 +123,14 @@ Every objective other than GRPO, and GRPO with a reference KL penalty, is a fork
 
 - **Default to SFT.** DPO only with preference pairs; RFT only with a reward/verifiable task.
 - **Validate dataset format before uploading** — JSONL, one object/line, right schema, roles in order. Min 3, max 3M.
-- **Datasets may be a single JSONL file or a directory of `.jsonl` shards.** The managed SFT/DPO/ORPO recipes load a staged shard directory in sorted shard order (never concatenated); an empty directory or one with no `.jsonl` shards fails before training starts.
+- **Datasets may be a single JSONL file or a directory of `.jsonl` shards.** The SFT/DPO/ORPO recipes load a staged shard directory in sorted shard order (never concatenated); an empty directory or one with no `.jsonl` shards fails before training starts.
 - **DPO is one-turn only.**
 - **Start LoRA + defaults** (rank 8, 1 epoch, LR ~1e-4); change one thing at a time, watch the curves.
 - **Iterate cheap first** — validate evaluator/data on a small model before scaling.
 
 ## Validate before uploading (run this first)
 
-Catch format errors locally before uploading (`client.datasets.create` and `upload`, or `firectl dataset create` when the user runs it). A malformed row otherwise surfaces as a late, often masked, failure. Set `method`, run this on your JSONL file or shard directory, and fix any rejection before uploading:
+Catch format errors locally before training. A malformed row otherwise surfaces as a late, often masked, failure. Set `method`, run this on your JSONL file or shard directory, and fix any rejection before training:
 
 ```python
 import json, os, sys

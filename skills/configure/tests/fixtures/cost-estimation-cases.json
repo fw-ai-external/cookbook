@@ -1,17 +1,5 @@
 [
   {
-    "name": "managed-sft",
-    "expected_action": "calculate"
-  },
-  {
-    "name": "managed-dpo",
-    "expected_action": "calculate"
-  },
-  {
-    "name": "managed-orpo",
-    "expected_action": "not-calculated"
-  },
-  {
     "name": "serverless-sft",
     "expected_action": "calculate"
   },

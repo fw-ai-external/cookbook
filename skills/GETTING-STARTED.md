@@ -74,7 +74,7 @@ and monitors the job. Built-in starters (see
 | Code-first SFT with a base-vs-tuned comparison | your own chat JSONL or a public Hugging Face example | Serverless Training API |
 
 Muse Glimmer 30B LoRA SFT is free for jobs started before `2026-12-01T00:00:00-08:00`
-(Nov 30) on Managed SFT (UI or API) and on the Serverless Training API
+(Nov 30) on the Serverless Training API
 ([source](https://docs.fireworks.ai/fine-tuning/models)). RL, DPO,
 deployments, inference, and Dedicated trainers are not covered. After the
 deadline the agent resolves live pricing instead.
@@ -114,7 +114,7 @@ cost before asking for approval, then runs the job itself.
 1. Start a new chat with the first example above.
 2. Confirm the first reply offers concrete starters and asks one question.
 3. Pick the prompt-router starter.
-4. Confirm the next reply is a complete plan (Managed SFT, `$0` training line)
+4. Confirm the next reply is a complete plan (Serverless Training API, `$0` training line)
    and that nothing has been created.
 5. Do not approve the plan.
 

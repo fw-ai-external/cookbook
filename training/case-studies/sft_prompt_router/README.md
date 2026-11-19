@@ -4,9 +4,9 @@ Fine-tune a small model to be a **prompt router** — a multi-field text classif
 get comfortable with the whole SFT loop before tackling the fancier techniques. This case study
 ships the **same task two ways** so you can compare the workflows side by side:
 
-- [`prompt_router_dedicated.ipynb`](prompt_router_dedicated.ipynb) — **dedicated** path: a managed
-  `supervised_fine_tuning_jobs` LoRA job + an on-demand deployment, all through the Fireworks
-  **Python SDK** (`fireworks-ai`).
+- [`prompt_router_dedicated.ipynb`](prompt_router_dedicated.ipynb) — **no longer runs**: it
+  submits a managed `supervised_fine_tuning_jobs` LoRA job, and Managed SFT no longer accepts jobs
+  ([migration guide](https://docs.fireworks.ai/fine-tuning/training-api/migrate-from-managed)). Use the serverless notebook below.
   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai-external/cookbook/blob/main/training/case-studies/sft_prompt_router/prompt_router_dedicated.ipynb)
 - [`prompt_router_serverless.ipynb`](prompt_router_serverless.ipynb) — **serverless** path: a
   Tinker-style loop against a shared pooled trainer via the training SDK

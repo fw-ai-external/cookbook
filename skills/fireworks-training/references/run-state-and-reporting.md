@@ -29,7 +29,7 @@ skill_client_source: fireworks-training-skill/2.3.0
 task:
 success_metric:
 method: sft | dpo | orpo | rft | igpo | distillation | embedding
-workflow_path: managed_firectl | managed_sdk | serverless | dedicated
+workflow_path: serverless | dedicated
 
 ## Inputs
 account:
@@ -138,9 +138,9 @@ When asked to resume:
 
    | Resource | SDK (`client = Fireworks()`) | `firectl` |
    |---|---|---|
-   | Dataset | `client.datasets.get(<DATASET_ID>)` | `firectl dataset get <DATASET_ID> -o json` |
-   | SFT | `client.supervised_fine_tuning_jobs.get(<JOB_ID>)` | `firectl sftj get <JOB_ID> -o json` |
-   | DPO / ORPO | `client.dpo_jobs.get(<JOB_ID>)` | `firectl dpo-job get <JOB_ID> -o json` |
+   | Archived dataset (read only) | `client.datasets.get(<DATASET_ID>)` | `firectl dataset get <DATASET_ID> -o json` |
+   | Managed SFT (no new jobs, read only) | `client.supervised_fine_tuning_jobs.get(<JOB_ID>)` | `firectl sftj get <JOB_ID> -o json` |
+   | Managed DPO / ORPO (no new jobs, read only) | `client.dpo_jobs.get(<JOB_ID>)` | `firectl dpo-job get <JOB_ID> -o json` |
    | Managed RFT (removed, read only) | — | `firectl rftj get <JOB_ID> -o json` |
    | Dedicated trainer checkpoints | `FireworksClient(api_key).list_checkpoints(<TRAINER_JOB_ID>)` | `firectl rlor-trainer-job list-checkpoints <TRAINER_JOB_ID>` |
    | Dedicated trainer job | — | `firectl rlor-trainer-job get <TRAINER_JOB_ID> -o json` |
@@ -159,9 +159,8 @@ approval before reconnecting or creating paid resources.
 
 Never replay dataset, evaluator, job, model, or deployment creation merely because the previous chat ended. Every create must use the stable ID recorded before execution:
 
-- dataset: `dataset_id` (the positional name in `firectl`);
 - evaluator: planned display name plus the reviewed source SHA-256 when the current evaluator API supports naming;
-- managed job: `supervised_fine_tuning_job_id` (or the DPO/RFT equivalent; `--job-id` in `firectl`);
+- trainer job: the recipe's `TrainerConfig` job ID;
 - output model: `output_model` (`--output-model`);
 - deployment: `deployment_id` (`--deployment-id`).
 
@@ -169,7 +168,7 @@ If the manifest says creation was attempted but has no returned resource, call t
 
 ### Resume a Training API dedicated run
 
-Training API dedicated recipes may provision several resources rather than one managed job. Before launch, record the recipe path, cookbook commit, full config, local working directory, planned output-model ID, and deployment IDs. Immediately after provisioning, persist every returned RLOR trainer job and rollout deployment ID.
+Training API dedicated recipes may provision several resources rather than one session. Before launch, record the recipe path, cookbook commit, full config, local working directory, planned output-model ID, and deployment IDs. Immediately after provisioning, persist every returned RLOR trainer job and rollout deployment ID.
 
 On resume:
 
