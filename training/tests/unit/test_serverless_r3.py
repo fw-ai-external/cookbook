@@ -28,6 +28,7 @@ def sampling_client(model: str = "snapshot", **routing: object) -> SimpleNamespa
     return SimpleNamespace(
         deployment_sampler=SimpleNamespace(
             model=model, base_url="https://example.invalid", tokenizer=None,
+            drain_metrics=list,
             **routing,
         ),
         close=lambda: None,
