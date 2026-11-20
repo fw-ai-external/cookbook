@@ -339,6 +339,33 @@ To initialize a new recipe run from another DCP checkpoint:
   trainers, and `<other-session>:<checkpoint>` is rejected rather than silently
   redirected to the current run.
 
+### Serverless: every resume starts a new run
+
+Each serverless training client gets a new `run-<32 lowercase hex>` ID,
+including the one a resume creates. Checkpoints saved after a resume live under
+that new run, even when their names continue the old step count:
+
+```text
+<account>/run-aaaa…/step-6    # saved by the first run
+<account>/run-bbbb…/step-66   # saved after resuming from run-aaaa…/step-6
+<account>/run-aaaa…/step-66   # never existed
+```
+
+- Persist the exact path that `save_state()` returns, together with its
+  `dataloader.json` cursor, and resume from that path. Never build a reference
+  from a remembered run ID and a step number: after the first resume, the
+  remembered run ID is stale.
+- For a full continuation, load it with `load_state_with_optimizer(path)` or
+  `create_training_client_from_state_with_optimizer(path)`. The plain
+  `load_state` and `create_training_client_from_state` restore weights only.
+- If the path was lost, list the checkpoints of the session that saved it with
+  `FireworksClient.list_training_session_checkpoints(...)` to find the newest
+  DCP save. Do not guess the run ID; if the saving run is still unclear, ask
+  support with the session IDs instead of retrying.
+- "Checkpoint does not exist" for a `<account>/run-…/<name>` reference usually
+  means the name was saved under a later run. Retrying the same reference
+  cannot succeed; fix the reference.
+
 Cross-job DCP initialization restores weights and optimizer state but resets
 the recipe step and cursor. Serverless cross-run continuation also restores
 matching committed client state from the same `log_path`. A versioned manifest
