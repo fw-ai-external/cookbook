@@ -38,7 +38,8 @@ data-based renderer decision needs an explicit `renderer_name`; renaming the
 directory does not select a model family. Copying a familiar catalog basename
 into another namespace does not establish the same identity.
 
-An independently selected Qwen, MiniMax, Gemma or Nemotron base-model context
+An independently selected Qwen, MiniMax, Gemma, Nemotron, Muse Glimmer,
+Muse Spark open or Beam base-model context
 keeps tokenizer loading on installed code even with a tokenizer override or
 remote-code opt-in. The SDK, recipe loader and renderer preserve this restriction;
 a reviewed exact model ID or declared model type only restricts execution and does not certify arbitrary
@@ -50,6 +51,10 @@ Opaque local directories use their exact `minimax_m2` config model type, not
 their basename. Saving this installed generic reader omits stale checkpoint
 `auto_map` pointers; token IDs and special-token behavior remain unchanged.
 Other variants and multimodal processors require their own verification.
+Muse/Beam use their installed generic tokenizer reader; this policy does not
+change renderer identity, chat templates, model weights or processor support.
+An unavailable tokenizer artifact remains unavailable; never enable checkpoint
+Python to work around download or authentication errors.
 
 ## "Reference loop" means these files
 

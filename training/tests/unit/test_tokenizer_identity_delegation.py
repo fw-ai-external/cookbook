@@ -75,6 +75,7 @@ def test_missing_module_guard(monkeypatch: pytest.MonkeyPatch, missing_name: str
         "deepseek-v4-v41+kimi-k3-k31-tokenizer-identity/standard-context-v4",
         "deepseek-v4-v41+kimi-k3-k31-tokenizer-identity/exact-standard-context-v6",
         "deepseek-v4-v41+kimi-k3-k31-tokenizer-identity/exact-standard-context-v7",
+        "deepseek-v4-v41+kimi-k3-k31+glm5-tokenizer-identity/exact-standard-context-v8",
         "deepseek-v4-v41+kimi-k3-k31+glm5-tokenizer-identity/code-free-v4",
         identity._POLICY_CAPABILITY,
     ],

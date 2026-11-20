@@ -21,13 +21,33 @@ CONTEXTS = [
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
     "nvidia/Llama-3.1-Nemotron-70B-Instruct",
     "accounts/fireworks/models/llama-v3p1-nemotron-70b-instruct",
+    "meta-models/Muse-Glimmer-30B",
+    "accounts/fireworks/models/muse-glimmer-30b",
+    "meta-models/Muse-Spark-1.2-816B-A42B-NVFP4-open",
+    "accounts/fireworks/models/muse-spark-open-nvfp4",
+    "reflection/Beam-1.0-501B-A23B",
+    "reflection/Beam-1.0-501B-A23B-NVFP4",
+    "accounts/fireworks/models/beam-1p0-501b-a23b-nvfp4",
 ]
 
 
 @pytest.mark.parametrize("backend", ["sdk", "snapshot"])
 @pytest.mark.parametrize(
     "renderer_name",
-    ["qwen3_5_disable_thinking", "qwen3_6_preserved", "qwen3_8_interleaved", "gemma4_thinking", "nemotron35_vl"],
+    [
+        "qwen3_5_disable_thinking",
+        "qwen3_6_preserved",
+        "qwen3_8_interleaved",
+        "gemma4_thinking",
+        "nemotron35_vl",
+        "muse_glimmer",
+        "muse_spark",
+        "muse_spark_low",
+        "muse_spark_medium",
+        "muse_spark_high",
+        "muse_spark_xhigh",
+        "beam",
+    ],
 )
 def test_explicit_renderer_variants_keep_opaque_tokenizer_code_free(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str, renderer_name: str
