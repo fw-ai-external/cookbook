@@ -255,7 +255,7 @@ cfg = Config(
 )
 ```
 
-Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh. The adapter must be a promoted PEFT Model resource name (`accounts/<account>/models/<name>`).
+Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh. The adapter must be a promoted PEFT Model resource name (`accounts/<account>/models/<name>`). Raw local directories and `gs://` paths are rejected because they bypass the Model-resource ownership check.
 
 Priority inside `TrainingCheckpoints.resume` (highest first):
 
