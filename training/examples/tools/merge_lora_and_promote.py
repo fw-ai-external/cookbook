@@ -38,7 +38,7 @@ service-mode ``warmStartFrom`` of a LoRA addon for the same reason.
 
 Pass a promoted PEFT Model resource name to ``--adapter-model``
 (``accounts/<account>/models/<name>``). ``load_adapter`` accepts that name
-directly.
+directly. Raw local and ``gs://`` adapter paths are rejected.
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -100,6 +100,16 @@ class MergeConfig:
     promote_poll_timeout_s: float
 
 
+def _adapter_model_resource(value: str) -> str:
+    normalized_value = value.strip()
+    parts = normalized_value.split("/")
+    if len(parts) != 4 or parts[0] != "accounts" or not parts[1] or parts[2] != "models" or not parts[3]:
+        raise argparse.ArgumentTypeError(
+            "adapter must be a Fireworks PEFT model resource: accounts/<account>/models/<model>"
+        )
+    return normalized_value
+
+
 def parse_args() -> MergeConfig:
     parser = argparse.ArgumentParser(
         description="Merge a LoRA adapter into its base and promote a merged HF base model.",
@@ -116,6 +126,7 @@ def parse_args() -> MergeConfig:
         required=True,
         help="Promoted PEFT Model resource name "
         "(accounts/<account>/models/<name>). Passed to load_adapter().",
+        type=_adapter_model_resource,
     )
     parser.add_argument(
         "--lora-rank",
