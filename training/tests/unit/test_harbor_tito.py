@@ -802,6 +802,10 @@ def test_isolated_sidecar_routes_private_inputs_and_control_off_main(tmp_path) -
         f"chmod 711 {sidecar_runtime.SIDECAR_LOG_ROOT}" in value
         for kind, value in calls if kind == "sidecar_exec"
     )
+    assert any(
+        "umask 077" in value and "tito.sidecar supervise" in value
+        for kind, value in calls if kind == "sidecar_exec"
+    )
     assert sidecar_runtime.SIDECAR_CONTEXT_OVERFLOW_PATH.startswith(
         sidecar_runtime.SIDECAR_LOG_ROOT + "/"
     )

@@ -578,7 +578,7 @@ async def install_sidecar(
         started = await _sidecar_exec(
             environment,
             command=(
-                "set -eu; "
+                "set -eu; umask 077; "
                 f"mkdir -p {SIDECAR_ROOT} {SIDECAR_LOG_ROOT} && "
                 f"chmod 700 {SIDECAR_ROOT}; chmod {log_dir_mode} {SIDECAR_LOG_ROOT}; "
                 f"chmod 600 {SIDECAR_SPEC_PATH}; "
