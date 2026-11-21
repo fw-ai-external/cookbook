@@ -151,6 +151,8 @@ _KIMI_K31_TOKENIZER_REVISION = "d9e99b0792a5e93b78ea9bea62a68167e36ddd9e"
 _KIMI_K31_UNSUPPORTED_SCENARIOS = frozenset({"developer_first", "developer_midconversation"})
 _MUSE_GLIMMER_TOKENIZER = "meta-models/Muse-Glimmer-30B"
 _MUSE_GLIMMER_REVISION = "a4e59da52a7bc87ae7251dd5545c0dd437c44b68"
+_NEMOTRON35_TOKENIZER = "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16"
+_NEMOTRON35_REVISION = "fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe"
 _QWEN38_UNSUPPORTED_SCENARIOS = frozenset(
     {
         "consecutive_system",
@@ -162,6 +164,23 @@ _QWEN38_UNSUPPORTED_SCENARIOS = frozenset(
 
 
 RENDERER_MATRIX: list[RendererCase] = [
+    *(
+        RendererCase(
+            renderer=name,
+            tokenizer_model=_NEMOTRON35_TOKENIZER,
+            tokenizer_revision=_NEMOTRON35_REVISION,
+            tokenizer_trust_remote_code=False,
+            local_fixture_env="NEMOTRON35_TOKENIZER_PATH",
+            hf_kwargs={"enable_thinking": thinking},
+            supports_thinking=thinking,
+            supports_tools=True,
+            has_extension_property=False,
+            # The checkpoint suite exercises SFT parity with the native reference inputs.
+            supervised_hf_parity=False,
+            observation_equals_generation=not thinking,
+        )
+        for name, thinking in (("nemotron35_vl", True), ("nemotron35_vl_disable_thinking", False))
+    ),
     RendererCase(
         renderer="beam",
         tokenizer_model="reflection/Beam-1.0-501B-A23B-NVFP4",
@@ -663,6 +682,8 @@ RENDERER_MATRIX: list[RendererCase] = [
 #   * deepseek_v4   — preview tokenizer ships no chat_template to diff against.
 REQUIRED_RENDERERS: frozenset[str] = frozenset(
     {
+        "nemotron35_vl",
+        "nemotron35_vl_disable_thinking",
         "inkling2",
         "inkling2_disable_thinking",
         "glm5_interleaved",
@@ -739,8 +760,6 @@ UNMATRIXED_RENDERERS: frozenset[str] = frozenset(
         "muse_spark_medium",
         "muse_spark_xhigh",
         # Nemotron
-        "nemotron35_vl",
-        "nemotron35_vl_disable_thinking",
         "nemotron3_disable_thinking",
         "nemotron3_interleaved",
         "nemotron3_low_thinking",
