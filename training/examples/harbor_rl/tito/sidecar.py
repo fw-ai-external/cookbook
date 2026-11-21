@@ -570,13 +570,17 @@ async def install_sidecar(
     finally:
         spec_path.unlink(missing_ok=True)
 
+    # The task service must be able to stat the shared context marker, even
+    # when its Dockerfile USER differs from the isolated sidecar's root user.
+    # Keep directory listing and file contents private to the sidecar.
+    log_dir_mode = "711" if getattr(environment, "sidecar_shared_log_dir", False) else "700"
     with phase_span("sidecar_start", category="trial_setup"):
         started = await _sidecar_exec(
             environment,
             command=(
                 "set -eu; "
                 f"mkdir -p {SIDECAR_ROOT} {SIDECAR_LOG_ROOT} && "
-                f"chmod 700 {SIDECAR_ROOT} {SIDECAR_LOG_ROOT}; "
+                f"chmod 700 {SIDECAR_ROOT}; chmod {log_dir_mode} {SIDECAR_LOG_ROOT}; "
                 f"chmod 600 {SIDECAR_SPEC_PATH}; "
                 f"rm -rf {SIDECAR_BUNDLE_ROOT}; mkdir -p {SIDECAR_BUNDLE_ROOT}; "
                 f"{SIDECAR_PYTHON} -m zipfile -e {SIDECAR_BUNDLE_ARCHIVE} {SIDECAR_BUNDLE_ROOT}; "

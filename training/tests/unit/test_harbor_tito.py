@@ -733,12 +733,18 @@ def test_install_sidecar_uploads_bundle_and_returns_private_endpoint(tmp_path) -
     assert exec_calls
     assert all(cwd == "/" for _command, cwd in exec_calls)
     assert all("inference-key" not in command for command, _cwd in exec_calls)
+    assert any(
+        f"chmod 700 {sidecar_runtime.SIDECAR_LOG_ROOT}" in command
+        for command, _cwd in exec_calls
+    )
 
 
 def test_isolated_sidecar_routes_private_inputs_and_control_off_main(tmp_path) -> None:
     calls: list[tuple[str, Any]] = []
 
     class Environment:
+        sidecar_shared_log_dir = True
+
         async def upload_file(self, source, target):
             raise AssertionError(f"main upload used for {target}")
 
@@ -792,6 +798,10 @@ def test_isolated_sidecar_routes_private_inputs_and_control_off_main(tmp_path) -
         sidecar_runtime.SIDECAR_TERMINAL_STAGING_PATH,
     }
     assert sum(kind == "main_exec" for kind, _ in calls) == 1
+    assert any(
+        f"chmod 711 {sidecar_runtime.SIDECAR_LOG_ROOT}" in value
+        for kind, value in calls if kind == "sidecar_exec"
+    )
     assert sidecar_runtime.SIDECAR_CONTEXT_OVERFLOW_PATH.startswith(
         sidecar_runtime.SIDECAR_LOG_ROOT + "/"
     )
