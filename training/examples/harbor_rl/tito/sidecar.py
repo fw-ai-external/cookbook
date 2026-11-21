@@ -7,14 +7,21 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
+import subprocess
+import sys
 import tempfile
 import zipfile
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Mapping, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlsplit
+from urllib.request import ProxyHandler, Request, build_opener
 
 if TYPE_CHECKING:
     from training.utils.rl.rollout.setup import RolloutSetup
@@ -30,6 +37,7 @@ SIDECAR_TERMINAL_PATH = f"{SIDECAR_ROOT}/terminal.json"
 SIDECAR_TERMINAL_STAGING_PATH = f"{SIDECAR_TERMINAL_PATH}.uploading"
 SIDECAR_CONTEXT_OVERFLOW_PATH = f"{SIDECAR_ROOT}/context-budget-exhausted.json"
 SIDECAR_PID_PATH = f"{SIDECAR_ROOT}/sidecar.pid"
+SIDECAR_SUPERVISOR_PID_PATH = f"{SIDECAR_ROOT}/supervisor.pid"
 SIDECAR_LOG_ROOT = "/logs/tito"
 SIDECAR_ARTIFACT_PATH = f"{SIDECAR_LOG_ROOT}/trajectory.tito"
 SIDECAR_ARTIFACT_MANIFEST_PATH = f"{SIDECAR_LOG_ROOT}/trajectory.json"
@@ -38,6 +46,9 @@ SIDECAR_FAILURE_ROOT = f"{SIDECAR_LOG_ROOT}/failures"
 SIDECAR_COMPLETE_PATH = f"{SIDECAR_LOG_ROOT}/COMPLETE"
 SIDECAR_STDOUT_PATH = f"{SIDECAR_LOG_ROOT}/sidecar.stdout"
 SIDECAR_STDERR_PATH = f"{SIDECAR_LOG_ROOT}/sidecar.stderr"
+SIDECAR_EXIT_PATH = f"{SIDECAR_LOG_ROOT}/sidecar-exit.json"
+SIDECAR_EXIT_DETAIL_PATH = f"{SIDECAR_LOG_ROOT}/sidecar-exit-detail.json"
+SIDECAR_DIAGNOSTIC_PATH = f"{SIDECAR_LOG_ROOT}/diagnostic.json"
 
 _BUNDLE_VERSION = 7
 # E2B can exhibit multi-minute startup outliers while the sidecar process is
@@ -50,6 +61,14 @@ _SIDECAR_READY_TIMEOUT_SECONDS = 600
 # origin window required by the sidecar transport contract; a 120-second bound
 # killed a valid 500k-context artifact while it was being serialized.
 _SIDECAR_ARTIFACT_FINALIZATION_TIMEOUT_SECONDS = 900
+# One short sandbox exec per 30 seconds, rather than another high-rate E2B
+# command stream beside the harness. A captured exit record is decisive at the
+# next poll; endpoint-only loss must persist across three independent probes.
+_SIDECAR_MONITOR_POLL_SECONDS = 30
+_SIDECAR_PROBE_EXEC_TIMEOUT_SECONDS = 10
+_SIDECAR_QUIESCE_TIMEOUT_SECONDS = 10
+_SIDECAR_DEAD_PROBES = 2
+_SIDECAR_UNAVAILABLE_PROBES = 3
 _DEBUG_MAX_LOCAL_BYTES = 2 * 1024**3
 _DEBUG_MIN_FREE_BYTES = 512 * 1024**2
 _IGNORED_NAMES = frozenset({"__pycache__", ".pytest_cache", ".ruff_cache", "tests"})
@@ -76,6 +95,10 @@ _COOKBOOK_RUNTIME_FILES = (
     "examples/harbor_rl/tito/sidecar.py",
 )
 _CALL_CLASSIFIER_MODES = frozenset({"all_policy", "tools_present", "adapter_metadata"})
+
+
+class TITOSidecarInfrastructureError(RuntimeError):
+    """A local sidecar failure proven by its process or loopback endpoint."""
 
 
 @dataclass(frozen=True)
@@ -532,14 +555,20 @@ async def install_sidecar(
                 f"chmod 600 {SIDECAR_SPEC_PATH}; "
                 f"rm -rf {SIDECAR_BUNDLE_ROOT}; mkdir -p {SIDECAR_BUNDLE_ROOT}; "
                 f"{SIDECAR_PYTHON} -m zipfile -e {SIDECAR_BUNDLE_ARCHIVE} {SIDECAR_BUNDLE_ROOT}; "
+                f"rm -f {SIDECAR_ENDPOINT_PATH} {SIDECAR_PID_PATH} "
+                f"{SIDECAR_SUPERVISOR_PID_PATH} {SIDECAR_EXIT_PATH} "
+                f"{SIDECAR_EXIT_DETAIL_PATH} "
+                f"{SIDECAR_DIAGNOSTIC_PATH} {SIDECAR_TERMINAL_PATH} "
+                f"{SIDECAR_COMPLETE_PATH}; "
                 f"PYTHONPATH={SIDECAR_BUNDLE_ROOT}/python-sdk:"
                 f"{SIDECAR_BUNDLE_ROOT}/cookbook:"
                 f"{SIDECAR_PLUGINS_ROOT} "
-                f"nohup {SIDECAR_PYTHON} -m training.examples.harbor_rl.tito.sidecar serve "
+                f"nohup {SIDECAR_PYTHON} -m training.examples.harbor_rl.tito.sidecar supervise "
                 f"--spec {SIDECAR_SPEC_PATH} "
                 f">{SIDECAR_LOG_ROOT}/sidecar.stdout 2>"
                 f"{SIDECAR_LOG_ROOT}/sidecar.stderr </dev/null & "
-                f"sidecar_pid=$!; printf '%s\n' \"$sidecar_pid\" > {SIDECAR_PID_PATH}"
+                f"supervisor_pid=$!; printf '%s\n' \"$supervisor_pid\" > "
+                f"{SIDECAR_SUPERVISOR_PID_PATH}"
             ),
             cwd="/",
         )
@@ -551,11 +580,13 @@ async def install_sidecar(
         while True:
             result = await environment.exec(
                 command=(
-                    f"if test -s {SIDECAR_ENDPOINT_PATH}; then "
+                    f"if test -s {SIDECAR_EXIT_PATH}; then "
+                    f"printf 'sidecar exited; see {SIDECAR_EXIT_PATH}'; exit 3; "
+                    f"elif test -s {SIDECAR_ENDPOINT_PATH}; then "
                     f"cat {SIDECAR_ENDPOINT_PATH}; "
-                    f"elif test -s {SIDECAR_PID_PATH} && "
-                    f'kill -0 "$(cat {SIDECAR_PID_PATH})" 2>/dev/null; then exit 2; '
-                    f"else tail -c 8192 {SIDECAR_LOG_ROOT}/sidecar.stderr 2>/dev/null; exit 3; fi"
+                    f"elif test -s {SIDECAR_SUPERVISOR_PID_PATH} && "
+                    f'kill -0 "$(cat {SIDECAR_SUPERVISOR_PID_PATH})" 2>/dev/null; '
+                    f"then exit 2; else printf 'sidecar supervisor exited'; exit 3; fi"
                 ),
                 cwd="/",
             )
@@ -694,9 +725,11 @@ async def terminalize_sidecar(
         result = await environment.exec(
             command=(
                 f"if test -s {SIDECAR_COMPLETE_PATH}; then exit 0; "
+                f"elif test -s {SIDECAR_EXIT_PATH}; then "
+                f"printf 'sidecar exited; see {SIDECAR_EXIT_PATH}'; exit 3; "
                 f"elif test -s {SIDECAR_PID_PATH} && "
                 f'kill -0 "$(cat {SIDECAR_PID_PATH})" 2>/dev/null; then exit 2; '
-                f"else tail -c 8192 {SIDECAR_LOG_ROOT}/sidecar.stderr 2>/dev/null; exit 3; fi"
+                f"else printf 'sidecar process exited'; exit 3; fi"
             ),
             cwd="/",
         )
@@ -750,6 +783,284 @@ def _atomic_write(path: Path, payload: bytes, mode: int = 0o600) -> None:
     temporary.replace(path)
 
 
+def _safe_diagnostic_tag(value: Any) -> str | None:
+    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:@-]{1,128}", value) else None
+
+
+def _write_sidecar_diagnostic(artifact: Any) -> None:
+    """Retain bounded failure codes for reward-only evals without sampled text."""
+
+    metadata = getattr(artifact, "metadata", None)
+    failure = metadata.get("tito_failure") if isinstance(metadata, Mapping) else None
+    failure = failure if isinstance(failure, Mapping) else {}
+    tags = (
+        "code",
+        "origin",
+        "parser_reason_code",
+        "parser_error_type",
+        "finish_reason",
+        "renderer_id",
+        "renderer_certification_id",
+    )
+    safe_failure: dict[str, Any] = {
+        name: tag
+        for name in tags
+        if (tag := _safe_diagnostic_tag(failure.get(name))) is not None
+    }
+    for name in (
+        "prompt_tokens",
+        "completion_tokens",
+        "requested_max_tokens",
+        "max_output_tokens",
+    ):
+        value = failure.get(name)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            safe_failure[name] = value
+    document = {
+        "schema_version": 1,
+        "status": _safe_diagnostic_tag(getattr(artifact, "status", None)),
+        "failure": safe_failure,
+    }
+    _atomic_write(
+        Path(SIDECAR_DIAGNOSTIC_PATH),
+        (json.dumps(document, sort_keys=True) + "\n").encode(),
+    )
+
+
+def _cgroup_memory_snapshot() -> dict[str, int]:
+    """Read available container memory counters without assuming cgroup v2."""
+
+    counters: dict[str, int] = {}
+    for root in (Path("/sys/fs/cgroup"), Path("/sys/fs/cgroup/memory")):
+        events = root / "memory.events"
+        try:
+            for line in events.read_text(encoding="utf-8").splitlines():
+                name, value = line.split()
+                if name in {"oom", "oom_kill", "oom_group_kill", "high", "max"}:
+                    counters[f"events_{name}"] = int(value)
+        except (OSError, ValueError):
+            pass
+        for name, filename in (
+            ("peak_bytes", "memory.peak"),
+            ("current_bytes", "memory.current"),
+            ("limit_bytes", "memory.max"),
+            ("v1_peak_bytes", "memory.max_usage_in_bytes"),
+            ("v1_failures", "memory.failcnt"),
+        ):
+            try:
+                counters[name] = int((root / filename).read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                pass
+    return counters
+
+
+def _redacted_stderr_tail(spec_path: Path) -> str:
+    """Keep useful traceback context without retaining known bearer tokens."""
+
+    secrets: list[str] = []
+    for path in (spec_path, Path(SIDECAR_ENDPOINT_PATH)):
+        if path == Path(SIDECAR_ENDPOINT_PATH) and not path.exists():
+            continue
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # If credential sources cannot be read, a raw tail is not safe.
+            return "<unavailable: credential source unreadable>"
+        if not isinstance(value, dict):
+            return "<unavailable: credential source malformed>"
+        secret = value.get("api_key")
+        if isinstance(secret, str) and secret:
+            secrets.append(secret)
+    path = Path(SIDECAR_STDERR_PATH)
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - 16384))
+            tail = stream.read()
+    except OSError:
+        return ""
+    if size > len(tail) and b"\n" in tail:
+        tail = tail.split(b"\n", 1)[1]
+    decoded = tail.decode("utf-8", errors="replace")
+    for secret in secrets:
+        decoded = decoded.replace(secret, "<redacted>")
+        decoded = decoded.replace(quote(secret, safe=""), "<redacted>")
+    decoded = re.sub(
+        r"(?i)(\b(?:bearer|basic)\s+)[^\s\"']+",
+        lambda match: match.group(1) + "<redacted>",
+        decoded,
+    )
+    decoded = re.sub(
+        r"(?i)(\b(?:api[_-]?key|authorization|token)\s*[:=]\s*)[^\s,\"'}]+",
+        lambda match: match.group(1) + "<redacted>",
+        decoded,
+    )
+    return decoded[-8192:]
+
+
+def _write_sidecar_exit_record(
+    *,
+    spec_path: Path,
+    started_at: str,
+    child_pid: int | None,
+    exit_code: int | None,
+    spawn_error_type: str | None,
+    memory_before: Mapping[str, int],
+) -> None:
+    memory_after = _cgroup_memory_snapshot()
+    memory_delta = {
+        key: memory_after[key] - before
+        for key, before in memory_before.items()
+        if key.startswith("events_") or key == "v1_failures"
+        if key in memory_after
+    }
+    signal_number = -exit_code if exit_code is not None and exit_code < 0 else None
+    try:
+        signal_name = signal.Signals(signal_number).name if signal_number else None
+    except ValueError:
+        signal_name = None
+    record = {
+        "schema_version": 1,
+        "started_at": started_at,
+        "exited_at": datetime.now(timezone.utc).isoformat(),
+        "child_pid": child_pid,
+        "supervisor_pid": os.getpid(),
+        "exit_code": exit_code,
+        "signal": signal_name,
+        "spawn_error_type": spawn_error_type,
+        "cgroup_memory": {
+            "before": dict(memory_before),
+            "after": memory_after,
+            "delta": memory_delta,
+        },
+    }
+    _atomic_write(
+        Path(SIDECAR_EXIT_PATH),
+        (json.dumps(record, sort_keys=True, indent=2) + "\n").encode(),
+    )
+    # Reward-only evals collect the structured exit record above. The tail can
+    # contain sampled text, so only full TITO artifact collection downloads it.
+    _atomic_write(
+        Path(SIDECAR_EXIT_DETAIL_PATH),
+        (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "stderr_tail": _redacted_stderr_tail(spec_path),
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode(),
+    )
+
+
+def supervise(spec_path: Path) -> int:
+    """Own the serve child so its exit status survives detached execution."""
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    memory_before = _cgroup_memory_snapshot()
+    child: subprocess.Popen[bytes] | None = None
+    exit_code: int | None = None
+    spawn_error_type: str | None = None
+
+    def forward_signal(signum: int, _frame: Any) -> None:
+        if child is not None and child.poll() is None:
+            child.send_signal(signum)
+
+    previous_handlers = {
+        sig: signal.signal(sig, forward_signal)
+        for sig in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "training.examples.harbor_rl.tito.sidecar",
+                "serve",
+                "--spec",
+                str(spec_path),
+            ],
+            stdin=subprocess.DEVNULL,
+        )
+        _atomic_write(Path(SIDECAR_PID_PATH), f"{child.pid}\n".encode())
+        exit_code = child.wait()
+    except BaseException as exc:
+        spawn_error_type = _safe_diagnostic_tag(type(exc).__name__) or "unknown"
+        if child is not None and child.poll() is None:
+            child.terminate()
+            try:
+                exit_code = child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                exit_code = child.wait()
+    finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
+        _write_sidecar_exit_record(
+            spec_path=spec_path,
+            started_at=started_at,
+            child_pid=child.pid if child is not None else None,
+            exit_code=exit_code,
+            spawn_error_type=spawn_error_type,
+            memory_before=memory_before,
+        )
+    return 1 if exit_code is None else (exit_code if exit_code >= 0 else 128 - exit_code)
+
+
+def probe_sidecar() -> dict[str, Any]:
+    """Probe only the local TITO endpoint, keeping its credential in sandbox."""
+
+    exit_path = Path(SIDECAR_EXIT_PATH)
+    if exit_path.is_file():
+        try:
+            record = json.loads(exit_path.read_text(encoding="utf-8"))
+            return {
+                "state": "exited",
+                "exit_code": record.get("exit_code"),
+                "signal": record.get("signal"),
+                "oom_kill_delta": (
+                    record.get("cgroup_memory", {}).get("delta", {}).get("events_oom_kill")
+                ),
+            }
+        except (OSError, ValueError, AttributeError):
+            return {"state": "unknown"}
+
+    try:
+        pid = int(Path(SIDECAR_PID_PATH).read_text(encoding="utf-8").strip())
+        os.kill(pid, 0)
+        proc_stat = Path(f"/proc/{pid}/stat")
+        if proc_stat.is_file() and proc_stat.read_text(encoding="utf-8").rsplit(") ", 1)[-1].startswith("Z"):
+            return {"state": "dead"}
+    except ProcessLookupError:
+        return {"state": "dead"}
+    except (OSError, ValueError):
+        return {"state": "unknown"}
+
+    try:
+        endpoint = json.loads(Path(SIDECAR_ENDPOINT_PATH).read_text(encoding="utf-8"))
+        base_url = str(endpoint["openai_base_url"])
+        parsed = urlsplit(base_url)
+        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"} or parsed.port is None:
+            return {"state": "unknown"}
+        request = Request(
+            base_url.rstrip("/") + "/models",
+            headers={"Authorization": "Bearer " + str(endpoint["api_key"])},
+        )
+        with build_opener(ProxyHandler({})).open(request, timeout=2) as response:
+            return {"state": "healthy" if response.status == 200 else "http_error"}
+    except HTTPError:
+        # A 4xx/5xx response proves the listener is reachable. Model and TITO
+        # protocol errors must retain their own classification.
+        return {"state": "http_error"}
+    except (URLError, TimeoutError, OSError):
+        return {"state": "unavailable"}
+    except (KeyError, TypeError, ValueError):
+        return {"state": "unknown"}
+
+
 async def sidecar_failure_disposition(environment: Any) -> str | None:
     """Read the sidecar's typed last-policy disposition without log matching."""
 
@@ -795,6 +1106,164 @@ def harness_command(
     )
 
 
+async def _monitor_sidecar(environment: Any) -> None:
+    """Fail only on process death or sustained loss of the loopback endpoint.
+
+    Provider exec failures and malformed probes are inconclusive. They must
+    never turn an agent/model error into a TITO infrastructure failure.
+    """
+
+    command = (
+        f"PYTHONPATH={SIDECAR_BUNDLE_ROOT}/python-sdk:"
+        f"{SIDECAR_BUNDLE_ROOT}/cookbook:{SIDECAR_PLUGINS_ROOT} "
+        f"{SIDECAR_PYTHON} -m training.examples.harbor_rl.tito.sidecar probe"
+    )
+    dead_probes = 0
+    unavailable_probes = 0
+    probe_task: asyncio.Task[Any] | None = None
+    stale_probe = False
+    # Short agents incur no health control request, and every trial avoids an
+    # extra probe during sandbox startup.
+    try:
+        await asyncio.sleep(_SIDECAR_MONITOR_POLL_SECONDS)
+        while True:
+            if probe_task is None:
+                probe_task = asyncio.create_task(environment.exec(command=command, cwd="/"))
+                done, _ = await asyncio.wait(
+                    {probe_task}, timeout=_SIDECAR_PROBE_EXEC_TIMEOUT_SECONDS
+                )
+                if not done:
+                    # A provider may ignore cancellation. Keep its task as a
+                    # latch and never start a second nested exec until it ends.
+                    probe_task.cancel()
+                    stale_probe = True
+                    dead_probes = 0
+                    unavailable_probes = 0
+                    await asyncio.sleep(_SIDECAR_MONITOR_POLL_SECONDS)
+                    continue
+            if not probe_task.done():
+                dead_probes = 0
+                unavailable_probes = 0
+                await asyncio.sleep(_SIDECAR_MONITOR_POLL_SECONDS)
+                continue
+            probe: dict[str, Any] = {}
+            state: str | None = None
+            try:
+                if stale_probe and not probe_task.cancelled():
+                    probe_task.exception()  # consume a discarded provider error
+                if not stale_probe and not probe_task.cancelled():
+                    result = probe_task.result()
+                    if result.return_code == 0:
+                        parsed = json.loads(result.stdout or "{}")
+                        if isinstance(parsed, dict):
+                            probe = parsed
+                            state = probe.get("state")
+            except Exception:  # noqa: BLE001 - provider transport/probe failure is inconclusive
+                pass
+            finally:
+                probe_task = None
+                stale_probe = False
+
+            if state == "exited":
+                code = probe.get("exit_code")
+                sig = probe.get("signal")
+                oom_delta = probe.get("oom_kill_delta")
+                raise TITOSidecarInfrastructureError(
+                    "TITO sidecar exited during agent execution "
+                    f"(exit_code={code}, signal={sig}, cgroup_oom_kill_delta={oom_delta}); "
+                    f"diagnostics: {SIDECAR_EXIT_PATH}"
+                )
+            if state == "dead":
+                dead_probes += 1
+                unavailable_probes = 0
+                if dead_probes >= _SIDECAR_DEAD_PROBES:
+                    raise TITOSidecarInfrastructureError(
+                        "TITO sidecar process disappeared during agent execution; "
+                        f"diagnostics: {SIDECAR_EXIT_PATH}"
+                    )
+            elif state == "unavailable":
+                unavailable_probes += 1
+                dead_probes = 0
+                if unavailable_probes >= _SIDECAR_UNAVAILABLE_PROBES:
+                    raise TITOSidecarInfrastructureError(
+                        "TITO sidecar loopback endpoint remained unavailable across "
+                        f"{unavailable_probes} probes during agent execution"
+                    )
+            else:
+                dead_probes = 0
+                unavailable_probes = 0
+            await asyncio.sleep(_SIDECAR_MONITOR_POLL_SECONDS)
+    finally:
+        if probe_task is not None and not probe_task.done():
+            probe_task.cancel()
+            probe_task.add_done_callback(
+                lambda task: None if task.cancelled() else task.exception()
+            )
+
+
+async def _await_harness_with_sidecar_monitor(
+    environment: Any,
+    harness_run: Awaitable[Any],
+    *,
+    process_pattern: str,
+) -> None:
+    harness_task = asyncio.ensure_future(harness_run)
+    monitor_task = asyncio.create_task(_monitor_sidecar(environment))
+    try:
+        done, _ = await asyncio.wait(
+            {harness_task, monitor_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if monitor_task in done and not monitor_task.cancelled():
+            failure = monitor_task.exception()
+            if failure is not None:
+                harness_task.cancel()
+                quiesce_task = asyncio.create_task(
+                    quiesce_harness_process(
+                        environment, process_pattern=process_pattern
+                    )
+                )
+                try:
+                    stopped, _ = await asyncio.wait(
+                        {quiesce_task}, timeout=_SIDECAR_QUIESCE_TIMEOUT_SECONDS
+                    )
+                    if stopped:
+                        await quiesce_task
+                    else:
+                        quiesce_task.cancel()
+                        quiesce_task.add_done_callback(
+                            lambda task: None if task.cancelled() else task.exception()
+                        )
+                        failure.add_note(
+                            "TITO harness quiesce after sidecar loss exceeded "
+                            f"{_SIDECAR_QUIESCE_TIMEOUT_SECONDS}s"
+                        )
+                except Exception as cleanup_error:  # noqa: BLE001
+                    failure.add_note(
+                        "TITO harness quiesce after sidecar loss failed: "
+                        f"{type(cleanup_error).__name__}"
+                    )
+                # A cancelled provider exec can take longer to unwind than the
+                # remote process quiesce. Do not wait for it to consume the
+                # remaining agent budget.
+                cancelled, _ = await asyncio.wait({harness_task}, timeout=5)
+                if cancelled:
+                    await asyncio.gather(harness_task, return_exceptions=True)
+                else:
+                    harness_task.add_done_callback(
+                        lambda task: None if task.cancelled() else task.exception()
+                    )
+                raise failure
+        await harness_task
+    finally:
+        monitor_task.cancel()
+        await asyncio.gather(monitor_task, return_exceptions=True)
+        if not harness_task.done():
+            harness_task.cancel()
+            harness_task.add_done_callback(
+                lambda task: None if task.cancelled() else task.exception()
+            )
+
+
 async def run_harness_with_sidecar(
     environment: Any,
     harness_run: Awaitable[Any],
@@ -810,7 +1279,9 @@ async def run_harness_with_sidecar(
     """
 
     try:
-        await harness_run
+        await _await_harness_with_sidecar_monitor(
+            environment, harness_run, process_pattern=process_pattern
+        )
     except asyncio.CancelledError as exc:
         try:
             await asyncio.shield(
@@ -821,6 +1292,10 @@ async def run_harness_with_sidecar(
             )
         except Exception as cleanup_error:  # noqa: BLE001
             exc.add_note(f"TITO sidecar cancellation cleanup failed: {cleanup_error}")
+        raise
+    except TITOSidecarInfrastructureError:
+        # The process or endpoint is already proven lost. Waiting up to the
+        # normal artifact-finalization deadline would hide this diagnosis.
         raise
     except BaseException as exc:
         try:
@@ -1020,6 +1495,7 @@ async def serve(spec_path: Path) -> None:
             artifact = await sidecar.abandon_trajectory(
                 endpoint.trajectory_id, reason or "agent_abandoned"
             )
+        _write_sidecar_diagnostic(artifact)
         encoded = artifact.pack()
         _atomic_write(Path(SIDECAR_ARTIFACT_PATH), encoded)
         _atomic_write(
@@ -1051,12 +1527,15 @@ async def serve(spec_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("serve", nargs="?")
+    parser.add_argument("command", choices=("serve", "supervise", "probe"))
     parser.add_argument("--spec", type=Path, default=Path(SIDECAR_SPEC_PATH))
     args = parser.parse_args()
-    if args.serve != "serve":
-        parser.error("expected the 'serve' command")
-    asyncio.run(serve(args.spec))
+    if args.command == "serve":
+        asyncio.run(serve(args.spec))
+    elif args.command == "supervise":
+        raise SystemExit(supervise(args.spec))
+    else:
+        print(json.dumps(probe_sidecar(), sort_keys=True))
 
 
 if __name__ == "__main__":
@@ -1071,12 +1550,16 @@ __all__ = [
     "SIDECAR_COMPLETE_PATH",
     "SIDECAR_CONTEXT_OVERFLOW_PATH",
     "SIDECAR_DEBUG_ROOT",
+    "SIDECAR_DIAGNOSTIC_PATH",
+    "SIDECAR_EXIT_PATH",
+    "SIDECAR_EXIT_DETAIL_PATH",
     "SIDECAR_FAILURE_ROOT",
     "SIDECAR_ENDPOINT_PATH",
     "SIDECAR_LOG_ROOT",
     "SIDECAR_STDERR_PATH",
     "SIDECAR_STDOUT_PATH",
     "SIDECAR_PID_PATH",
+    "SIDECAR_SUPERVISOR_PID_PATH",
     "SIDECAR_PYTHON",
     "SIDECAR_ROOT",
     "SIDECAR_SPEC_PATH",
@@ -1084,6 +1567,7 @@ __all__ = [
     "TITOSidecarBundle",
     "TITOSidecarLaunchSpec",
     "TITOSidecarSettings",
+    "TITOSidecarInfrastructureError",
     "abandon_sidecar_after_harness_cancellation",
     "build_launch_spec",
     "build_call_classifier",

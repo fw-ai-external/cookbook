@@ -1480,7 +1480,7 @@ def test_trial_config_uses_same_sidecar_contract_for_both_backends(
     assert config.agent.extra_allowed_hosts == ["api.fireworks.ai"]
     assert config.environment.extra_allowed_hosts == ["api.fireworks.ai"]
     assert not getattr(config.environment, "extra_docker_compose", [])
-    assert config.artifacts[-6:] == [
+    assert config.artifacts[-9:] == [
         {
             "source": sidecar_runtime.SIDECAR_ARTIFACT_PATH,
             "destination": "tito/compact/trajectory.tito",
@@ -1501,7 +1501,19 @@ def test_trial_config_uses_same_sidecar_contract_for_both_backends(
             "source": sidecar_runtime.SIDECAR_STDERR_PATH,
             "destination": "tito/logs/sidecar.stderr",
         },
+        {
+            "source": sidecar_runtime.SIDECAR_EXIT_DETAIL_PATH,
+            "destination": "tito/logs/sidecar-exit-detail.json",
+        },
         {"source": sidecar_runtime.SIDECAR_FAILURE_ROOT, "destination": "tito/failures"},
+        {
+            "source": sidecar_runtime.SIDECAR_DIAGNOSTIC_PATH,
+            "destination": "tito/logs/diagnostic.json",
+        },
+        {
+            "source": sidecar_runtime.SIDECAR_EXIT_PATH,
+            "destination": "tito/logs/sidecar-exit.json",
+        },
     ]
 
 
@@ -1561,7 +1573,17 @@ def test_reward_only_trial_config_omits_tito_artifact_downloads(tmp_path) -> Non
         collect_tito_artifacts=False,
     )
 
-    assert config.artifacts == [{"source": "/logs/verifier/reward.txt"}]
+    assert config.artifacts == [
+        {"source": "/logs/verifier/reward.txt"},
+        {
+            "source": sidecar_runtime.SIDECAR_DIAGNOSTIC_PATH,
+            "destination": "tito/logs/diagnostic.json",
+        },
+        {
+            "source": sidecar_runtime.SIDECAR_EXIT_PATH,
+            "destination": "tito/logs/sidecar-exit.json",
+        },
+    ]
 
 
 def test_e2b_rejects_compose_task(tmp_path) -> None:
@@ -1615,6 +1637,153 @@ def test_collected_artifact_is_checksum_and_schema_validated(tmp_path) -> None:
     decoded, manifest = harbor_adapter._load_sidecar_artifact(tmp_path)
     assert decoded == artifact
     assert manifest["trajectory_id"] == artifact.trajectory_id
+
+
+@pytest.mark.parametrize("verifier_reward", [0.0, 1.0])
+def test_sidecar_infrastructure_failure_preserves_reward_only_verifier_score(
+    tmp_path, verifier_reward
+) -> None:
+    # Reward-only evaluations do not require a compact TITO artifact. An
+    # authoritative verifier result remains final even if the sidecar died.
+    outcome = replace(
+        _outcome(),
+        trial_path=tmp_path,
+        exception_type=sidecar_runtime.TITOSidecarInfrastructureError.__name__,
+    )
+    finished = harbor_adapter._finish_harbor_trial(
+        outcome,
+        raw_rewards={"reward": verifier_reward},
+        reward_key="reward",
+        terminal_failure_reward=None,
+        has_exception=True,
+        retry_names=frozenset(),
+        retryable_e2b_timeout=False,
+        retryable_sidecar_readiness=False,
+        require_trajectory_artifact=False,
+    )
+    assert finished.reward == verifier_reward
+    assert finished.exception_type == "TITOSidecarInfrastructureError"
+    assert finished.trajectory_artifact is None
+
+
+@pytest.mark.parametrize("verifier_reward", [0.0, 1.0])
+def test_reward_only_verifier_score_precedes_e2b_stream_retry(
+    tmp_path, verifier_reward
+) -> None:
+    outcome = replace(
+        _outcome(),
+        trial_path=tmp_path,
+        exception_type="AgentTimeoutError",
+    )
+    finished = harbor_adapter._finish_harbor_trial(
+        outcome,
+        raw_rewards={"reward": verifier_reward},
+        reward_key="reward",
+        terminal_failure_reward=None,
+        has_exception=True,
+        retry_names=frozenset(),
+        retryable_e2b_timeout=True,
+        retryable_sidecar_readiness=False,
+        require_trajectory_artifact=False,
+    )
+    assert finished.reward == verifier_reward
+
+
+def test_reward_only_invalid_verifier_score_does_not_suppress_e2b_retry(
+    tmp_path,
+) -> None:
+    with pytest.raises(RecoverableRolloutError, match="command stream did not open"):
+        harbor_adapter._finish_harbor_trial(
+            replace(_outcome(), trial_path=tmp_path),
+            raw_rewards={"reward": float("nan")},
+            reward_key="reward",
+            terminal_failure_reward=None,
+            has_exception=True,
+            retry_names=frozenset(),
+            retryable_e2b_timeout=True,
+            retryable_sidecar_readiness=False,
+            require_trajectory_artifact=False,
+        )
+
+
+@pytest.mark.parametrize("verifier_reward", [0.0, 1.0])
+def test_reward_only_verifier_score_precedes_sidecar_readiness_retry(
+    tmp_path, verifier_reward
+) -> None:
+    finished = harbor_adapter._finish_harbor_trial(
+        replace(_outcome(), trial_path=tmp_path, exception_type="RuntimeError"),
+        raw_rewards={"reward": verifier_reward},
+        reward_key="reward",
+        terminal_failure_reward=None,
+        has_exception=True,
+        retry_names=frozenset(),
+        retryable_e2b_timeout=False,
+        retryable_sidecar_readiness=True,
+        require_trajectory_artifact=False,
+    )
+    assert finished.reward == verifier_reward
+
+
+@pytest.mark.parametrize("raw_rewards", [None, {"reward": float("nan")}])
+def test_reward_only_sidecar_readiness_retries_without_valid_verifier_score(
+    tmp_path, raw_rewards
+) -> None:
+    with pytest.raises(RecoverableRolloutError, match="did not become ready"):
+        harbor_adapter._finish_harbor_trial(
+            replace(_outcome(), trial_path=tmp_path, exception_type="RuntimeError"),
+            raw_rewards=raw_rewards,
+            reward_key="reward",
+            terminal_failure_reward=None,
+            has_exception=True,
+            retry_names=frozenset(),
+            retryable_e2b_timeout=False,
+            retryable_sidecar_readiness=True,
+            require_trajectory_artifact=False,
+        )
+
+
+def test_sidecar_infrastructure_failure_retries_without_verifier_score(
+    tmp_path,
+) -> None:
+    outcome = replace(
+        _outcome(),
+        trial_path=tmp_path,
+        exception_type=sidecar_runtime.TITOSidecarInfrastructureError.__name__,
+    )
+    with pytest.raises(RecoverableRolloutError, match="lost its local TITO sidecar"):
+        harbor_adapter._finish_harbor_trial(
+            outcome,
+            raw_rewards=None,
+            reward_key="reward",
+            terminal_failure_reward=0.0,
+            has_exception=True,
+            retry_names=frozenset(),
+            retryable_e2b_timeout=False,
+            retryable_sidecar_readiness=False,
+            require_trajectory_artifact=False,
+        )
+
+
+def test_training_sidecar_loss_requires_compact_artifact_even_with_verifier_score(
+    tmp_path,
+) -> None:
+    outcome = replace(
+        _outcome(),
+        trial_path=tmp_path,
+        exception_type=sidecar_runtime.TITOSidecarInfrastructureError.__name__,
+    )
+    with pytest.raises(RecoverableRolloutError, match="lost its local TITO sidecar"):
+        harbor_adapter._finish_harbor_trial(
+            outcome,
+            raw_rewards={"reward": 1.0},
+            reward_key="reward",
+            terminal_failure_reward=None,
+            has_exception=True,
+            retry_names=frozenset(),
+            retryable_e2b_timeout=False,
+            retryable_sidecar_readiness=False,
+            require_trajectory_artifact=True,
+        )
 
 
 def test_parser_failure_evidence_survives_temporary_trial_cleanup(tmp_path, monkeypatch) -> None:

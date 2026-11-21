@@ -32,9 +32,13 @@ from training.examples.harbor_rl.tito.sidecar import (
     SIDECAR_ARTIFACT_PATH,
     SIDECAR_COMPLETE_PATH,
     SIDECAR_DEBUG_ROOT,
+    SIDECAR_DIAGNOSTIC_PATH,
+    SIDECAR_EXIT_DETAIL_PATH,
+    SIDECAR_EXIT_PATH,
     SIDECAR_FAILURE_ROOT,
     SIDECAR_STDERR_PATH,
     SIDECAR_STDOUT_PATH,
+    TITOSidecarInfrastructureError,
 )
 from training.utils.rl import trial_events
 from training.utils.rl.async_rl.errors import (
@@ -617,7 +621,11 @@ def _build_trial_config(
                     ),
                 }
             )
-        for source in (SIDECAR_STDOUT_PATH, SIDECAR_STDERR_PATH):
+        for source in (
+            SIDECAR_STDOUT_PATH,
+            SIDECAR_STDERR_PATH,
+            SIDECAR_EXIT_DETAIL_PATH,
+        ):
             artifacts.append(
                 {
                     "source": source,
@@ -632,6 +640,15 @@ def _build_trial_config(
                     "destination": str(_DEBUG_ARTIFACT_DESTINATION),
                 }
             )
+    # Small allowlisted diagnostics are useful to reward-only evaluations too.
+    # They contain no sampled requests, completions, or private endpoint values.
+    for source in (SIDECAR_DIAGNOSTIC_PATH, SIDECAR_EXIT_PATH):
+        artifacts.append(
+            {
+                "source": source,
+                "destination": str(_LOG_ARTIFACT_DESTINATION / Path(source).name),
+            }
+        )
     document["artifacts"] = artifacts
 
     document.update(
@@ -1009,6 +1026,17 @@ async def run_harbor_trial(
             raise
 
 
+def _has_finite_verifier_reward(
+    raw_rewards: Mapping[str, Any] | None, reward_key: str
+) -> bool:
+    if not raw_rewards or reward_key not in raw_rewards:
+        return False
+    try:
+        return math.isfinite(float(raw_rewards[reward_key]))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def _finish_harbor_trial(
     outcome: HarborTrialOutcome,
     *,
@@ -1069,6 +1097,12 @@ def _finish_harbor_trial(
                     "startup window",
                     trace_paths=exc.trace_paths,
                 ) from exc
+            if exception_type == TITOSidecarInfrastructureError.__name__:
+                raise RecoverableRolloutError(
+                    "Harbor agent lost its local TITO sidecar; retrying in a "
+                    "fresh sandbox with retained exit diagnostics",
+                    trace_paths=exc.trace_paths,
+                ) from exc
             if exception_type and exception_type not in retry_names:
                 raise RuntimeError(
                     "Harbor produced no valid TITO artifact after a non-retryable "
@@ -1097,9 +1131,20 @@ def _finish_harbor_trial(
                 trace_path,
                 diagnostics=error.diagnostics,
             )
-    if retryable_e2b_timeout:
+    if retryable_e2b_timeout and (
+        require_trajectory_artifact
+        or not _has_finite_verifier_reward(raw_rewards, reward_key)
+    ):
         raise RecoverableRolloutError(
             "Harbor E2B command stream did not open before its provider request timeout"
+        )
+    if (
+        retryable_sidecar_readiness
+        and not require_trajectory_artifact
+        and not _has_finite_verifier_reward(raw_rewards, reward_key)
+    ):
+        raise RecoverableRolloutError(
+            "Harbor E2B sidecar did not become ready within its bounded startup window"
         )
 
     context_budget_exhausted = (
@@ -1139,6 +1184,11 @@ def _finish_harbor_trial(
             raise RecoverableRolloutError(
                 f"Harbor trial {outcome.trial_name!r} ended with retryable "
                 f"{exception_type}: {outcome.exception_message}"
+            )
+        elif exception_type == TITOSidecarInfrastructureError.__name__:
+            raise RecoverableRolloutError(
+                f"Harbor trial {outcome.trial_name!r} lost its local TITO sidecar "
+                "before a verifier reward was available"
             )
         elif exception_type is not None:
             logger.warning(

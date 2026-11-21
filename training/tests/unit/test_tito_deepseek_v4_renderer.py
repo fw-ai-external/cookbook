@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import zipfile
+from html import unescape
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -396,19 +397,90 @@ def v41() -> DeepSeekV4TITORenderer:
     return build_sidecar_tito_renderer(tokenizer, DEEPSEEK_V41_RENDERER_NAME)
 
 
-@pytest.mark.parametrize(
-    "value", ["<image>x</image>", "<\uff5cdeepseek_image\uff5c>", "namespace", "function_namespace", "qualified"]
-)
-def test_v41_rejects_images_and_namespaces(v41: DeepSeekV4TITORenderer, value: str) -> None:
+@pytest.mark.parametrize("value", ["namespace", "function_namespace", "qualified"])
+def test_v41_rejects_namespaces(v41: DeepSeekV4TITORenderer, value: str) -> None:
     payload = {"messages": [{"role": "user", "content": "run"}], "tools": [copy.deepcopy(TOOL)]}
     if value == "namespace":
         payload["tools"][0]["namespace"] = "shell"
     elif value == "function_namespace":
         payload["tools"][0]["function"]["namespace"] = "shell"
-    elif value == "qualified":
-        payload["tools"][0]["function"]["name"] = "shell::run"
     else:
-        payload["messages"][0]["content"] = value
+        payload["tools"][0]["function"]["name"] = "shell::run"
     with pytest.raises(TITOError) as error:
         v41.render_conversation_tokens(TITOChatRequest.from_openai(payload))
+    assert error.value.status == 400
+
+
+@pytest.mark.parametrize("role", ["user", "tool"])
+@pytest.mark.parametrize("literal", ["<image>", "</image>", "<image>file</image>"])
+def test_v41_renders_literal_image_tags_as_text(v41: DeepSeekV4TITORenderer, role: str, literal: str) -> None:
+    messages = _tool_history("{}") if role == "tool" else [{"role": "user", "content": ""}]
+    messages[-1]["content"] = f"bash output: {literal}\n"
+    payload = {"messages": messages}
+    request = TITOChatRequest.from_openai(payload)
+    rendered = v41.tokenizer.decode(v41.render_conversation_tokens(request), skip_special_tokens=False)
+    assert literal in rendered
+    assert request.wire_value() == payload
+
+
+def test_v41_escapes_reserved_image_marker_only_in_tool_template_copy(v41: DeepSeekV4TITORenderer) -> None:
+    marker = v41._encoder.IMAGE_PLACEHOLDER
+    escaped_marker = marker.replace("<", "&lt;").replace(">", "&gt;")
+    raw_output = f"literal {escaped_marker}, reserved {marker}, and A&B"
+    messages = _tool_history("{}")
+    messages[-1]["content"] = raw_output
+    payload = {"messages": messages}
+    original = copy.deepcopy(payload)
+    request = TITOChatRequest.from_openai(payload)
+
+    normalized = v41._template_messages(request)
+    assert normalized[-1]["content"] == (
+        f"literal &amp;lt;｜deepseek_image｜&amp;gt;, reserved {escaped_marker}, and A&amp;B"
+    )
+    assert unescape(normalized[-1]["content"]) == raw_output
+    assert marker not in normalized[-1]["content"]
+    assert request.wire_value() == original
+    assert payload == original
+
+    rendered = v41.tokenizer.decode(v41.render_conversation_tokens(request), skip_special_tokens=False)
+    assert escaped_marker in rendered
+    assert marker not in rendered
+    assert request.wire_value() == original
+    assert payload == original
+
+
+@pytest.mark.parametrize(
+    "role,field",
+    [
+        ("user", "content"),
+        ("system", "content"),
+        ("assistant", "content"),
+        ("assistant", "reasoning_content"),
+    ],
+)
+def test_v41_rejects_reserved_image_marker_in_non_tool_text(
+    v41: DeepSeekV4TITORenderer, role: str, field: str
+) -> None:
+    messages = _tool_history("{}")
+    if role == "system":
+        messages.insert(0, {"role": "system", field: v41._encoder.IMAGE_PLACEHOLDER})
+    else:
+        index = 0 if role == "user" else 1
+        messages[index][field] = v41._encoder.IMAGE_PLACEHOLDER
+    request = TITOChatRequest.from_openai({"messages": messages})
+    with pytest.raises(TITOError, match="supports text only") as error:
+        v41.render_conversation_tokens(request)
+    assert error.value.status == 400
+
+
+@pytest.mark.parametrize("role", ["user", "tool"])
+def test_v41_rejects_structured_image_blocks(v41: DeepSeekV4TITORenderer, role: str) -> None:
+    messages = _tool_history("{}") if role == "tool" else [{"role": "user", "content": ""}]
+    messages[-1]["content"] = [
+        {"type": "text", "text": "screenshot: "},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    request = TITOChatRequest.from_openai({"messages": messages})
+    with pytest.raises(TITOError, match="supports text only") as error:
+        v41.render_conversation_tokens(request)
     assert error.value.status == 400

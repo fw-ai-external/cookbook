@@ -38,11 +38,18 @@ class DeepSeekV41TITORenderer(DeepSeekV4TITORenderer):
         if any((tool.get("function") or {}).get("namespace") for tool in tools):
             raise TITOError("tito_invalid_request", 400, "DeepSeek V4.1 TITO does not support tool namespaces")
         messages = super()._template_messages(request)
+        marker = self._encoder.IMAGE_PLACEHOLDER
+        escaped_marker = marker.replace("<", "&lt;").replace(">", "&gt;")
         for message in messages:
             for field in ("content", "reasoning_content"):
                 text = message.get(field) or ""
-                if any(marker in text for marker in (self._encoder.IMAGE_PLACEHOLDER, "<image>", "</image>")):
-                    raise TITOError("tito_invalid_request", 400, "DeepSeek V4.1 TITO supports text only")
+                if marker in text:
+                    if message["role"] != "tool":
+                        raise TITOError("tito_invalid_request", 400, "DeepSeek V4.1 TITO supports text only")
+                    # Completed tool output is arbitrary text. Escape ampersands
+                    # first so html.unescape recovers even pre-existing entities;
+                    # only this normalized template copy changes, not the wire.
+                    message[field] = text.replace("&", "&amp;").replace(marker, escaped_marker)
             for item in (*message.get("tools", ()), *message.get("tool_calls", ())):
                 function = item.get("function") or {}
                 if item.get("namespace") or function.get("namespace") or "::" in function.get("name", ""):
