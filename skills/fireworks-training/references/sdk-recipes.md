@@ -17,6 +17,11 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 
 ## Tokenizer recovery
 
+Tokenize training inputs locally. For plain text, use the SDK's
+`training_client.get_tokenizer()` with the appropriate `tokenizer_model`.
+For chat data, use the model's renderer so the expected chat template and
+special tokens are applied.
+
 If mapping is missing or the specified tokenizer fails or mismatches, automatically
 inspect the exact base model with SDK `models.get(model_id, account_id=account_id)`.
 Resolve its `hugging_face_url` or authorized tokenizer artifacts; prefer the owner's

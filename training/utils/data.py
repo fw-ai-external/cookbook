@@ -346,29 +346,6 @@ def find_common_prefix_length(tokens1: List[int], tokens2: List[int]) -> int:
     return min_len
 
 
-def encode_text(
-    base_url: str,
-    text: str,
-    timeout: int = 60,
-    max_wait_time: float = 300,
-) -> List[int]:
-    """Encode text to tokens using the RLOR trainer's tokenizer endpoint.
-
-    Uses ``request_with_retries`` to tolerate trainer pods that are still
-    initializing (model/checkpoint loading) after the job is reported ready.
-    """
-    resp = request_with_retries(
-        requests.post,
-        f"{base_url}/api/v1/tokenizer/encode",
-        json={"text": text},
-        timeout=timeout,
-        verify=False,
-        max_wait_time=max_wait_time,
-    )
-    resp.raise_for_status()
-    return resp.json()["tokens"]
-
-
 def compute_advantages(rewards: List[float], eps: float = 1e-8) -> List[float]:
     """Compute normalised advantages from a group of rewards."""
     t = torch.tensor(rewards, dtype=torch.float32)
