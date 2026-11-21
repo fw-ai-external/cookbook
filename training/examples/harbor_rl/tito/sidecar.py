@@ -15,6 +15,7 @@ import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Mapping, Sequence
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from training.utils.rl.rollout.setup import RolloutSetup
@@ -31,6 +32,7 @@ SIDECAR_TERMINAL_STAGING_PATH = f"{SIDECAR_TERMINAL_PATH}.uploading"
 SIDECAR_CONTEXT_OVERFLOW_PATH = f"{SIDECAR_ROOT}/context-budget-exhausted.json"
 SIDECAR_PID_PATH = f"{SIDECAR_ROOT}/sidecar.pid"
 SIDECAR_LOG_ROOT = "/logs/tito"
+AGENT_LOG_ROOT = "/logs/agent"
 SIDECAR_ARTIFACT_PATH = f"{SIDECAR_LOG_ROOT}/trajectory.tito"
 SIDECAR_ARTIFACT_MANIFEST_PATH = f"{SIDECAR_LOG_ROOT}/trajectory.json"
 SIDECAR_DEBUG_ROOT = f"{SIDECAR_LOG_ROOT}/debug"
@@ -483,6 +485,95 @@ def _temporary_private_file(payload: str) -> Path:
     return path
 
 
+def _nonroot_agent_user(environment: Any) -> str | None:
+    """Return Harbor's effective task user when it needs an ownership handoff."""
+
+    user = getattr(environment, "default_user", None)
+    if user is None:
+        return None
+    value = str(user)
+    return None if value.split(":", 1)[0] in {"0", "root"} else value
+
+
+async def _upload_file_for_agent(
+    environment: Any,
+    *,
+    source: Path,
+    remote_path: str,
+    agent_user: str,
+) -> None:
+    """Copy a private file into an agent path without a privileged final write.
+
+    The provider's upload runs as root, while the target directory is writable
+    by the agent. A random root-owned staging directory prevents an agent from
+    redirecting that privileged copy through a symlink after it has run.
+    """
+
+    stage_dir = f"/tmp/fireworks-tito-upload-{uuid4().hex}"
+    stage_path = f"{stage_dir}/payload"
+    created = await environment.exec(
+        command=f"mkdir -m 0700 -- {stage_dir}", cwd="/", user="root"
+    )
+    if created.return_code != 0:
+        raise RuntimeError(
+            "failed to create private TITO upload staging directory "
+            f"(exit code {created.return_code})"
+        )
+
+    failure: BaseException | None = None
+    try:
+        await environment.upload_file(source, stage_path)
+        handed_off = await environment.exec(
+            command=(
+                "set -eu; "
+                f"test -f {stage_path} && test ! -L {stage_path} || exit 71; "
+                f"chmod 600 {stage_path} || exit 75; "
+                f"chown -- {shlex.quote(agent_user)} {stage_path} || exit 73; "
+                f"chmod 0711 {stage_dir} || exit 74"
+            ),
+            cwd="/",
+            user="root",
+        )
+        if handed_off.return_code != 0:
+            raise RuntimeError(
+                "failed to hand off a private TITO upload to the agent "
+                f"(exit code {handed_off.return_code})"
+            )
+        copied = await environment.exec(
+            command=(
+                "set -eu; "
+                f"mkdir -p -- {shlex.quote(str(Path(remote_path).parent))}; "
+                f"cp -T --remove-destination -- {stage_path} "
+                f"{shlex.quote(remote_path)}; "
+                f"chmod 600 {shlex.quote(remote_path)}"
+            ),
+            cwd="/",
+            user=agent_user,
+        )
+        if copied.return_code != 0:
+            raise RuntimeError(
+                "failed to copy a private TITO upload as the agent "
+                f"(exit code {copied.return_code})"
+            )
+    except BaseException as exc:
+        failure = exc
+        raise
+    finally:
+        try:
+            removed = await environment.exec(
+                command=f"rm -rf -- {stage_dir}", cwd="/", user="root"
+            )
+            if removed.return_code != 0:
+                raise RuntimeError(
+                    "failed to remove private TITO upload staging directory "
+                    f"(exit code {removed.return_code})"
+                )
+        except Exception as cleanup_error:
+            if failure is None:
+                raise
+            failure.add_note(f"TITO upload cleanup failed: {cleanup_error}")
+
+
 async def upload_private_text(
     environment: Any,
     *,
@@ -493,7 +584,16 @@ async def upload_private_text(
 
     local_path = _temporary_private_file(content)
     try:
-        await environment.upload_file(local_path, remote_path)
+        agent_user = _nonroot_agent_user(environment)
+        if agent_user is None:
+            await environment.upload_file(local_path, remote_path)
+        else:
+            await _upload_file_for_agent(
+                environment,
+                source=local_path,
+                remote_path=remote_path,
+                agent_user=agent_user,
+            )
     finally:
         local_path.unlink(missing_ok=True)
 
@@ -510,16 +610,70 @@ async def install_sidecar(
     # carry training.utils; install_sidecar runs client-side only.
     from training.utils.phase_tracing import phase_span
 
+    agent_user = _nonroot_agent_user(environment)
+    if agent_user is not None:
+        # Harbor runs agent setup under task.config.agent.user. /logs/tito and
+        # /logs/agent may be root-owned or absent. Prepare these exact paths
+        # without changing /logs/verifier or any other task-owned directory.
+        # Later uploads use root-owned staging and agent-side copies.
+        with phase_span("sidecar_prepare", category="trial_setup"):
+            prepared = await environment.exec(
+                command=(
+                    "set -eu; "
+                    f"test ! -L {SIDECAR_ROOT} && test ! -L {SIDECAR_LOG_ROOT} "
+                    f"&& test ! -L {AGENT_LOG_ROOT} "
+                    "|| exit 71; "
+                    f"mkdir -p {SIDECAR_ROOT} {SIDECAR_LOG_ROOT} {AGENT_LOG_ROOT} "
+                    "|| exit 72; "
+                    f"rm -rf -- {SIDECAR_BUNDLE_ROOT} || exit 72; "
+                    f"chown -- {shlex.quote(agent_user)} "
+                    f"{SIDECAR_ROOT} {SIDECAR_LOG_ROOT} {AGENT_LOG_ROOT} "
+                    "|| exit 73; "
+                    f"chmod 700 {SIDECAR_ROOT} {SIDECAR_LOG_ROOT} "
+                    f"{AGENT_LOG_ROOT} || exit 74"
+                ),
+                cwd="/",
+                user="root",
+            )
+            if prepared.return_code != 0:
+                operation = {
+                    71: "verify sidecar paths",
+                    72: "create sidecar directories",
+                    73: "set sidecar directory ownership",
+                    74: "restrict sidecar directories",
+                }.get(prepared.return_code, "prepare sidecar directories")
+                # The returned stderr may contain arbitrary sandbox output;
+                # report the fixed operation label and code instead.
+                raise RuntimeError(
+                    f"failed to {operation} for the TITO sidecar "
+                    f"(exit code {prepared.return_code})"
+                )
+
     spec_path = _temporary_private_file(launch_spec)
     try:
-        # One upload phase instead of three serial round trips: mkdir rides
-        # with the start exec (writes create parent dirs), and the two uploads
-        # stream concurrently. Measured on e2b: ~1.7x faster install.
+        # Stream bundle and spec concurrently. A nonroot task copies them into
+        # the final, agent-owned directory from private root-owned staging.
         with phase_span("sidecar_upload", category="trial_setup"):
-            await asyncio.gather(
-                environment.upload_file(Path(bundle_path), SIDECAR_BUNDLE_ARCHIVE),
-                environment.upload_file(spec_path, SIDECAR_SPEC_PATH),
-            )
+            if agent_user is None:
+                await asyncio.gather(
+                    environment.upload_file(Path(bundle_path), SIDECAR_BUNDLE_ARCHIVE),
+                    environment.upload_file(spec_path, SIDECAR_SPEC_PATH),
+                )
+            else:
+                await asyncio.gather(
+                    _upload_file_for_agent(
+                        environment,
+                        source=Path(bundle_path),
+                        remote_path=SIDECAR_BUNDLE_ARCHIVE,
+                        agent_user=agent_user,
+                    ),
+                    _upload_file_for_agent(
+                        environment,
+                        source=spec_path,
+                        remote_path=SIDECAR_SPEC_PATH,
+                        agent_user=agent_user,
+                    ),
+                )
     finally:
         spec_path.unlink(missing_ok=True)
 
@@ -527,7 +681,7 @@ async def install_sidecar(
         started = await environment.exec(
             command=(
                 "set -eu; "
-                f"mkdir -p {SIDECAR_ROOT} {SIDECAR_LOG_ROOT} && "
+                f"mkdir -p {SIDECAR_ROOT} {SIDECAR_LOG_ROOT}; "
                 f"chmod 700 {SIDECAR_ROOT} {SIDECAR_LOG_ROOT}; "
                 f"chmod 600 {SIDECAR_SPEC_PATH}; "
                 f"rm -rf {SIDECAR_BUNDLE_ROOT}; mkdir -p {SIDECAR_BUNDLE_ROOT}; "
@@ -542,9 +696,13 @@ async def install_sidecar(
                 f"sidecar_pid=$!; printf '%s\n' \"$sidecar_pid\" > {SIDECAR_PID_PATH}"
             ),
             cwd="/",
+            **({"user": agent_user} if agent_user is not None else {}),
         )
     if started.return_code != 0:
-        raise RuntimeError("failed to start the TITO sidecar process")
+        raise RuntimeError(
+            "failed to start the TITO sidecar process "
+            f"(exit code {started.return_code})"
+        )
 
     deadline = asyncio.get_running_loop().time() + _SIDECAR_READY_TIMEOUT_SECONDS
     with phase_span("sidecar_ready_wait", category="trial_setup"):
@@ -558,9 +716,13 @@ async def install_sidecar(
                     f"else tail -c 8192 {SIDECAR_LOG_ROOT}/sidecar.stderr 2>/dev/null; exit 3; fi"
                 ),
                 cwd="/",
+                **({"user": agent_user} if agent_user is not None else {}),
             )
             if result.return_code == 0:
-                endpoint = json.loads(result.stdout or "{}")
+                try:
+                    endpoint = json.loads(result.stdout or "{}")
+                except json.JSONDecodeError:
+                    raise RuntimeError("TITO sidecar returned an invalid endpoint") from None
                 if not isinstance(endpoint, dict):
                     raise RuntimeError("TITO sidecar returned a non-object endpoint")
                 required = {"trajectory_id", "openai_base_url", "api_key"}
@@ -570,19 +732,21 @@ async def install_sidecar(
                     )
                 return {name: str(endpoint[name]) for name in required}
             if result.return_code != 2:
-                detail = (result.stdout or result.stderr or "").strip()
                 raise RuntimeError(
-                    f"TITO sidecar exited before readiness: {detail[-4096:]}"
+                    "TITO sidecar exited before readiness "
+                    f"(probe exit code {result.return_code})"
                 )
             if asyncio.get_running_loop().time() >= deadline:
-                await stop_sidecar_process(environment)
+                await stop_sidecar_process(environment, user=agent_user)
                 raise TimeoutError(
                     f"TITO sidecar did not become ready within {_SIDECAR_READY_TIMEOUT_SECONDS}s"
                 )
             await asyncio.sleep(1)
 
 
-async def stop_sidecar_process(environment: Any) -> None:
+async def stop_sidecar_process(
+    environment: Any, *, user: str | None = None
+) -> None:
     """Best-effort process cleanup for a sidecar that cannot terminalize."""
 
     await environment.exec(
@@ -593,6 +757,7 @@ async def stop_sidecar_process(environment: Any) -> None:
             "fi"
         ),
         cwd="/",
+        **({"user": user} if user is not None else {}),
     )
 
 
@@ -665,26 +830,27 @@ async def terminalize_sidecar(
     if status not in {"completed", "abandoned", "failed"}:
         raise ValueError(f"invalid TITO sidecar terminal status: {status!r}")
     payload = json.dumps({"status": status, "reason": reason}, sort_keys=True)
-    terminal_path = _temporary_private_file(payload)
-    try:
-        # Remote-provider uploads are not guaranteed to appear atomically.  The
-        # sidecar polls this file, so publish through a sibling path and rename
-        # only after the complete JSON payload is durable in the sandbox.
-        await environment.upload_file(terminal_path, SIDECAR_TERMINAL_STAGING_PATH)
-        published = await environment.exec(
-            command=(
-                f"chmod 600 {SIDECAR_TERMINAL_STAGING_PATH} && "
-                f"mv -f {SIDECAR_TERMINAL_STAGING_PATH} {SIDECAR_TERMINAL_PATH}"
-            ),
-            cwd="/",
+    # Remote-provider uploads are not guaranteed to appear atomically. The
+    # sidecar polls this file, so publish through a sibling path and rename
+    # only after the complete JSON payload is durable in the sandbox. The
+    # private-upload helper also hands root-copied files to a nonroot agent.
+    await upload_private_text(
+        environment, content=payload, remote_path=SIDECAR_TERMINAL_STAGING_PATH
+    )
+    agent_user = _nonroot_agent_user(environment)
+    published = await environment.exec(
+        command=(
+            f"chmod 600 {SIDECAR_TERMINAL_STAGING_PATH} && "
+            f"mv -fT -- {SIDECAR_TERMINAL_STAGING_PATH} {SIDECAR_TERMINAL_PATH}"
+        ),
+        cwd="/",
+        **({"user": agent_user} if agent_user is not None else {}),
+    )
+    if published.return_code != 0:
+        raise RuntimeError(
+            "failed to publish TITO sidecar terminal intent "
+            f"(exit code {published.return_code})"
         )
-        if published.return_code != 0:
-            detail = (published.stdout or published.stderr or "").strip()
-            raise RuntimeError(
-                f"failed to publish TITO sidecar terminal intent: {detail[-4096:]}"
-            )
-    finally:
-        terminal_path.unlink(missing_ok=True)
 
     deadline = (
         asyncio.get_running_loop().time()
@@ -699,16 +865,17 @@ async def terminalize_sidecar(
                 f"else tail -c 8192 {SIDECAR_LOG_ROOT}/sidecar.stderr 2>/dev/null; exit 3; fi"
             ),
             cwd="/",
+            **({"user": agent_user} if agent_user is not None else {}),
         )
         if result.return_code == 0:
             return
         if result.return_code != 2:
-            detail = (result.stdout or result.stderr or "").strip()
             raise RuntimeError(
-                "TITO sidecar exited before publishing its artifact: " + detail[-4096:]
+                "TITO sidecar exited before publishing its artifact "
+                f"(probe exit code {result.return_code})"
             )
         if asyncio.get_running_loop().time() >= deadline:
-            await stop_sidecar_process(environment)
+            await stop_sidecar_process(environment, user=agent_user)
             raise TimeoutError(
                 "TITO sidecar did not publish its terminal artifact within "
                 f"{_SIDECAR_ARTIFACT_FINALIZATION_TIMEOUT_SECONDS}s"
@@ -894,6 +1061,51 @@ def _register_bundled_tito_plugins(
         register()
 
 
+def _install_assistant_reasoning_canonicalization() -> None:
+    """Fold protocol-equivalent *empty* reasoning fields into the TITO lineage canonicalizer.
+
+    TITO opens a new training segment whenever an assistant turn, as replayed by the
+    agent in the next request's history, is not canonically identical to the turn the
+    sampler committed. Each such split re-encodes the whole conversation prefix as
+    masked (untrained) tokens, and those re-encoded prefixes dominate the trainer's
+    forward/backward cost.
+
+    The SDK's ``_normalize_chat_message`` already maps a tool-call assistant's
+    ``content`` null/whitespace to ``""`` so harnesses that disagree on how to spell
+    "no content" do not cause a false history rewrite. It does **not** do the same for
+    ``reasoning_content``/``reasoning``: a turn the sampler produced with no reasoning
+    (field absent or ``None``) that the agent replays as ``reasoning_content: ""`` (or
+    vice versa) therefore splits on every such turn.
+
+    Both sides of the lineage comparison -- the committed assistant message
+    (``TITOParsedAssistant``) and every replayed request message (``TITOChatRequest``)
+    -- are canonicalized through this single function, so wrapping it normalizes both
+    sides identically. We only collapse *empty* spellings (None / absent / whitespace)
+    to "absent"; a non-empty reasoning string is left untouched, so a genuine reasoning
+    difference still (correctly) opens a new segment and training stays on-policy.
+    This changes neither the trained tokens (sourced from the exact completion ids) nor
+    the rendered prefix (the renderer emits a reasoning block only for truthy reasoning,
+    so ``None`` and ``""`` already render identically).
+    """
+    from fireworks.training.sdk.tito import _types as tito_types
+
+    original = tito_types._normalize_chat_message
+    if getattr(original, "_reasoning_canonicalized", False):
+        return  # idempotent: safe to call more than once
+
+    def _normalize_chat_message_canonical_reasoning(message: Mapping[str, Any]) -> dict:
+        normalized = original(message)
+        if normalized.get("role") == "assistant":
+            for key in ("reasoning_content", "reasoning"):
+                value = normalized.get(key)
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    normalized.pop(key, None)
+        return normalized
+
+    _normalize_chat_message_canonical_reasoning._reasoning_canonicalized = True  # type: ignore[attr-defined]
+    tito_types._normalize_chat_message = _normalize_chat_message_canonical_reasoning
+
+
 async def serve(spec_path: Path) -> None:
     from fireworks.training.sdk import (
         DeploymentSampler,
@@ -907,6 +1119,11 @@ async def serve(spec_path: Path) -> None:
         build_sidecar_tito_renderer,
         load_sidecar_tokenizer,
     )
+
+    # Collapse empty-reasoning spellings so the sampler-committed assistant message and
+    # the agent's replay of it compare equal, avoiding a full-prefix segment split per
+    # turn. Installed before any TITOChatRequest/TITOParsedAssistant is constructed.
+    _install_assistant_reasoning_canonicalization()
 
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     if spec.get("schema_version") != 2:
