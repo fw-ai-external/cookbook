@@ -77,6 +77,8 @@ HF_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
     ("nemotron3", "leading_newline_user"): "renderer diverges from apply_chat_template for this scenario",
     ("nemotron3", "multipart_user_text"): "renderer diverges from apply_chat_template for this scenario",
     ("nemotron3", "tool_result_pending_answer"): "renderer/template rejects this input: Can only get item pairs from a mapping.",
+    ("nemotron35_vl", "tool_result_pending_answer"): "the vendor template expects mapping-valued tool arguments.",
+    ("nemotron35_vl_disable_thinking", "tool_result_pending_answer"): "the vendor template expects mapping-valued tool arguments.",
     ("qwen2_5", "assistant_content_plus_tool_call"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
     ("qwen2_5", "dangling_tool_call"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,
     ("qwen2_5", "dict_tool_args"): _QWEN2_5_TOOL_TEMPLATE_DIVERGENCE,

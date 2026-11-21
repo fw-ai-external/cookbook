@@ -124,14 +124,15 @@ class _Nemotron35Images:
             raise RendererError("Nemotron 3.5 image placeholders must match the number of images")
         result = []
         image_index = 0
+        implicit_image_separator = ""
 
-        def append_image(part, *, numbered):
+        def append_image(part, *, numbered, separator=""):
             nonlocal image_index
             image_index += 1
             prefix = f"<image {image_index}>" if numbered else ""
             result.extend(
                 [
-                    {"type": "text", "text": prefix + "<img>"},
+                    {"type": "text", "text": separator + prefix + "<img>"},
                     part,
                     {"type": "text", "text": "</img>"},
                 ]
@@ -140,9 +141,13 @@ class _Nemotron35Images:
         for part in content:
             if part["type"] == "image":
                 if not explicit:
-                    append_image(part, numbered=len(images) > 1)
+                    append_image(part, numbered=len(images) > 1, separator=implicit_image_separator)
+                    implicit_image_separator = ""
             elif part["type"] == "text":
-                pieces = part["text"].split("<image>") if explicit else [part["text"]]
+                body = part["text"]
+                if body:
+                    implicit_image_separator = "" if body.endswith("\n") else "\n"
+                pieces = body.split("<image>") if explicit else [body]
                 for index, piece in enumerate(pieces):
                     if index:
                         append_image(images[image_index], numbered=False)
