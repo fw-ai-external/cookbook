@@ -11,8 +11,7 @@ changing one import (``from training.utils.rl.algorithm import cispo as objectiv
   ``{PREFIX}_clip_frac`` and ``{PREFIX}_kl`` from the returned logprobs;
 - ``make_loss_fn(batch, config)``: the same objective as a client loss,
   ``forward_backward_custom(batch.data, make_loss_fn(batch, config))``,
-  reporting the same metric names. Client-only modules (``reinforce``,
-  ``score_centering``) have no ``LOSS_FN``; their ``build_datums`` returns the
+  reporting the same metric names. The client-only ``reinforce`` module has no ``LOSS_FN``. Its ``build_datums`` returns the
   datums ``make_loss_fn`` runs on;
 - ``NORMALIZATION``: the ``grad_accumulation_normalization`` for ``optim_step``.
 
@@ -27,7 +26,6 @@ Module                 ``LOSS_FN``               Notes
 ``dppo``               ``"dppo"``                binary-divergence trust region
 ``importance_sampling`` ``"importance_sampling"`` unclipped ratio, prefix ``is``
 ``reinforce``          --                        client loss only
-``score_centering``    --                        client loss only, top-k datums
 =====================  ========================  ==========================
 
 Two modules are not objectives: ``igpo`` sets ``PolicyBatch.token_advantages``

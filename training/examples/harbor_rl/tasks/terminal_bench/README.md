@@ -77,8 +77,8 @@ check the pair with a short `--sampling-only` run first.
 
 OpenCode title and summary requests do not carry tools and are logged as
 auxiliary calls. Tool-bearing turns are trainable. Each trial's compact `.tito`
-artifact (exact sampled token IDs, log probabilities, optional routing
-matrices, and segment decisions) is retained under `--harbor-trials-dir`;
+artifact (exact sampled token IDs, log probabilities, optional trainer-shared routing
+references, and segment decisions) is retained under `--harbor-trials-dir`;
 `--tito-debug` adds JSONL troubleshooting events. A history rewrite starts a
 new segment within the same logical rollout; it does not create another GRPO
 completion or reward. The run directory receives `task-split.json`,

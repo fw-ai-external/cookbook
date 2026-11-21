@@ -12,7 +12,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-_POLICY_CAPABILITY = "deepseek-v4-v41+kimi-k3-k31+glm5-tokenizer-identity/exact-standard-context-v8"
+_POLICY_CAPABILITY = "deepseek-v4-v41+kimi-k3-k31+glm5-tokenizer-identity/exact-standard-context-v9"
 _SDK_IDENTITY_MODULE = "fireworks.training.sdk.tokenizer_identity"
 
 # Which backend supplied the identity implementation: "sdk" (delegation) or

@@ -343,3 +343,34 @@ def test_image_sentinel_scans_message_once(tokenizer: Any, monkeypatch: pytest.M
         token for chunk in prompt.chunks for token in (chunk.tokens if chunk.type == "encoded_text" else [200054])
     ]
     assert flattened == tokenizer.apply_chat_template([message], return_dict=False)
+
+
+@pytest.mark.parametrize("name", ["inkling2", "inkling2_disable_thinking"])
+def test_stop_sequences_are_token_ids(tokenizer: Any, name: str) -> None:
+    renderer = get_renderer(name, tokenizer)
+    stops = renderer.get_stop_sequences()
+    assert len(stops) == 1
+    assert isinstance(stops[0], int)
+    assert stops[0] != tokenizer.unk_token_id
+    assert tokenizer.decode(stops) == "<|content_model_end_sampling|>"
+    # Sampling consumes integer stop IDs; the same IDs can form SFT targets.
+    sdk.ModelInput.from_ints(tokenizer.encode("Hello", add_special_tokens=False) + stops)
+    response = tokenizer.encode("<|message_model|><|content_text|>Hello<|end_message|>", add_special_tokens=False) + stops
+    _, termination = renderer.parse_response(response)
+    assert termination == ParseTermination.STOP_SEQUENCE
+
+
+@pytest.mark.parametrize("ids", [[], [1, 2], [99]])
+def test_stop_sequences_reject_invalid_marker(ids: list[int]) -> None:
+    class Tokenizer:
+        name_or_path = "test-tokenizer"
+        chat_template = "template"
+        unk_token_id = 99
+
+        def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+            assert text == "<|content_model_end_sampling|>"
+            assert not add_special_tokens
+            return ids
+
+    with pytest.raises(RendererError, match="one known token"):
+        get_renderer("inkling2", Tokenizer()).get_stop_sequences()

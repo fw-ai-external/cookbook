@@ -46,7 +46,6 @@ __all__ = [
     "DeployConfig",
     "EvalFn",
     "WeightSyncConfig",
-    "WeightSyncScope",
     "ConcurrencyConfig",
     "TrainerConfig",
     "GcsJsonlRenderDataset",
@@ -67,7 +66,6 @@ __all__ = [
     "CursorDataLoader",
     "CursorItem",
     "read_api_extra_headers_env",
-    "encode_text",
     "extract_text",
     "find_common_prefix_length",
     "iter_preference_examples",
@@ -139,12 +137,10 @@ from training.utils.config import (
     TrainerConfig,
     WandBConfig,
     WeightSyncConfig,
-    WeightSyncScope,
 )
 from training.utils.data import (
     RLPromptDataset,
     compute_advantages,
-    encode_text,
     extract_text,
     find_common_prefix_length,
     iter_preference_examples,

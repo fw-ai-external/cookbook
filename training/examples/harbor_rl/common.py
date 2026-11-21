@@ -39,8 +39,8 @@ from training.utils import (
     DeployConfig,
     TrainerConfig,
     read_api_extra_headers_env,
-    resolve_router_replay_enabled,
 )
+from training.utils.rl.algorithm import server_reinforce
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
 from training.utils.rl.rollout.setup import (
     RolloutFnFactory,
@@ -122,6 +122,7 @@ def add_resource_args(
     shapes: bool = True,
 ) -> None:
     """Dedicated trainer/deployment controls; omitted IDs are SDK-created."""
+    server_reinforce.add_cli_args(parser)
     parser.add_argument("--trainer-job-id", default=None, help="Reattach a trainer")
     parser.add_argument("--deployment-id", default=None, help="Reattach and hot-load a deployment")
     if shapes:
@@ -233,8 +234,7 @@ def deployment_rollout_setup(
     """Yield the ``RolloutSetup`` ``async_rl_loop`` would build, without a trainer.
 
     The setup owns a sampler on ``deployment_id`` that is closed on exit.
-    Router Replay is requested only for MoE base models (a dense deployment
-    rejects the routing request).
+    Scoring does not submit trajectories to a trainer, so Router Replay is off.
     """
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
@@ -245,13 +245,7 @@ def deployment_rollout_setup(
         temperature=temperature,
         max_seq_len=max_seq_len,
         http_timeout=sample_timeout,
-        router_replay=resolve_router_replay_enabled(
-            requested=True,
-            api_key=api_key,
-            base_url=base_url,
-            additional_headers=headers,
-            base_model=base_model,
-        ),
+        router_replay=False,
     )
     sampler = DeploymentSampler(
         inference_url=base_url,
@@ -398,6 +392,11 @@ def set_e2b_request_timeout(seconds: float) -> None:
     e2b.connection_config.REQUEST_TIMEOUT = seconds
 
 
+def reinforce_config(args: argparse.Namespace) -> server_reinforce.ReinforceConfig | None:
+    """Built-in REINFORCE options from ``add_resource_args``; ``None`` keeps GRPO."""
+    return server_reinforce.from_cli_args(args)
+
+
 __all__ = [
     "add_harness_args",
     "add_model_args",
@@ -408,6 +407,7 @@ __all__ = [
     "deployment_rollout_setup",
     "harbor_settings",
     "pin_wandb_run_id",
+    "reinforce_config",
     "require_env",
     "run_sampling_only",
     "score_rows",

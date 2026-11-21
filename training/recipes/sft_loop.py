@@ -837,8 +837,8 @@ class Config:
     format ``"job_id:checkpoint_name"``."""
 
     warm_start_from_adapter: str | None = None
-    """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
-    weights from the adapter at training start (weights-only, fresh optimizer).
+    """Fireworks PEFT model resource. When set, initializes LoRA weights from
+    the authorized adapter at training start (weights-only, fresh optimizer).
     Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
 
     grad_clip_norm: float = 0.0

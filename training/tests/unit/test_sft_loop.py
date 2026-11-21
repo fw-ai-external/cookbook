@@ -493,7 +493,7 @@ def test_main_rejects_adapter_plus_init_from_checkpoint(tmp_path, monkeypatch):
         tokenizer_model="Qwen/Qwen3-1.7B",
         max_seq_len=32,
         lora_rank=16,
-        warm_start_from_adapter="gs://bucket/adapter-dir",
+        warm_start_from_adapter="accounts/test/models/adapter",
         init_from_checkpoint="source-job:step-3",
     )
 
@@ -515,7 +515,7 @@ def test_main_rejects_adapter_with_zero_lora_rank(tmp_path, monkeypatch):
         tokenizer_model="Qwen/Qwen3-1.7B",
         max_seq_len=32,
         lora_rank=0,
-        warm_start_from_adapter="gs://bucket/adapter-dir",
+        warm_start_from_adapter="accounts/test/models/adapter",
     )
 
     with pytest.raises(UserConfigError, match="lora_rank > 0"):
@@ -908,7 +908,6 @@ def test_terminal_step_resume_promotes_loaded_checkpoint_not_newer_export(
         name=rows[0]["name"],
         output_model_id="trained-model",
         base_model="accounts/fireworks/models/qwen3-8b",
-        hot_load_deployment_id=None,
     )
     assert result["steps"] == 9
 

@@ -1071,7 +1071,7 @@ wheels = [
 
 [[package]]
 name = "fireworks-ai"
-version = "1.2.34"
+version = "1.2.35"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1084,14 +1084,14 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a9/0a/3eb465359f71e16fa3362dcd69fb97dedb6198613a589cb28c6b07989fc1/fireworks_ai-1.2.34.tar.gz", hash = "sha256:7eb839f396c90c0268bfa07a16821fc51ef6e128602fed7ec69b3742fc5d4b76", size = 903089, upload-time = "2026-11-18T03:40:11.387Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a1/bd/b182af4a955e54ba55ba88670e6a4efbba8c7ce636d046d21d1572e28462/fireworks_ai-1.2.35.tar.gz", hash = "sha256:41e293f25d0d05dd5c295d3ccf922c972f12ad6a476b51c876ab1cf223561d4c", size = 909307, upload-time = "2026-11-19T09:18:40.851Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2e/59/26f87234ed54ded943303f298adaf282ac3d9cea658f0b3ea79c3c0d0bc8/fireworks_ai-1.2.34-py3-none-any.whl", hash = "sha256:baff951d29cd31c256822034c5dfc2a838a4eee9b7bd71722e7fa32182384288", size = 842328, upload-time = "2026-11-18T03:40:09.915Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/28/84363d71f35d2eeb86385956dc84652150e6017541c1b8a8e8c099749d60/fireworks_ai-1.2.35-py3-none-any.whl", hash = "sha256:113fe2dd0f57160ece09e31e48f459c52fa9d39cbc08d9f135fdf2bc58b9f2c9", size = 844347, upload-time = "2026-11-19T09:18:39.202Z" },
 ]
 
 [[package]]
 name = "fireworks-training-cookbook"
-version = "2026.11.19.1"
+version = "2026.11.21.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -1138,7 +1138,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "datasets", specifier = ">=5.0.1" },
     { name = "eval-protocol", marker = "extra == 'eval'", specifier = "==0.3.33" },
-    { name = "fireworks-ai", specifier = ">=1.2.34,<2" },
+    { name = "fireworks-ai", specifier = ">=1.2.35,<2" },
     { name = "fireworks-training-cookbook", extras = ["eval"], marker = "extra == 'dev'" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.23.0,<1" },
     { name = "huggingface-hub", specifier = ">=1.5.0,<2.0" },

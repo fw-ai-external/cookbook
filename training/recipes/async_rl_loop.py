@@ -6,8 +6,10 @@ names, ``RolloutSetup`` shape, gate semantics) may change.  The recipe is
 intentionally minimal-surface: the only thing most users need to write is the
 rollout function; everything else (gate, advantage, weight sync, group submission,
 checkpoints) is handled by ``main()``.  Each optimizer batch trains
-with the trainer's built-in GRPO loss, clipped against the rollout logprobs.
-To change the objective, fork ``train_group``; the modules in
+with the trainer's built-in GRPO loss, clipped against the rollout logprobs,
+or with built-in REINFORCE on the same advantages when ``Config.reinforce`` is
+set (score centering, TIS/MIS and sampler KL).
+For other objectives, fork ``train_group``; the modules in
 ``training.utils.rl.algorithm`` share one interface.  See
 ``skills/fireworks-training/references/rl-async.md`` for the full contract.
 
@@ -73,7 +75,7 @@ from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS, log_run_resource
 from training.utils.metrics import sampler_metrics, weight_sync_metrics
 from training.utils.phase_tracing import phase_span
 from training.utils.tokenizers import resolve_tokenizer_base_model
-from training.utils.rl.algorithm import grpo as objective
+from training.utils.rl.algorithm import grpo, server_reinforce
 from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
     AsyncRLTelemetry,
@@ -167,6 +169,8 @@ class Config:
     eps_clip: float = 0.2
     """GRPO lower clip epsilon; also the upper one unless ``eps_clip_high`` is set."""
     eps_clip_high: float | None = None
+    reinforce: server_reinforce.ReinforceConfig | None = None
+    """Built-in REINFORCE on the GRPO advantages instead of the clipped GRPO loss."""
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -228,7 +232,9 @@ def _run_optimizer_step(
     adam_params = sdk.AdamParams(learning_rate=learning_rate, **adam_kwargs)
     return policy.optim_step(
         adam_params,
-        grad_accumulation_normalization=objective.NORMALIZATION,
+        grad_accumulation_normalization=(
+            grpo.NORMALIZATION if config.reinforce is None else server_reinforce.NORMALIZATION
+        ),
         emit_grad_norm_metrics=True,
     )
 
@@ -264,7 +270,12 @@ async def main(
         raise TypeError("backend_managed_concurrency must be a bool")
     if evaluation_interval < 1:
         raise ValueError("evaluation_interval must be >= 1")
-    policy_loss = objective.GRPOConfig(eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high)
+    if cfg.reinforce is None:
+        objective, policy_loss = grpo, grpo.GRPOConfig(eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high)
+    else:
+        if cfg.temperature != 1.0:
+            raise ValueError("Built-in REINFORCE currently requires temperature=1")
+        objective, policy_loss = server_reinforce, cfg.reinforce
     # Reference KL belongs in a custom train step: utils.rl.reference provides
     # LoRA base-only trainer and full-parameter frozen-inference forwards.
     # Keep reference setup/scoring outside this fixed-objective GRPO loop;
@@ -315,8 +326,11 @@ async def main(
             "seed": cfg.seed,
             "algorithm": "grpo",
             "trainer_loss": f"server_{objective.LOSS_FN}",
-            "eps_clip": policy_loss.eps_clip,
-            "eps_clip_high": policy_loss.upper_eps,
+            **(
+                {"eps_clip": policy_loss.eps_clip, "eps_clip_high": policy_loss.upper_eps}
+                if cfg.reinforce is None
+                else {"loss_fn_config": server_reinforce.loss_fn_config(cfg.reinforce)}
+            ),
             "grad_clip_norm": cfg.grad_clip_norm,
             "lr": cfg.learning_rate,
             "lr_schedule": lr_scheduler.type,
@@ -353,6 +367,8 @@ async def main(
             lora_rank=cfg.lora_rank,
             lora_alpha=cfg.lora_alpha,
         )
+        if cfg.reinforce is not None:
+            server_reinforce.check_trainer_support(training_client, cfg.reinforce)
         # Decide R3 after the trainer is bound: its create_model response is
         # the authoritative MoE signal, so no GET model is needed (private
         # early-access base models reject that with 403).
@@ -431,9 +447,13 @@ async def main(
             http_timeout=cfg.deployment.sample_timeout,
             router_replay=router_replay_enabled,
         )
+        if cfg.reinforce is not None:
+            sample_kwargs.update(server_reinforce.sampling_kwargs(cfg.reinforce))
         sampler_options = {"backend_managed_concurrency": True} if cfg.backend_managed_concurrency else {}
-        sampler = await run_in_thread(service.create_deployment_sampler, tokenizer=tokenizer, **sampler_options)
+        sampler = await run_in_thread(service.create_deployment_sampler, tokenizer=tokenizer, training_client=training_client, **sampler_options)
         stack.push_async_callback(close_in_thread, sampler.close)
+        if router_replay_enabled and not getattr(sampler, "r3_store_id", None):
+            raise ValueError("Router Replay requires a trainer and rollout deployment with shared replay storage")
         # One rollout object serves training and evaluation, so stateful
         # rollouts (sandbox pools, judges) keep a single concurrency budget.
         # Evaluation overlaps training here, so sampler/* includes its requests.

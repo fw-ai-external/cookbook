@@ -44,7 +44,7 @@ those cases instead of silently discarding fields.
 | Sparse tensors | Native zero-padding CSR helpers do not accept Tinker 0.35's `pad_value`. Materialize the source with its intended pad value and use a dense native tensor to preserve nonzero padding. |
 | Provenance | Tinker 0.35's `Datum.model_input_spans` and `loss_fn_input_spans` are absent from the native constructor. Preserve application metadata separately; a plain text adapter does not preserve provenance semantics. |
 | Model input | Use native encoded text or inline image chunks. Opaque image-asset pointers and DMel audio datums are rejected. Generic type availability is not model execution support. |
-| Routing | Preserve Fireworks routing matrices and sampling references when the rollout/trainer contract requires them. A text-only conversion loses them. |
+| Routing | Preserve trainer-shared routing and sampling references when the rollout/trainer contract requires them. A text-only conversion loses them. |
 | Sampled sequences | Common token, logprob, and stop-reason access exists. Tinker 0.35's required `sequence_id` and sampled-token top-k data are absent in the native type. |
 | Sample responses | Newer `target_prompt_logprobs` and `prompt_alt_tokens` fields are absent. Adapt downstream consumers instead of inventing values. |
 

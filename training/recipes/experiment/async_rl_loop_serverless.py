@@ -50,6 +50,7 @@ from training.utils import (
 )
 from training.utils.dataloader import CursorDataLoader
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
+from training.utils.metrics import sampler_metrics
 from training.utils.phase_tracing import phase_span
 from training.utils.progress import ProgressFn
 from training.utils.rl.algorithm import grpo as objective
@@ -172,11 +173,6 @@ class ServerlessSampler:
         return self._require_client().deployment_sampler.tokenizer
 
     @property
-    def routing_matrix_format(self) -> str:
-        # Harbor reads the negotiated R3 binding from this rollout-facing handle.
-        return getattr(self._require_client().deployment_sampler, "routing_matrix_format", "base64_inline")
-
-    @property
     def r3_store_id(self) -> str | None:
         return getattr(self._require_client().deployment_sampler, "r3_store_id", None)
 
@@ -199,15 +195,20 @@ class ServerlessSampler:
                     self._in_flight.pop(key)
                     self._condition.notify_all()
 
-    async def replace(self, client: Any) -> None:
-        """Publish a new snapshot, then retire the prior client after its calls."""
+    def drain_metrics(self) -> list[sdk.ServerMetrics]:
+        return self._require_client().deployment_sampler.drain_metrics()
+
+    async def replace(self, client: Any) -> list[sdk.ServerMetrics]:
+        """Publish the snapshot and return the retired sampler's attempt records."""
 
         async with self._condition:
             old_client = self._require_client()
             self._client = client
             while self._in_flight.get(id(old_client), 0):
                 await self._condition.wait()
+        records = old_client.deployment_sampler.drain_metrics()
         await asyncio.to_thread(old_client.close)
+        return records
 
     async def aclose(self) -> None:
         async with self._condition:
@@ -464,7 +465,7 @@ def run_sampling_preflight(
         async def evaluate() -> dict[str, Any]:
             try:
                 metrics = await evaluation_fn(0, evaluation_rollout_fn(rollout_fn))
-                result = dict(metrics or {})
+                result = {**(metrics or {}), **sampler_metrics(sampler.drain_metrics(), prefix="eval/sampler")}
                 log_metrics(
                     {"rollout/step": 0, **result},
                     step=0,
@@ -822,7 +823,7 @@ async def main(
                                 batch.batch_id,
                                 optimizer_batch=batch,
                             )
-                            await sampler.replace(next_client)
+                            retired_sampler_records = await sampler.replace(next_client)
                             # Sidecar harnesses (Harbor TITO) read setup.model when
                             # each trial launches, not the live sampler.
                             rollout_setup.model = sampler.model
@@ -840,6 +841,7 @@ async def main(
                             step_time=published.step_time,
                             weight_update_time=update_span.elapsed,
                             learning_rate=optimizer["learning_rate"],
+                            extra_metrics=sampler_metrics([*retired_sampler_records, *sampler.drain_metrics()]),
                         )
                         notify("step_finished", step=batch.batch_id, total_steps=total_steps)
                         evaluations.start(batch.batch_id)

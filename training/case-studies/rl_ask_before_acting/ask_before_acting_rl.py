@@ -38,12 +38,12 @@ from fireworks.training.sdk import (
     FiretitanSamplingParams,
     FiretitanServiceClient,
 )
-from fireworks.training.sdk.routing import copy_routing, routing_model_input_kwargs
+from fireworks.training.sdk.routing import routing_model_input_kwargs
 
 import training.renderer  # noqa: F401  (registers renderers)
 from training.renderer import get_renderer
 from training.utils import resolve_router_replay_enabled
-from training.utils.rl.router_replay import build_r3_routing_matrices, validate_r3_routing_matrices
+from training.utils.rl.router_replay import build_r3_routing_matrices, require_references, validate_r3_routing_matrices
 from training.utils.supervised import resolve_renderer_name
 from training.utils.tokenizers import load_tokenizer
 
@@ -254,7 +254,7 @@ class ServerlessAskBeforeActingRL:
                 ended = "bad_sample"
                 break
             turns.append({"prompt": prompt, "tokens": tokens, "logprobs": [float(x) for x in logprobs],
-                          "routing": copy_routing(getattr(seq, "routing_matrices", None))})
+                          "routing": require_references(getattr(seq, "routing_matrices", None))})
             msg, _ok = self.renderer.parse_response(tokens)
             messages.append(msg)
             tool_calls = list(msg.get("tool_calls") or [])

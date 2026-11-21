@@ -40,6 +40,9 @@ class _DeploymentSampler:
         self.calls: list[dict] = []
         self.calls_per_prompt: dict[tuple[int, ...], int] = {}
 
+    def drain_metrics(self) -> list[sdk.ServerMetrics]:
+        return []
+
     async def sample_with_prompt_tokens(self, prompt_token_ids, **kwargs):
         self.calls.append(kwargs)
         key = tuple(prompt_token_ids)

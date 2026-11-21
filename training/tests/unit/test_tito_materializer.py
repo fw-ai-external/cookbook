@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from training.tests._replay_refs import replay_refs, replay_rows
 import time
-from dataclasses import fields
+from dataclasses import fields, replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -26,6 +27,7 @@ from training.utils.rl.losses import build_policy_datums
 from training.utils.rl.sampling_support import (
     attach_top_sampling_references,
     attach_sampling_mask_references,
+    attach_sample_extra_references,
 )
 
 
@@ -53,7 +55,6 @@ def _turn(
     realign_from_token: int | None = None,
     realigned_masked_tokens: int = 0,
     incremental_checkpoint_trim_tokens: int = 0,
-    top_k: int | None = None,
 ) -> TITOTurn:
     return TITOTurn(
         turn_id=turn_id,
@@ -67,21 +68,8 @@ def _turn(
         exact_completion_ids=completion,
         inference_logprobs=tuple(-0.1 for _ in completion),
         sampling_logprobs=tuple(-0.2 for _ in completion),
-        inference_topk_token_ids=(
-            tuple(
-                tuple(token_id + offset for offset in range(top_k))
-                for token_id in completion
-            )
-            if top_k is not None
-            else None
-        ),
-        inference_topk_logprobs=(
-            tuple(tuple(-0.1 - offset for offset in range(top_k)) for _ in completion)
-            if top_k is not None
-            else None
-        ),
-        routing_matrices=routes,
-        prompt_routing_matrices=prompt_routes,
+        routing_matrices=replay_refs(routes),
+        prompt_routing_matrices=replay_refs(prompt_routes),
         prompt_routing_start=prompt_route_start,
         response_id=f"response-{turn_id}",
         finish_reason=finish_reason,
@@ -213,7 +201,7 @@ def test_materializes_exact_append_and_pads_completion_only_r3() -> None:
     assert sample.tokens == [1, 2, 3, 4, 5, 6, 7]
     assert sample.loss_mask == [0, 0, 1, 1, 0, 1, 1]
     assert sample.logprobs == [0.0, 0.0, -0.2, -0.2, 0.0, -0.2, -0.2]
-    assert sample.routing_matrices == ["", "r3", "r4", "", "r6", "r7"]
+    assert replay_rows(sample.routing_matrices) == ["", "r3", "r4", "", "r6", "r7"]
     assert sample.reward == 1.5
 
 
@@ -241,53 +229,6 @@ def test_materializes_older_sdk_turns_without_sampling_support() -> None:
     assert run.segments[0].tokens == [1, 2, 3, 4, 5, 6]
     assert run.segments[0].loss_mask == [0, 0, 1, 1, 0, 1]
     assert run.segments[0].top_sampling_references is None
-
-
-def test_materializes_and_packs_sampler_topk_in_target_coordinates() -> None:
-    first = _turn("one", (1, 2), (3, 4), top_k=2)
-    second = _turn(
-        "two",
-        (1, 2, 3, 4, 5),
-        (6,),
-        disposition="append",
-        prefix_match_tokens=4,
-        top_k=2,
-    )
-    run = materialize_tito_trajectory(
-        _result((first, second), (_attempt("one"), _attempt("two"))),
-        reward=1.0,
-    )
-
-    sample = run.segments[0]
-    assert sample.inference_topk_token_ids == [
-        [],
-        [],
-        [3, 4],
-        [4, 5],
-        [],
-        [6, 7],
-    ]
-    assert sample.inference_topk_logprobs == [
-        [],
-        [],
-        [-0.1, -1.1],
-        [-0.1, -1.1],
-        [],
-        [-0.1, -1.1],
-    ]
-
-    group = rollout_to_prompt_group(
-        Rollout(runs=[run]),
-        advantage_fn=lambda rewards: rewards,
-    )
-    assert group is not None
-    assert group.inference_topk_token_ids == [[[], [3, 4], [4, 5], [], [6, 7]]]
-    assert group.inference_topk_logprobs == [
-        [[], [-0.1, -1.1], [-0.1, -1.1], [], [-0.1, -1.1]]
-    ]
-    batch = combine_prompt_groups([group])
-    assert batch.inference_topk_token_ids == group.inference_topk_token_ids
-    assert batch.inference_topk_logprobs == group.inference_topk_logprobs
 
 
 @pytest.mark.parametrize(
@@ -371,7 +312,7 @@ def test_bounded_realign_masks_reconstructed_prior_response_in_one_example() -> 
     assert sample.tokens == [1, 2, 3, 9, 5, 6, 7]
     assert sample.loss_mask == [0, 0, 0, 0, 0, 1, 1]
     assert sample.logprobs == [0.0, 0.0, 0.0, 0.0, 0.0, -0.2, -0.2]
-    assert sample.routing_matrices == ["", "", "", "", "r6", "r7"]
+    assert replay_rows(sample.routing_matrices) == ["", "", "", "", "r6", "r7"]
     assert (
         run.metadata["tito_materialized_segments"][0]["tito_realigned_masked_tokens"]
         == 3
@@ -407,7 +348,7 @@ def test_incremental_junction_replaces_only_declared_checkpoint_tail() -> None:
     assert sample.tokens == [1, 2, 3, 9, 5, 6, 7]
     assert sample.loss_mask == [0, 0, 1, 0, 0, 1, 1]
     assert sample.logprobs == [0.0, 0.0, -0.2, 0.0, 0.0, -0.2, -0.2]
-    assert sample.routing_matrices == ["", "r3", "", "", "r6", "r7"]
+    assert replay_rows(sample.routing_matrices) == ["", "r3", "", "", "r6", "r7"]
     assert (
         run.metadata["tito_materialized_segments"][0][
             "tito_incremental_checkpoint_trimmed_tokens"
@@ -772,7 +713,7 @@ def test_training_limit_resumes_from_a_later_exact_prompt() -> None:
         [1, 2, 3, 4, 5, 9, 10],
     ]
     assert run.segments[1].loss_mask == [0, 0, 0, 0, 0, 0, 1]
-    assert [sample.routing_matrices for sample in run.segments] == [
+    assert [replay_rows(sample.routing_matrices) for sample in run.segments] == [
         ["r0", "r1", "r2"],
         ["r0", "r1", "r2", "r3", "r8", "r9"],
     ]
@@ -898,18 +839,17 @@ def _top_sampling_rows(references) -> list[int | None]:
         ),
     ],
 )
-def test_top_sampling_references_follow_completion_only_route_operations(
-    second_kwargs: dict[str, Any], tokens: list[int], rows: list[int | None]
+@pytest.mark.parametrize("field", ["top_sampling_references", "sample_extra_references"])
+def test_score_centering_references_follow_completion_only_route_operations(
+    field: str, second_kwargs: dict[str, Any], tokens: list[int], rows: list[int | None]
 ) -> None:
-    from dataclasses import replace
-
     first = replace(
-        _turn("one", (1, 2), (3, 4)), top_sampling_references=_top_sampling_refs(2, 1)
+        _turn("one", (1, 2), (3, 4)), **{field: _top_sampling_refs(2, 1)}
     )
     options = dict(second_kwargs)
     second = replace(
         _turn("two", options.pop("prompt"), (6, 7), **options),
-        top_sampling_references=_top_sampling_refs(2, 2),
+        **{field: _top_sampling_refs(2, 2)},
     )
     run = materialize_tito_trajectory(
         _result((first, second), (_attempt("one"), _attempt("two"))), reward=1.0
@@ -917,28 +857,23 @@ def test_top_sampling_references_follow_completion_only_route_operations(
 
     sample = run.segments[0]
     assert sample.tokens == tokens
-    assert _top_sampling_rows(sample.top_sampling_references) == rows
+    references = getattr(sample, field)
+    assert _top_sampling_rows(references) == rows
     assert sample.routing_matrices is None
     group = rollout_to_prompt_group(
         Rollout(runs=[run]), advantage_fn=lambda rewards: rewards
     )
     assert group is not None
-    assert group.top_sampling_references == [sample.top_sampling_references]
+    assert getattr(group, field) == [references]
     batch = combine_prompt_groups([group])
-    (datum,) = attach_top_sampling_references(
-        build_policy_datums(batch), batch.top_sampling_references
-    )
-    assert (
-        datum.model_input.top_sampling_references
-        == sample.top_sampling_references.to_dict()
-    )
+    attach = attach_top_sampling_references if field == "top_sampling_references" else attach_sample_extra_references
+    (datum,) = attach(build_policy_datums(batch), getattr(batch, field))
+    assert getattr(datum.model_input, field) == references.to_dict()
     assert any(datum.loss_fn_inputs["advantages"].data)
 
 
 @pytest.mark.parametrize("realign", [False, True])
 def test_top_sampling_references_must_cover_every_turn_in_a_segment(realign) -> None:
-    from dataclasses import replace
-
     with_refs = replace(
         _turn("one", (1, 2), (3, 4)), top_sampling_references=_top_sampling_refs(2)
     )
@@ -963,13 +898,11 @@ def test_top_sampling_references_must_cover_every_turn_in_a_segment(realign) -> 
             materialize_tito_trajectory(
                 _result(turns, (_attempt("one"), _attempt("two"))), reward=1.0
             )
-        assert "top-K sampling references" in str(failure.value.__cause__)
+        assert "top_sampling_references" in str(failure.value.__cause__)
         assert failure.value.trace_path is not None
 
 
 def test_full_prompt_parquet_routes_cover_tools_and_survive_materialization():
-    from dataclasses import replace
-
     from fireworks.training.sdk.routing import RoutingReferences
 
     def refs(length: int, start: int = 0) -> RoutingReferences:
@@ -1044,8 +977,6 @@ def test_full_prompt_parquet_routes_cover_tools_and_survive_materialization():
 def test_recovered_legacy_artifact_uses_terminal_disposition(
     code, status, metadata, discard
 ):
-    from dataclasses import replace
-
     turn = _turn("one", (1, 2), (3, 4))
     artifact = _result((turn,), (_attempt("one"),), status=status)
     failed_call = replace(
@@ -1104,8 +1035,6 @@ def test_recovered_legacy_artifact_uses_terminal_disposition(
 def test_sampling_mask_references_follow_completion_only_route_operations(
     second_kwargs: dict[str, Any], tokens: list[int], rows: list[int | None]
 ) -> None:
-    from dataclasses import replace
-
     first = replace(
         _turn("one", (1, 2), (3, 4)), sampling_mask_references=_top_sampling_refs(2, 1)
     )
@@ -1140,8 +1069,6 @@ def test_sampling_mask_references_follow_completion_only_route_operations(
 
 @pytest.mark.parametrize("realign", [False, True])
 def test_sampling_mask_references_must_cover_every_turn_in_a_segment(realign) -> None:
-    from dataclasses import replace
-
     with_refs = replace(
         _turn("one", (1, 2), (3, 4)), sampling_mask_references=_top_sampling_refs(2)
     )
@@ -1166,5 +1093,72 @@ def test_sampling_mask_references_must_cover_every_turn_in_a_segment(realign) ->
             materialize_tito_trajectory(
                 _result(turns, (_attempt("one"), _attempt("two"))), reward=1.0
             )
-        assert "mask sampling references" in str(failure.value.__cause__)
+        assert "sampling_mask_references" in str(failure.value.__cause__)
         assert failure.value.trace_path is not None
+
+
+def test_extra_draw_references_follow_turns_into_policy_datums():
+    first = replace(
+        _turn("one", (1, 2), (3, 4)), sample_extra_references=_top_sampling_refs(2, 1)
+    )
+    second = replace(
+        _turn(
+            "two", (1, 2, 3, 4, 5), (6, 7), disposition="append", prefix_match_tokens=4
+        ),
+        sample_extra_references=_top_sampling_refs(2, 2),
+    )
+    run = materialize_tito_trajectory(
+        _result((first, second), (_attempt("one"), _attempt("two"))), reward=1.0
+    )
+    sample = run.segments[0]
+    assert _top_sampling_rows(sample.sample_extra_references) == [
+        None,
+        100,
+        101,
+        None,
+        200,
+        201,
+    ]
+    group = rollout_to_prompt_group(Rollout(runs=[run]), advantage_fn=lambda r: r)
+    batch = combine_prompt_groups([group])
+    (datum,) = attach_sample_extra_references(
+        build_policy_datums(batch), batch.sample_extra_references
+    )
+    assert (
+        datum.model_input.sample_extra_references
+        == sample.sample_extra_references.to_dict()
+    )
+    assert datum.loss_fn_inputs["response_mask"].data == [0, 1, 1, 0, 1, 1]
+
+
+def test_older_sdk_without_extra_draw_references_keeps_default_multiturn_working():
+    turn = _turn("one", (1, 2), (3, 4))
+    older = SimpleNamespace(
+        exact_checkpoint_ids=turn.exact_checkpoint_ids,
+        **{
+            field.name: getattr(turn, field.name)
+            for field in fields(turn)
+            if field.name != "sample_extra_references"
+        },
+    )
+    run = materialize_tito_trajectory(_result((older,), (_attempt("one"),)), reward=1.0)
+    assert run.segments[0].sample_extra_references is None
+
+
+@pytest.mark.parametrize("missing_first", [False, True])
+def test_tito_does_not_silently_drop_partial_extra_draw_capture(missing_first):
+    first = _turn("one", (1, 2), (3, 4))
+    second = _turn(
+        "two", (1, 2, 3, 4, 5), (6, 7), disposition="append", prefix_match_tokens=4
+    )
+    if missing_first:
+        second = replace(second, sample_extra_references=_top_sampling_refs(2))
+    else:
+        first = replace(first, sample_extra_references=_top_sampling_refs(2))
+    with pytest.raises(
+        DiscardTrajectoryError, match="Local cookbook trajectory validation failed"
+    ) as failure:
+        materialize_tito_trajectory(
+            _result((first, second), (_attempt("one"), _attempt("two"))), reward=1.0
+        )
+    assert "sample_extra_references must be present for every turn" in str(failure.value.__cause__)

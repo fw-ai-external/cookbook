@@ -15,7 +15,6 @@ def _cfg(**overrides):
         base_model="accounts/test/models/qwen3-1p7b",
         dataset="data/test.jsonl",
         weight_sync_interval=0,
-        hot_load_deployment_id=None,
         weight_sync_before_training=False,
         output_model_id=None,
     )
@@ -49,11 +48,11 @@ class TestCredentialChecks:
 class TestWeightSyncConfig:
     def test_weight_sync_interval_without_deployment_id_ok(self):
         """Weight sync without deployment_id is fine -- setup_deployment auto-creates."""
-        args = _cfg(weight_sync_interval=5, hot_load_deployment_id=None)
+        args = _cfg(weight_sync_interval=5)
         validate_preflight(args, fw_api_key="k")
 
     def test_weight_sync_interval_with_deployment_id_ok(self):
-        args = _cfg(weight_sync_interval=5, hot_load_deployment_id="dep-1")
+        args = _cfg(weight_sync_interval=5, deployment_id="dep-1")
         validate_preflight(args, fw_api_key="k")
 
 
@@ -98,7 +97,6 @@ class TestMultipleErrors:
             base_model="bad-model",
             dataset="",
             weight_sync_interval=5,
-            hot_load_deployment_id=None,
             output_model_id="bad_name",
         )
         with pytest.raises(UserConfigError) as exc_info:

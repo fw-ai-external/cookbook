@@ -26,11 +26,17 @@ class _Future:
 class _SamplingClient:
     def __init__(self, model: str) -> None:
         self.closed = False
+        self.records: list[sdk.ServerMetrics] = []
         self.deployment_sampler = SimpleNamespace(
             model=model,
             base_url="https://api.example",
             tokenizer=object(),
+            drain_metrics=self.drain_metrics,
         )
+
+    def drain_metrics(self) -> list[sdk.ServerMetrics]:
+        records, self.records = self.records, []
+        return records
 
     def close(self) -> None:
         self.closed = True
@@ -225,12 +231,15 @@ def test_moe_rollouts_request_completion_only_router_replay() -> None:
 def test_sampler_replacement_drains_old_client() -> None:
     old = _SamplingClient("old")
     new = _SamplingClient("new")
+    late_attempt = sdk.ServerMetrics(client_latency=0.5)
+    new_attempt = sdk.ServerMetrics(client_latency=0.25)
     started = asyncio.Event()
     release = asyncio.Event()
 
     async def sample(*_args, **_kwargs):
         started.set()
         await release.wait()
+        old.records.append(late_attempt)
         return ["done"]
 
     old.deployment_sampler.sample_with_prompt_tokens = sample
@@ -242,11 +251,15 @@ def test_sampler_replacement_drains_old_client() -> None:
         replacing = asyncio.create_task(sampler.replace(new))
         await asyncio.sleep(0)
         assert not old.closed
+        new.records.append(new_attempt)
         release.set()
         assert await sampling == ["done"]
-        await replacing
+        assert await replacing == [late_attempt]
         assert old.closed
+        assert old.records == []
         assert sampler.model == "new"
+        assert sampler.drain_metrics() == [new_attempt]
+        assert sampler.drain_metrics() == []
         await sampler.aclose()
 
     asyncio.run(exercise())
@@ -344,6 +357,11 @@ def test_real_loop_runs_two_groups_and_one_optimizer_step(monkeypatch) -> None:
             **_context,
         ) -> RolloutRun:
             evaluation_modes.append(evaluation)
+            if not evaluation:
+                records = service.sampling_clients[0].records
+                if sample_index == 0:
+                    records.append(sdk.ServerMetrics(http_status_code=429, retry_attempt=1))
+                records.append(sdk.ServerMetrics(client_latency=0.25, retry_attempt=2 if sample_index == 0 else 1))
             reward = float(sample_index)
             return RolloutRun(
                 segments=[
@@ -399,6 +417,11 @@ def test_real_loop_runs_two_groups_and_one_optimizer_step(monkeypatch) -> None:
     assert step_metrics["train/inference_k3"] >= 0.0
     assert "train/inference_k1" in step_metrics
     assert "train/ppo_clip_frac" in step_metrics
+    assert step_metrics["sampler/requests"] == 6.0
+    assert step_metrics["sampler/errors"] == 2.0
+    assert step_metrics["sampler/retries"] == 2.0
+    assert step_metrics["sampler/client_latency_s_mean"] == 0.25
+    assert "sampler/ttft_s_mean" not in step_metrics
     assert len(service.training_client.optim_calls) == 1
     adam = service.training_client.optim_calls[0][0]
     assert adam.beta2 == 0.95

@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING, Any
 from fireworks.training.sdk.routing import (
     RoutingReferences,
     concat_routing,
-    copy_routing,
     routing_has_gaps,
 )
 
+from training.utils.rl.router_replay import reference_gaps
 from training.utils.rl.async_rl.errors import (
     DiscardTrajectoryError,
     trajectory_discard_error,
@@ -20,6 +20,9 @@ from training.utils.rl.rollout.types import RolloutRun, RolloutSample
 
 if TYPE_CHECKING:
     from fireworks.training.sdk import TITOTrajectoryArtifact, TITOTurn
+
+
+_CAPTURE_FIELDS = ("top_sampling_references", "sampling_mask_references", "sample_extra_references")
 
 
 def _assistant_text(turn: TITOTurn) -> str:
@@ -93,13 +96,10 @@ class _SampleBuilder:
     logprobs: list[float]
     raw_logprobs: list[float] | None
     loss_mask: list[int]
-    inference_topk_token_ids: list[list[int]] | None
-    inference_topk_logprobs: list[list[float]] | None
-    response_routes: list[str] | RoutingReferences | None
-    initial_routes: list[str] | RoutingReferences | None = None
+    response_routes: RoutingReferences | None
+    initial_routes: RoutingReferences | None = None
     # Completion-only like response_routes: prompt and tool-suffix positions are gaps.
-    response_top_sampling: list[str] | RoutingReferences | None = None
-    response_sampling_mask: list[str] | RoutingReferences | None = None
+    capture_references: dict[str, RoutingReferences] = field(default_factory=dict)
     turns: list[TITOTurn] = field(default_factory=list)
     masked_fail_closed_turns: int = 0
     realigned_masked_tokens: int = 0
@@ -125,28 +125,12 @@ class _SampleBuilder:
                 [0.0] * len(prompt) if turn.inference_logprobs is not None else None
             ),
             loss_mask=[0] * len(prompt),
-            inference_topk_token_ids=(
-                [[] for _ in prompt]
-                if turn.inference_topk_token_ids is not None
-                else None
-            ),
-            inference_topk_logprobs=(
-                [[] for _ in prompt]
-                if turn.inference_topk_logprobs is not None
-                else None
-            ),
-            response_routes=[] if turn.routing_matrices is not None else None,
+            response_routes=reference_gaps(0) if turn.routing_matrices is not None else None,
             completion_origin=[False] * len(prompt),
-            response_top_sampling=(
-                []
-                if getattr(turn, "top_sampling_references", None) is not None
-                else None
-            ),
-            response_sampling_mask=(
-                []
-                if getattr(turn, "sampling_mask_references", None) is not None
-                else None
-            ),
+            capture_references={
+                key: reference_gaps(0) for key in _CAPTURE_FIELDS
+                if getattr(turn, key, None) is not None
+            },
         )
 
     def can_append(self, turn: TITOTurn) -> bool:
@@ -175,16 +159,7 @@ class _SampleBuilder:
     def realign(self, turn: TITOTurn, *, trainable: bool = True) -> None:
         if not self.can_realign(turn):
             raise ValueError("turn has invalid bounded realignment evidence")
-        top_sampling = getattr(turn, "top_sampling_references", None)
-        sampling_mask = getattr(turn, "sampling_mask_references", None)
-        if (self.response_top_sampling is None) != (top_sampling is None):
-            raise ValueError(
-                "top-K sampling references must be present for every turn in one TITO segment"
-            )
-        if (self.response_sampling_mask is None) != (sampling_mask is None):
-            raise ValueError(
-                "mask sampling references must be present for every turn in one TITO segment"
-            )
+        self._check_capture_fields(turn)
         start = turn.realign_from_token
         assert start is not None
         # Only sampled completions at and after `start` leave training; the
@@ -204,31 +179,20 @@ class _SampleBuilder:
         self.logprobs[start:] = [0.0] * len(replacement)
         self.loss_mask[start:] = [0] * len(replacement)
         self.completion_origin[start:] = [False] * len(replacement)
-        if self.inference_topk_token_ids is not None:
-            self.inference_topk_token_ids[start:] = [[] for _ in replacement]
-        if self.inference_topk_logprobs is not None:
-            self.inference_topk_logprobs[start:] = [[] for _ in replacement]
         if self.raw_logprobs is not None:
             self.raw_logprobs[start:] = [0.0] * len(replacement)
         route_start = start - len(self.prompt_ids)
         if route_start < 0 and (
             self.response_routes is not None
-            or self.response_top_sampling is not None
-            or self.response_sampling_mask is not None
+            or self.capture_references
         ):
             raise ValueError("realignment cannot replace the initial prompt")
         if self.response_routes is not None:
             self.response_routes = concat_routing(
-                self.response_routes[:route_start], [""] * len(replacement)
+                self.response_routes[:route_start], reference_gaps(len(replacement))
             )
-        if self.response_top_sampling is not None:
-            self.response_top_sampling = concat_routing(
-                self.response_top_sampling[:route_start], [""] * len(replacement)
-            )
-        if self.response_sampling_mask is not None:
-            self.response_sampling_mask = concat_routing(
-                self.response_sampling_mask[:route_start], [""] * len(replacement)
-            )
+        for key, refs in self.capture_references.items():
+            self.capture_references[key] = concat_routing(refs[:route_start], reference_gaps(len(replacement)))
         self.realigned_masked_tokens += turn.realigned_masked_tokens
         self._append_completion(turn, trainable=trainable)
 
@@ -259,10 +223,6 @@ class _SampleBuilder:
             del self.logprobs[retained:]
             del self.loss_mask[retained:]
             del self.completion_origin[retained:]
-            if self.inference_topk_token_ids is not None:
-                del self.inference_topk_token_ids[retained:]
-            if self.inference_topk_logprobs is not None:
-                del self.inference_topk_logprobs[retained:]
             if self.raw_logprobs is not None:
                 del self.raw_logprobs[retained:]
             if self.response_routes is not None:
@@ -271,20 +231,14 @@ class _SampleBuilder:
                         "incremental checkpoint trim exceeds response routes"
                     )
                 self.response_routes = self.response_routes[:-trim_tokens]
-            if self.response_top_sampling is not None:
-                self.response_top_sampling = self.response_top_sampling[:-trim_tokens]
-            if self.response_sampling_mask is not None:
-                self.response_sampling_mask = self.response_sampling_mask[:-trim_tokens]
+            for key, refs in self.capture_references.items():
+                self.capture_references[key] = refs[:-trim_tokens]
             self.incremental_checkpoint_trimmed_tokens += trim_tokens
         suffix = prompt[len(self.tokens) :]
         self.tokens.extend(suffix)
         self.logprobs.extend([0.0] * len(suffix))
         self.loss_mask.extend([0] * len(suffix))
         self.completion_origin.extend([False] * len(suffix))
-        if self.inference_topk_token_ids is not None:
-            self.inference_topk_token_ids.extend([] for _ in suffix)
-        if self.inference_topk_logprobs is not None:
-            self.inference_topk_logprobs.extend([] for _ in suffix)
         if self.raw_logprobs is not None:
             if turn.inference_logprobs is None:
                 self.raw_logprobs = None
@@ -296,43 +250,26 @@ class _SampleBuilder:
                     "R3 must be present for every turn in one TITO segment"
                 )
             self.response_routes = concat_routing(
-                self.response_routes, [""] * len(suffix)
+                self.response_routes, reference_gaps(len(suffix))
             )
         elif turn.routing_matrices is not None:
             raise ValueError("R3 cannot begin partway through one TITO segment")
-        top_sampling = getattr(turn, "top_sampling_references", None)
-        sampling_mask = getattr(turn, "sampling_mask_references", None)
-        if self.response_top_sampling is not None:
-            if top_sampling is None:
-                raise ValueError(
-                    "top-K sampling references must be present for every turn in one TITO segment"
-                )
-            self.response_top_sampling = concat_routing(
-                self.response_top_sampling, [""] * len(suffix)
-            )
-        elif top_sampling is not None:
-            raise ValueError(
-                "top-K sampling references cannot begin partway through one TITO segment"
-            )
-        if self.response_sampling_mask is not None:
-            if sampling_mask is None:
-                raise ValueError(
-                    "mask sampling references must be present for every turn in one TITO segment"
-                )
-            self.response_sampling_mask = concat_routing(
-                self.response_sampling_mask, [""] * len(suffix)
-            )
-        elif sampling_mask is not None:
-            raise ValueError(
-                "mask sampling references cannot begin partway through one TITO segment"
-            )
-
+        self._check_capture_fields(turn)
+        for key, refs in self.capture_references.items():
+            self.capture_references[key] = concat_routing(refs, reference_gaps(len(suffix)))
         self._append_completion(turn, trainable=trainable)
+
+    def _check_capture_fields(self, turn: TITOTurn) -> None:
+        for key in _CAPTURE_FIELDS:
+            if (key in self.capture_references) != (getattr(turn, key, None) is not None):
+                raise ValueError(f"{key} must be present for every turn in one TITO segment")
 
     def _append_completion(self, turn: TITOTurn, *, trainable: bool) -> None:
         if turn.prompt_routing_matrices is not None:
             start = turn.prompt_routing_start
-            routes = copy_routing(turn.prompt_routing_matrices)
+            routes = turn.prompt_routing_matrices
+            if not isinstance(routes, RoutingReferences):
+                raise ValueError("Incremental prompt routes require trainer-shared references")
             if (
                 start is None
                 or start < 0
@@ -345,7 +282,7 @@ class _SampleBuilder:
                 raise ValueError("Prompt R3 requires completion R3")
             boundary = len(self.prompt_ids) - 1
             if self.initial_routes is None:
-                self.initial_routes = [""] * boundary
+                self.initial_routes = reference_gaps(boundary)
             first_count = max(0, boundary - start)
             if first_count:
                 self.initial_routes = concat_routing(
@@ -359,19 +296,6 @@ class _SampleBuilder:
         self.logprobs.extend(_required_sampling_logprobs(turn))
         self.loss_mask.extend([int(trainable)] * len(completion))
         self.completion_origin.extend([True] * len(completion))
-        if self.inference_topk_token_ids is not None:
-            if turn.inference_topk_token_ids is None:
-                self.inference_topk_token_ids = None
-                self.inference_topk_logprobs = None
-            else:
-                self.inference_topk_token_ids.extend(
-                    list(row) for row in turn.inference_topk_token_ids
-                )
-                assert self.inference_topk_logprobs is not None
-                assert turn.inference_topk_logprobs is not None
-                self.inference_topk_logprobs.extend(
-                    list(row) for row in turn.inference_topk_logprobs
-                )
         if not trainable:
             self.masked_fail_closed_turns += 1
             self.fail_closed_appended_tokens += len(completion)
@@ -385,7 +309,7 @@ class _SampleBuilder:
                     float(value) for value in turn.inference_logprobs
                 )
         if self.response_routes is not None:
-            if turn.routing_matrices is None or len(turn.routing_matrices) != len(
+            if not isinstance(turn.routing_matrices, RoutingReferences) or len(turn.routing_matrices) != len(
                 completion
             ):
                 raise ValueError(
@@ -394,23 +318,12 @@ class _SampleBuilder:
             self.response_routes = concat_routing(
                 self.response_routes, turn.routing_matrices
             )
-        if self.response_top_sampling is not None:
-            references = getattr(turn, "top_sampling_references", None)
-            if references is None or len(references) != len(completion):
-                raise ValueError(
-                    f"turn {turn.turn_id} has completion-misaligned top-K sampling references"
-                )
-            self.response_top_sampling = concat_routing(
-                self.response_top_sampling, references
-            )
-        if self.response_sampling_mask is not None:
-            references = getattr(turn, "sampling_mask_references", None)
-            if references is None or len(references) != len(completion):
-                raise ValueError(
-                    f"turn {turn.turn_id} has completion-misaligned mask sampling references"
-                )
-            self.response_sampling_mask = concat_routing(
-                self.response_sampling_mask, references
+        for key, refs in self.capture_references.items():
+            received = getattr(turn, key)
+            if not isinstance(received, RoutingReferences) or len(received) != len(completion):
+                raise ValueError(f"turn {turn.turn_id} has completion-misaligned {key}")
+            self.capture_references[key] = concat_routing(
+                refs, received if trainable else reference_gaps(len(completion))
             )
         self.turns.append(turn)
 
@@ -423,7 +336,7 @@ class _SampleBuilder:
             initial = (
                 self.initial_routes
                 if self.initial_routes is not None
-                else [""] * (len(self.prompt_ids) - 1)
+                else reference_gaps(len(self.prompt_ids) - 1)
             )
             routing = concat_routing(initial, self.response_routes)
             if self.initial_routes is not None and routing_has_gaps(routing):
@@ -432,24 +345,10 @@ class _SampleBuilder:
                 raise ValueError(
                     "materialized R3 does not align with model-input positions"
                 )
-        top_sampling = None
-        sampling_mask = None
-        if self.response_top_sampling is not None:
-            top_sampling = concat_routing(
-                [""] * (len(self.prompt_ids) - 1), self.response_top_sampling
-            )
-            if len(top_sampling) != len(self.tokens) - 1:
-                raise ValueError(
-                    "materialized top-K sampling references do not align with model-input positions"
-                )
-        if self.response_sampling_mask is not None:
-            sampling_mask = concat_routing(
-                [""] * (len(self.prompt_ids) - 1), self.response_sampling_mask
-            )
-            if len(sampling_mask) != len(self.tokens) - 1:
-                raise ValueError(
-                    "materialized mask sampling references do not align with model-input positions"
-                )
+        captures = {
+            key: concat_routing(reference_gaps(len(self.prompt_ids) - 1), refs)
+            for key, refs in self.capture_references.items()
+        }
         return RolloutSample(
             tokens=list(self.tokens),
             logprobs=list(self.logprobs),
@@ -457,19 +356,8 @@ class _SampleBuilder:
                 list(self.raw_logprobs) if self.raw_logprobs is not None else None
             ),
             loss_mask=list(self.loss_mask),
-            inference_topk_token_ids=(
-                [list(row) for row in self.inference_topk_token_ids]
-                if self.inference_topk_token_ids is not None
-                else None
-            ),
-            inference_topk_logprobs=(
-                [list(row) for row in self.inference_topk_logprobs]
-                if self.inference_topk_logprobs is not None
-                else None
-            ),
             routing_matrices=routing,
-            top_sampling_references=top_sampling,
-            sampling_mask_references=sampling_mask,
+            **captures,
             reward=reward,
             finish_reason=self.turns[-1].finish_reason,
             text="\n".join(_assistant_text(turn) for turn in self.turns),
@@ -574,7 +462,7 @@ def _materialize_tito_trajectory(
         builders: list[_SampleBuilder] = []
         builder: _SampleBuilder | None = None
         prior_turn: TITOTurn | None = None
-        routing_history: list[str] | RoutingReferences | None = None
+        routing_history: RoutingReferences | None = None
         for turn_index, turn in enumerate(retained):
             if turn_index == 0:
                 if turn.prompt_disposition != "new_segment":
@@ -603,7 +491,7 @@ def _materialize_tito_trajectory(
                     raise ValueError(
                         "Incremental prompt routes do not cover the prompt suffix"
                     )
-                prefix = routing_history[:start] if routing_history is not None else []
+                prefix = routing_history[:start] if routing_history is not None else reference_gaps(0)
                 if len(prefix) != start:
                     raise ValueError(
                         "Incremental prompt R3 has no routing history for its prefix"

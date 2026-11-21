@@ -343,6 +343,7 @@ class _Sampler:
         self.name = name
         self.base_url = "https://api.example"
         self.model = f"model-{name}"
+        self.r3_store_id = "test-store"
         self._events = events
         self._records = list(records or [])
 
@@ -612,7 +613,7 @@ def test_main_passes_renderer_name_to_the_default_rollout(monkeypatch):
             return SimpleNamespace()
 
         def create_deployment_sampler(self, *_args, **_kwargs):
-            return SimpleNamespace(close=lambda: None, base_url="https://api.example", model="m")
+            return SimpleNamespace(close=lambda: None, base_url="https://api.example", model="m", r3_store_id="test-store")
 
         def close(self):
             pass
@@ -646,7 +647,7 @@ def test_main_passes_renderer_name_to_the_default_rollout(monkeypatch):
 
 
 @pytest.mark.parametrize("multimodal", [False, True])
-@pytest.mark.parametrize("routing_format", [None, "base64_inline", "parquet_v1"])
+@pytest.mark.parametrize("routing_format", [None, "parquet_v1"])
 def test_default_rollout_preserves_images_and_sdk_routing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, multimodal: bool, routing_format: str | None
 ) -> None:
@@ -657,9 +658,7 @@ def test_default_rollout_preserves_images_and_sdk_routing(
     prompt = sdk.ModelInput(chunks=chunks)
     expanded_tokens = [10, 11] + ([0] * 4 if multimodal else []) + [12]
     routes = None
-    if routing_format == "base64_inline":
-        routes = ["route-30", "route-40"]
-    elif routing_format == "parquet_v1":
+    if routing_format == "parquet_v1":
         routes = RoutingReferences(
             2,
             ({"format": "parquet_v1", "row_count": 2, "artifact_id": "capture"},),
@@ -701,6 +700,7 @@ def test_default_rollout_preserves_images_and_sdk_routing(
                 close=lambda: sampler_closed.append(True),
                 base_url="https://api.example",
                 model="model",
+                r3_store_id="test-store" if routing_format else None,
             )
 
         def close(self) -> None:
@@ -782,8 +782,6 @@ def test_default_rollout_preserves_images_and_sdk_routing(
         if routing_format == "parquet_v1":
             assert datum.model_input.routing_matrix_format == "parquet_v1"
             assert datum.model_input.routing_references["files"][0]["artifact_id"] == "capture"
-        elif routing_format == "base64_inline":
-            assert datum.model_input.routing_matrices[-1] == "route-40"
 
 
 @pytest.mark.parametrize("phase", ["before_optimizer", "optimizer_wait"])

@@ -53,3 +53,45 @@ def test_parse_args_defaults_final_export_to_source(monkeypatch):
     cfg = merge_tool.parse_args()
     assert cfg.export_precision == "source"
     assert cfg.adapter == "accounts/a/models/lora"
+
+
+def test_parse_args_rejects_adapter_gcs_alias(monkeypatch):
+    monkeypatch.setattr(
+        merge_tool.sys,
+        "argv",
+        [
+            "merge_lora_and_promote.py",
+            "--base-model",
+            "accounts/a/models/base",
+            "--adapter-gcs",
+            "gs://bucket/adapter",
+            "--lora-rank",
+            "8",
+            "--output-model-id",
+            "merged",
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        merge_tool.parse_args()
+
+
+def test_parse_args_rejects_gcs_adapter_model(monkeypatch):
+    monkeypatch.setattr(
+        merge_tool.sys,
+        "argv",
+        [
+            "merge_lora_and_promote.py",
+            "--base-model",
+            "accounts/a/models/base",
+            "--adapter-model",
+            "gs://bucket/adapter",
+            "--lora-rank",
+            "8",
+            "--output-model-id",
+            "merged",
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        merge_tool.parse_args()

@@ -41,17 +41,16 @@ class PromptGroup:
     The direct client GRPO builder uses them only for drift metrics. They must
     never replace sampling logprobs in the policy ratio.
     """
-    inference_topk_token_ids: List[List[List[int]]] = field(default_factory=list)
-    """Per-datum sampler top-k token ids in shifted target coordinates."""
-    inference_topk_logprobs: List[List[List[float]]] = field(default_factory=list)
-    """Per-datum sampler top-k logprobs aligned with ``inference_topk_token_ids``."""
     top_sampling_references: List[RoutingReferences | None] = field(
         default_factory=list
     )
     sampling_mask_references: List[RoutingReferences | None] = field(
         default_factory=list
     )
-    """Per-datum Parquet top-K sampling references over model-input positions."""
+    sample_extra_references: List[RoutingReferences | None] = field(
+        default_factory=list
+    )
+    """Per-datum references to independent draws over model-input positions."""
     completion_lens: List[int] = field(default_factory=list)
     """Per-sample completion lengths in tokens."""
     truncated: List[bool] = field(default_factory=list)
@@ -107,12 +106,13 @@ class PolicyBatch:
     """Optional per-target-token advantages (e.g. IGPO); replaces ``advantages``."""
     ref_logprobs: List[List[float]] = field(default_factory=list)
     """Optional reference-model logprobs for a client-side KL term (opt-in fork)."""
-    inference_topk_token_ids: List[List[List[int]]] = field(default_factory=list)
-    inference_topk_logprobs: List[List[List[float]]] = field(default_factory=list)
     top_sampling_references: List[RoutingReferences | None] = field(
         default_factory=list
     )
     sampling_mask_references: List[RoutingReferences | None] = field(
+        default_factory=list
+    )
+    sample_extra_references: List[RoutingReferences | None] = field(
         default_factory=list
     )
 
@@ -128,10 +128,9 @@ def combine_prompt_groups(groups: List[PromptGroup]) -> PolicyBatch:
     prompt_lens: List[int] = []
     rollout: List[List[float]] = []
     raw: List[List[float]] = []
-    topk_ids: List[List[List[int]]] = []
-    topk_logprobs: List[List[List[float]]] = []
     references: List[RoutingReferences | None] = []
     mask_references: List[RoutingReferences | None] = []
+    extra_references: List[RoutingReferences | None] = []
     for pg in groups:
         rows = len(pg.data)
         data.extend(pg.data)
@@ -141,11 +140,12 @@ def combine_prompt_groups(groups: List[PromptGroup]) -> PolicyBatch:
         )
         rollout.extend(pg.inf_logprobs)
         raw.extend(pg.raw_inf_logprobs or [[] for _ in range(rows)])
-        topk_ids.extend(pg.inference_topk_token_ids or [[] for _ in range(rows)])
-        topk_logprobs.extend(pg.inference_topk_logprobs or [[] for _ in range(rows)])
         references.extend(pg.top_sampling_references or [None for _ in range(rows)])
         mask_references.extend(
             pg.sampling_mask_references or [None for _ in range(rows)]
+        )
+        extra_references.extend(
+            pg.sample_extra_references or [None for _ in range(rows)]
         )
     return PolicyBatch(
         data=data,
@@ -154,10 +154,9 @@ def combine_prompt_groups(groups: List[PromptGroup]) -> PolicyBatch:
         rollout_logprobs=rollout,
         groups=list(groups),
         raw_inference_logprobs=raw,
-        inference_topk_token_ids=topk_ids,
-        inference_topk_logprobs=topk_logprobs,
         top_sampling_references=references,
         sampling_mask_references=mask_references,
+        sample_extra_references=extra_references,
     )
 
 

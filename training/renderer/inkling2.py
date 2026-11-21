@@ -101,8 +101,11 @@ class Inkling2Renderer(Renderer):
             raise RendererError("Inkling 2 serving image marker must be one known token")
         return ids[0]
 
-    def get_stop_sequences(self) -> list[str]:
-        return [_STOP]
+    def get_stop_sequences(self) -> list[int]:
+        ids = self.tokenizer.encode(_STOP, add_special_tokens=False)
+        if len(ids) != 1 or ids[0] == getattr(self.tokenizer, "unk_token_id", None):
+            raise RendererError("Inkling 2 sampling stop marker must be one known token")
+        return ids
 
     def _template(self, messages: list[dict], **kwargs: Any) -> str:
         return self.tokenizer.apply_chat_template(

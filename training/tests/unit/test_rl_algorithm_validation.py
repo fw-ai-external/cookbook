@@ -12,7 +12,6 @@ from training.utils.rl.algorithm.grpo import GRPOConfig
 from training.utils.rl.algorithm.gspo import GSPOConfig
 from training.utils.rl.algorithm.importance_sampling import ISConfig
 from training.utils.rl.algorithm.reinforce import ReinforceConfig
-from training.utils.rl.algorithm.score_centering import ScoreCenteringConfig
 
 
 @pytest.mark.parametrize(
@@ -29,9 +28,6 @@ from training.utils.rl.algorithm.score_centering import ScoreCenteringConfig
         (DPPOConfig, {"divergence": "invalid"}, "DPPO divergence"),
         (DPPOConfig, {"threshold": -0.1}, "DPPO threshold"),
         (DPPOConfig, {"ratio_log_cap": -0.1}, "DPPO"),
-        (ScoreCenteringConfig, {"top_k": 0}, "score centering"),
-        (ScoreCenteringConfig, {"top_k": 9}, "score centering"),
-        (ScoreCenteringConfig, {"tail_mass_epsilon": 0}, "score centering"),
         (GSPOConfig, {"clip_ratio_low": -0.1}, "GSPO"),
         (GSPOConfig, {"clip_ratio_high": -0.1}, "GSPO"),
         (GSPOConfig, {"seq_ratio_log_cap": -0.1}, "GSPO"),

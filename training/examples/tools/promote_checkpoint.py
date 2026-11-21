@@ -31,11 +31,6 @@ Usage:
         --base-model accounts/fireworks/models/qwen3-8b \\
         --output-model-id my-fine-tuned-qwen3-8b
 
-    # Legacy jobs that used deployment-owned checkpoints:
-    python promote_checkpoint.py \\
-        --job-id <trainer-job-id> \\
-        --base-model accounts/fireworks/models/qwen3-8b \\
-        --hot-load-deployment-id my-deployment
 """
 
 from __future__ import annotations
@@ -75,7 +70,6 @@ class PromoteConfig:
     checkpoint_name: str | None
     base_model: str
     output_model_id: str | None
-    hot_load_deployment_id: str | None
 
 
 @dataclass(frozen=True)
@@ -116,24 +110,12 @@ def parse_args() -> PromoteConfig:
         default=None,
         help="Promoted model ID. Defaults to an auto-generated value.",
     )
-    parser.add_argument(
-        "--hot-load-deployment-id",
-        default=None,
-        help=(
-            "[Legacy] Deployment ID for jobs from deployments that predate "
-            "the stored-bucket-URL migration. Modern runs (both PER_TRAINER "
-            "and PER_DEPLOYMENT bucket scopes) do not need this — the "
-            "bucket URL is resolved server-side from the trainer's stored "
-            "metadata. Omit for any run from cookbook >= 0.3.0."
-        ),
-    )
     args = parser.parse_args()
     return PromoteConfig(
         job_id=args.job_id,
         checkpoint_name=args.checkpoint_name,
         base_model=args.base_model,
         output_model_id=args.output_model_id,
-        hot_load_deployment_id=args.hot_load_deployment_id,
     )
 
 
@@ -214,15 +196,6 @@ def main() -> None:
     logger.info("Checkpoint:      %s", resolved.full_name)
     logger.info("Base model:      %s", cfg.base_model)
     logger.info("Output model ID: %s", output_model_id)
-    if cfg.hot_load_deployment_id:
-        logger.warning(
-            "--hot-load-deployment-id is only needed for deployments that "
-            "predate the stored-bucket-URL migration. Runs from cookbook "
-            ">= 0.3.0 (both PER_TRAINER and PER_DEPLOYMENT bucket scopes) "
-            "resolve the bucket URL server-side and should omit this flag."
-        )
-        logger.info("Deployment ID:   %s (legacy)", cfg.hot_load_deployment_id)
-
     # Pass the 4-segment resource name verbatim — no manual disassembly
     # into (job_id, checkpoint_id). See the public docs page on saving
     # and loading for the full promote API contract.
@@ -230,7 +203,6 @@ def main() -> None:
         name=resolved.full_name,
         output_model_id=output_model_id,
         base_model=cfg.base_model,
-        hot_load_deployment_id=cfg.hot_load_deployment_id,
     )
 
     logger.info(

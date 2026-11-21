@@ -122,8 +122,5 @@ def validate_preflight(
             weight_sync_interval=getattr(args, "weight_sync_interval", 0),
             weight_sync_before_training=getattr(args, "weight_sync_before_training", False),
         ),
-        deploy=DeployConfig(
-            deployment_id=getattr(args, "hot_load_deployment_id", None),
-        ),
         output_model_id=getattr(args, "output_model_id", None),
     )

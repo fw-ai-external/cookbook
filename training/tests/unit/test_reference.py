@@ -1,3 +1,4 @@
+from training.tests._replay_refs import replay_refs, replay_rows
 from concurrent.futures import Future
 from types import SimpleNamespace
 from typing import Any
@@ -87,8 +88,8 @@ def test_lora_reference_uses_own_routing_and_preserves_policy_metadata() -> None
     original = sdk.Datum(
         model_input=sdk.ModelInput(
             chunks=original.model_input.chunks,
-            routing_matrices=["policy-route-0", "policy-route-1"],
-            top_sampling_references={"policy": "sampling-support"},
+            routing_references=replay_refs(["policy-route-0", "policy-route-1"]).to_dict(),
+            top_sampling_references=replay_refs(["head-a", "head-b"]).to_dict(),
         ),
         loss_fn_inputs=original.loss_fn_inputs,
     )
@@ -98,8 +99,7 @@ def test_lora_reference_uses_own_routing_and_preserves_policy_metadata() -> None
     forwarded = base.forward.call_args.args[0][0]
     assert forwarded.model_input.chunks == original.model_input.chunks
     assert forwarded.loss_fn_inputs == original.loss_fn_inputs
-    assert forwarded.model_input.routing_matrices is None
     assert forwarded.model_input.routing_references is None
     assert forwarded.model_input.top_sampling_references is None
-    assert original.model_input.routing_matrices == ["policy-route-0", "policy-route-1"]
-    assert original.model_input.top_sampling_references == {"policy": "sampling-support"}
+    assert replay_rows(original.model_input.routing_references) == ["policy-route-0", "policy-route-1"]
+    assert original.model_input.top_sampling_references == replay_refs(["head-a", "head-b"]).to_dict()

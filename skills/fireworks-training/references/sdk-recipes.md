@@ -17,6 +17,11 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 
 ## Tokenizer recovery
 
+Tokenize training inputs locally. For plain text, use the SDK's
+`training_client.get_tokenizer()` with the appropriate `tokenizer_model`.
+For chat data, use the model's renderer so the expected chat template and
+special tokens are applied.
+
 If mapping is missing or the specified tokenizer fails or mismatches, automatically
 inspect the exact base model with SDK `models.get(model_id, account_id=account_id)`.
 Resolve its `hugging_face_url` or authorized tokenizer artifacts; prefer the owner's
@@ -38,7 +43,8 @@ data-based renderer decision needs an explicit `renderer_name`; renaming the
 directory does not select a model family. Copying a familiar catalog basename
 into another namespace does not establish the same identity.
 
-An independently selected Qwen, MiniMax, Gemma or Nemotron base-model context
+An independently selected Qwen, MiniMax, Gemma, Nemotron, Muse Glimmer,
+Muse Spark open or Beam base-model context
 keeps tokenizer loading on installed code even with a tokenizer override or
 remote-code opt-in. The SDK, recipe loader and renderer preserve this restriction;
 a reviewed exact model ID or declared model type only restricts execution and does not certify arbitrary
@@ -50,6 +56,10 @@ Opaque local directories use their exact `minimax_m2` config model type, not
 their basename. Saving this installed generic reader omits stale checkpoint
 `auto_map` pointers; token IDs and special-token behavior remain unchanged.
 Other variants and multimodal processors require their own verification.
+Muse/Beam use their installed generic tokenizer reader; this policy does not
+change renderer identity, chat templates, model weights or processor support.
+An unavailable tokenizer artifact remains unavailable; never enable checkpoint
+Python to work around download or authentication errors.
 
 ## "Reference loop" means these files
 

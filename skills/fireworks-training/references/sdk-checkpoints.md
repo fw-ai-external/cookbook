@@ -255,7 +255,7 @@ cfg = Config(
 )
 ```
 
-Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh. The adapter must be a promoted PEFT Model resource name (`accounts/<account>/models/<name>`).
+Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh. The adapter must be a promoted PEFT Model resource name (`accounts/<account>/models/<name>`). Raw local directories and `gs://` paths are rejected because they bypass the Model-resource ownership check.
 
 Priority inside `TrainingCheckpoints.resume` (highest first):
 
@@ -338,6 +338,33 @@ To initialize a new recipe run from another DCP checkpoint:
   `cross_job://`) and absolute-path references are not supported by pooled
   trainers, and `<other-session>:<checkpoint>` is rejected rather than silently
   redirected to the current run.
+
+### Serverless: every resume starts a new run
+
+Each serverless training client gets a new `run-<32 lowercase hex>` ID,
+including the one a resume creates. Checkpoints saved after a resume live under
+that new run, even when their names continue the old step count:
+
+```text
+<account>/run-aaaa…/step-6    # saved by the first run
+<account>/run-bbbb…/step-66   # saved after resuming from run-aaaa…/step-6
+<account>/run-aaaa…/step-66   # never existed
+```
+
+- Persist the exact path that `save_state()` returns, together with its
+  `dataloader.json` cursor, and resume from that path. Never build a reference
+  from a remembered run ID and a step number: after the first resume, the
+  remembered run ID is stale.
+- For a full continuation, load it with `load_state_with_optimizer(path)` or
+  `create_training_client_from_state_with_optimizer(path)`. The plain
+  `load_state` and `create_training_client_from_state` restore weights only.
+- If the path was lost, list the checkpoints of the session that saved it with
+  `FireworksClient.list_training_session_checkpoints(...)` to find the newest
+  DCP save. Do not guess the run ID; if the saving run is still unclear, ask
+  support with the session IDs instead of retrying.
+- "Checkpoint does not exist" for a `<account>/run-…/<name>` reference usually
+  means the name was saved under a later run. Retrying the same reference
+  cannot succeed; fix the reference.
 
 Cross-job DCP initialization restores weights and optimizer state but resets
 the recipe step and cursor. Serverless cross-run continuation also restores
@@ -429,7 +456,7 @@ If `promote_checkpoint` returns `checkpoint "<name>" not found in GCS`:
 2. Make sure your `output_model_id` passes `validate_output_model_id` and retry `promote_checkpoint.py` against one of those rows.
 3. If every promotable row still fails, **reach out to Fireworks support** — some recoveries (re-staging a sampler blob from surviving DCP state, looking up a pre-migration `PER_DEPLOYMENT` bucket) require server-side access.
 
-The modern promote API takes a single `name=` (4-segment resource path from `list_checkpoints` output) and works identically for `PER_TRAINER` and `PER_DEPLOYMENT`. The legacy positional `(job_id, checkpoint_id, ...)` form still works but emits a `DeprecationWarning`. See [`rl-hotload.md#promoting-a-checkpoint`](rl-hotload.md#promoting-a-checkpoint) and `sdk-tools.md` for the CLI flow.
+Use the row's full `name=` from `list_checkpoints` for promotion.
 
 ## Case-study curriculum state
 

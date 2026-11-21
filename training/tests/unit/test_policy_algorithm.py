@@ -19,7 +19,6 @@ from training.utils.rl.algorithm import (
     gspo,
     importance_sampling,
     reinforce,
-    score_centering,
 )
 from training.utils.rl.losses import PolicyBatch
 from training.utils.supervised import build_datum_from_token_mask
@@ -35,7 +34,6 @@ SERVER_SIDE = [
 ]
 CLIENT_ONLY = [
     (reinforce, reinforce.ReinforceConfig()),
-    (score_centering, score_centering.ScoreCenteringConfig()),
 ]
 CONFIG_CLASSES = {
     grpo: "GRPOConfig",
@@ -46,7 +44,6 @@ CONFIG_CLASSES = {
     dppo: "DPPOConfig",
     importance_sampling: "ISConfig",
     reinforce: "ReinforceConfig",
-    score_centering: "ScoreCenteringConfig",
 }
 # Client-only diagnostics beyond the shared ``{prefix}_*`` names.
 CLIENT_EXTRAS = {"dro_quad_penalty", "dppo_divergence_mean"}
@@ -134,7 +131,7 @@ def test_configs_are_frozen(module) -> None:
 
 def test_normalization_matches_objective_reduction() -> None:
     assert gspo.NORMALIZATION is GradAccNormalization.NUM_SEQUENCES
-    token_mean = [grpo, dapo, cispo, dro, dppo, importance_sampling, reinforce, score_centering]
+    token_mean = [grpo, dapo, cispo, dro, dppo, importance_sampling, reinforce]
     assert all(m.NORMALIZATION is GradAccNormalization.NUM_LOSS_TOKENS for m in token_mean)
 
 
