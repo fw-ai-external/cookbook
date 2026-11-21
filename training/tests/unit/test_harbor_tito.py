@@ -735,6 +735,68 @@ def test_install_sidecar_uploads_bundle_and_returns_private_endpoint(tmp_path) -
     assert all("inference-key" not in command for command, _cwd in exec_calls)
 
 
+def test_isolated_sidecar_routes_private_inputs_and_control_off_main(tmp_path) -> None:
+    calls: list[tuple[str, Any]] = []
+
+    class Environment:
+        async def upload_file(self, source, target):
+            raise AssertionError(f"main upload used for {target}")
+
+        async def sidecar_upload_file(self, source, target):
+            calls.append(("sidecar_upload", target))
+
+        async def exec(self, *, command, cwd=None):
+            calls.append(("main_exec", command))
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+        async def sidecar_exec(self, *, command, cwd=None):
+            assert cwd == "/"
+            calls.append(("sidecar_exec", command))
+            if f"cat {sidecar_runtime.SIDECAR_ENDPOINT_PATH}" in command:
+                return SimpleNamespace(
+                    return_code=0,
+                    stdout=json.dumps({
+                        "trajectory_id": "trajectory-1",
+                        "openai_base_url": "http://127.0.0.1:4567/v1",
+                        "api_key": "private-key",
+                    }),
+                    stderr="",
+                )
+            if "printf context_budget_exhausted" in command:
+                return SimpleNamespace(
+                    return_code=0, stdout="context_budget_exhausted", stderr=""
+                )
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    environment = Environment()
+    bundle = tmp_path / "bundle.zip"
+    bundle.write_bytes(b"bundle")
+    asyncio.run(sidecar_runtime.install_sidecar(
+        environment, bundle_path=bundle, launch_spec='{"api_key":"secret"}'
+    ))
+    asyncio.run(sidecar_runtime.terminalize_sidecar(
+        environment, status="failed", reason="test"
+    ))
+    assert asyncio.run(sidecar_runtime.sidecar_failure_disposition(environment)) == (
+        "context_budget_exhausted"
+    )
+    asyncio.run(sidecar_runtime.stop_sidecar_process(environment))
+    asyncio.run(sidecar_runtime.quiesce_harness_process(
+        environment, process_pattern="[o]pencode --model="
+    ))
+
+    uploads = {value for kind, value in calls if kind == "sidecar_upload"}
+    assert uploads == {
+        sidecar_runtime.SIDECAR_BUNDLE_ARCHIVE,
+        sidecar_runtime.SIDECAR_SPEC_PATH,
+        sidecar_runtime.SIDECAR_TERMINAL_STAGING_PATH,
+    }
+    assert sum(kind == "main_exec" for kind, _ in calls) == 1
+    assert sidecar_runtime.SIDECAR_CONTEXT_OVERFLOW_PATH.startswith(
+        sidecar_runtime.SIDECAR_LOG_ROOT + "/"
+    )
+
+
 def test_terminalize_sidecar_publishes_terminal_json_atomically(tmp_path) -> None:
     calls: list[tuple[str, Any]] = []
 

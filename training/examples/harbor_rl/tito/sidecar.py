@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from training.utils.rl.rollout.setup import RolloutSetup
 
 SIDECAR_ROOT = "/tmp/fireworks-tito-sidecar"
+SIDECAR_LOG_ROOT = "/logs/tito"
 SIDECAR_PYTHON = "/opt/fireworks-tito/bin/python"
 SIDECAR_BUNDLE_ARCHIVE = f"{SIDECAR_ROOT}/bundle.zip"
 SIDECAR_BUNDLE_ROOT = f"{SIDECAR_ROOT}/bundle"
@@ -35,10 +36,11 @@ SIDECAR_SPEC_PATH = f"{SIDECAR_ROOT}/spec.json"
 SIDECAR_ENDPOINT_PATH = f"{SIDECAR_ROOT}/endpoint.json"
 SIDECAR_TERMINAL_PATH = f"{SIDECAR_ROOT}/terminal.json"
 SIDECAR_TERMINAL_STAGING_PATH = f"{SIDECAR_TERMINAL_PATH}.uploading"
-SIDECAR_CONTEXT_OVERFLOW_PATH = f"{SIDECAR_ROOT}/context-budget-exhausted.json"
+# The task harness sees this typed marker when TITO runs in its own service.
+# Keep private spec and endpoint files under SIDECAR_ROOT in that service.
+SIDECAR_CONTEXT_OVERFLOW_PATH = f"{SIDECAR_LOG_ROOT}/context-budget-exhausted.json"
 SIDECAR_PID_PATH = f"{SIDECAR_ROOT}/sidecar.pid"
 SIDECAR_SUPERVISOR_PID_PATH = f"{SIDECAR_ROOT}/supervisor.pid"
-SIDECAR_LOG_ROOT = "/logs/tito"
 SIDECAR_ARTIFACT_PATH = f"{SIDECAR_LOG_ROOT}/trajectory.tito"
 SIDECAR_ARTIFACT_MANIFEST_PATH = f"{SIDECAR_LOG_ROOT}/trajectory.json"
 SIDECAR_DEBUG_ROOT = f"{SIDECAR_LOG_ROOT}/debug"
@@ -506,6 +508,26 @@ def _temporary_private_file(payload: str) -> Path:
     return path
 
 
+def _sidecar_exec(environment: Any, **kwargs: Any) -> Awaitable[Any]:
+    """Use an isolated sidecar service when the environment supplies one."""
+
+    method = getattr(environment, "sidecar_exec", None)
+    if method is None:
+        method = environment.exec
+    return method(**kwargs)
+
+
+def _sidecar_upload_file(
+    environment: Any, source_path: Path | str, target_path: str
+) -> Awaitable[Any]:
+    """Keep private sidecar inputs out of the task service when supported."""
+
+    method = getattr(environment, "sidecar_upload_file", None)
+    if method is None:
+        method = environment.upload_file
+    return method(source_path, target_path)
+
+
 async def upload_private_text(
     environment: Any,
     *,
@@ -540,14 +562,17 @@ async def install_sidecar(
         # stream concurrently. Measured on e2b: ~1.7x faster install.
         with phase_span("sidecar_upload", category="trial_setup"):
             await asyncio.gather(
-                environment.upload_file(Path(bundle_path), SIDECAR_BUNDLE_ARCHIVE),
-                environment.upload_file(spec_path, SIDECAR_SPEC_PATH),
+                _sidecar_upload_file(
+                    environment, Path(bundle_path), SIDECAR_BUNDLE_ARCHIVE
+                ),
+                _sidecar_upload_file(environment, spec_path, SIDECAR_SPEC_PATH),
             )
     finally:
         spec_path.unlink(missing_ok=True)
 
     with phase_span("sidecar_start", category="trial_setup"):
-        started = await environment.exec(
+        started = await _sidecar_exec(
+            environment,
             command=(
                 "set -eu; "
                 f"mkdir -p {SIDECAR_ROOT} {SIDECAR_LOG_ROOT} && "
@@ -559,6 +584,7 @@ async def install_sidecar(
                 f"{SIDECAR_SUPERVISOR_PID_PATH} {SIDECAR_EXIT_PATH} "
                 f"{SIDECAR_EXIT_DETAIL_PATH} "
                 f"{SIDECAR_DIAGNOSTIC_PATH} {SIDECAR_TERMINAL_PATH} "
+                f"{SIDECAR_CONTEXT_OVERFLOW_PATH} "
                 f"{SIDECAR_COMPLETE_PATH}; "
                 f"PYTHONPATH={SIDECAR_BUNDLE_ROOT}/python-sdk:"
                 f"{SIDECAR_BUNDLE_ROOT}/cookbook:"
@@ -578,7 +604,8 @@ async def install_sidecar(
     deadline = asyncio.get_running_loop().time() + _SIDECAR_READY_TIMEOUT_SECONDS
     with phase_span("sidecar_ready_wait", category="trial_setup"):
         while True:
-            result = await environment.exec(
+            result = await _sidecar_exec(
+                environment,
                 command=(
                     f"if test -s {SIDECAR_EXIT_PATH}; then "
                     f"printf 'sidecar exited; see {SIDECAR_EXIT_PATH}'; exit 3; "
@@ -616,7 +643,8 @@ async def install_sidecar(
 async def stop_sidecar_process(environment: Any) -> None:
     """Best-effort process cleanup for a sidecar that cannot terminalize."""
 
-    await environment.exec(
+    await _sidecar_exec(
+        environment,
         command=(
             f"if test -s {SIDECAR_PID_PATH}; then "
             f"sidecar_pid=$(cat {SIDECAR_PID_PATH}); "
@@ -701,8 +729,11 @@ async def terminalize_sidecar(
         # Remote-provider uploads are not guaranteed to appear atomically.  The
         # sidecar polls this file, so publish through a sibling path and rename
         # only after the complete JSON payload is durable in the sandbox.
-        await environment.upload_file(terminal_path, SIDECAR_TERMINAL_STAGING_PATH)
-        published = await environment.exec(
+        await _sidecar_upload_file(
+            environment, terminal_path, SIDECAR_TERMINAL_STAGING_PATH
+        )
+        published = await _sidecar_exec(
+            environment,
             command=(
                 f"chmod 600 {SIDECAR_TERMINAL_STAGING_PATH} && "
                 f"mv -f {SIDECAR_TERMINAL_STAGING_PATH} {SIDECAR_TERMINAL_PATH}"
@@ -722,7 +753,8 @@ async def terminalize_sidecar(
         + _SIDECAR_ARTIFACT_FINALIZATION_TIMEOUT_SECONDS
     )
     while True:
-        result = await environment.exec(
+        result = await _sidecar_exec(
+            environment,
             command=(
                 f"if test -s {SIDECAR_COMPLETE_PATH}; then exit 0; "
                 f"elif test -s {SIDECAR_EXIT_PATH}; then "
@@ -1064,7 +1096,8 @@ def probe_sidecar() -> dict[str, Any]:
 async def sidecar_failure_disposition(environment: Any) -> str | None:
     """Read the sidecar's typed last-policy disposition without log matching."""
 
-    result = await environment.exec(
+    result = await _sidecar_exec(
+        environment,
         command=(
             f"if test -s {SIDECAR_CONTEXT_OVERFLOW_PATH}; then "
             "printf context_budget_exhausted; fi"
@@ -1128,7 +1161,9 @@ async def _monitor_sidecar(environment: Any) -> None:
         await asyncio.sleep(_SIDECAR_MONITOR_POLL_SECONDS)
         while True:
             if probe_task is None:
-                probe_task = asyncio.create_task(environment.exec(command=command, cwd="/"))
+                probe_task = asyncio.create_task(
+                    _sidecar_exec(environment, command=command, cwd="/")
+                )
                 done, _ = await asyncio.wait(
                     {probe_task}, timeout=_SIDECAR_PROBE_EXEC_TIMEOUT_SECONDS
                 )

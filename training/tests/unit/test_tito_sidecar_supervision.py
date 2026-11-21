@@ -351,6 +351,31 @@ def test_endpoint_loss_requires_consecutive_probes(
     assert count == 6
 
 
+def test_isolated_sidecar_monitor_probes_sidecar_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class Environment:
+        async def exec(self, *, command: str, cwd: str) -> SimpleNamespace:
+            raise AssertionError("sidecar probe reached main service")
+
+        async def sidecar_exec(self, *, command: str, cwd: str) -> SimpleNamespace:
+            assert "tito.sidecar probe" in command and cwd == "/"
+            calls.append(command)
+            return SimpleNamespace(
+                return_code=0,
+                stdout=json.dumps(
+                    {"state": "exited", "exit_code": -9, "signal": "SIGKILL"}
+                ),
+            )
+
+    monkeypatch.setattr(sidecar, "_SIDECAR_MONITOR_POLL_SECONDS", 0)
+    with pytest.raises(sidecar.TITOSidecarInfrastructureError, match="exited"):
+        asyncio.run(sidecar._monitor_sidecar(Environment()))
+    assert len(calls) == 1
+
+
 def test_monitor_never_overlaps_probes_when_provider_ignores_cancellation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
