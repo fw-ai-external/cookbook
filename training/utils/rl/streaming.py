@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from training.utils.phase_tracing import phase_span
-from training.utils.rl.common import inference_drift_metrics
+from training.utils.rl.common import inference_drift_metrics, sample_train_metrics
 from training.utils.rl.losses import PolicyBatch
 
 logger = logging.getLogger(__name__)
@@ -181,6 +181,7 @@ def add_batch_diagnostics(submissions: list[SubmittedGroup], results: list[Any],
     merged = SimpleNamespace(loss_fn_outputs=[output for result in results for output in result.loss_fn_outputs])
     diagnostics = objective.metrics(batch, merged, config)
     diagnostics.update(inference_drift_metrics(batch, merged))
+    diagnostics.update(sample_train_metrics(batch, merged))
     for result in results:
         for name in diagnostics:
             result.metrics.pop(name, None)

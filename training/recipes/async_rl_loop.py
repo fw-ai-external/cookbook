@@ -66,12 +66,11 @@ from training.utils import (
     resolve_router_replay_enabled,
     setup_wandb,
     validate_config,
-    wandb_finish,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.data import compute_advantages
 from training.utils.dataloader import CursorDataLoader
-from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS, log_run_resources
+from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS, finish_metrics_on_exit, log_run_resources
 from training.utils.metrics import sampler_metrics, weight_sync_metrics
 from training.utils.phase_tracing import phase_span
 from training.utils.tokenizers import resolve_tokenizer_base_model
@@ -312,36 +311,37 @@ async def main(
             f"default is 4); got {cfg.completions_per_prompt}."
         )
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
-    setup_wandb(
-        cfg.wandb,
-        {
-            "completions_per_prompt": cfg.completions_per_prompt,
-            "prompt_groups_per_step": cfg.prompt_groups_per_step,
-            "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
-            "max_concurrency_rollout_sample": cfg.max_concurrency_rollout_sample,
-            "max_completion_tokens": cfg.max_completion_tokens,
-            "temperature": cfg.temperature,
-            "tokenizer_id": cfg.deployment.tokenizer_model,
-            "shuffle": cfg.shuffle,
-            "seed": cfg.seed,
-            "algorithm": "grpo",
-            "trainer_loss": f"server_{objective.LOSS_FN}",
-            **(
-                {"eps_clip": policy_loss.eps_clip, "eps_clip_high": policy_loss.upper_eps}
-                if cfg.reinforce is None
-                else {"loss_fn_config": server_reinforce.loss_fn_config(cfg.reinforce)}
-            ),
-            "grad_clip_norm": cfg.grad_clip_norm,
-            "lr": cfg.learning_rate,
-            "lr_schedule": lr_scheduler.type,
-        },
-        metric_steps=ASYNC_RL_WANDB_METRIC_STEPS,
-    )
-
-    api_key = os.environ["FIREWORKS_API_KEY"]
-    base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
-    additional_headers = read_api_extra_headers_env()
     async with AsyncExitStack() as stack:
+        stack.enter_context(finish_metrics_on_exit(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE")))
+        setup_wandb(
+            cfg.wandb,
+            {
+                "completions_per_prompt": cfg.completions_per_prompt,
+                "prompt_groups_per_step": cfg.prompt_groups_per_step,
+                "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
+                "max_concurrency_rollout_sample": cfg.max_concurrency_rollout_sample,
+                "max_completion_tokens": cfg.max_completion_tokens,
+                "temperature": cfg.temperature,
+                "tokenizer_id": cfg.deployment.tokenizer_model,
+                "shuffle": cfg.shuffle,
+                "seed": cfg.seed,
+                "algorithm": "grpo",
+                "trainer_loss": f"server_{objective.LOSS_FN}",
+                **(
+                    {"eps_clip": policy_loss.eps_clip, "eps_clip_high": policy_loss.upper_eps}
+                    if cfg.reinforce is None
+                    else {"loss_fn_config": server_reinforce.loss_fn_config(cfg.reinforce)}
+                ),
+                "grad_clip_norm": cfg.grad_clip_norm,
+                "lr": cfg.learning_rate,
+                "lr_schedule": lr_scheduler.type,
+            },
+            metric_steps=ASYNC_RL_WANDB_METRIC_STEPS,
+        )
+
+        api_key = os.environ["FIREWORKS_API_KEY"]
+        base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
+        additional_headers = read_api_extra_headers_env()
         tokenizer_base_model = resolve_tokenizer_base_model(cfg.base_model, cfg.base_model_type)
         tokenizer = await run_in_thread(load_deployment_tokenizer, cfg.deployment, base_model=tokenizer_base_model)
         service = build_service_client(
@@ -733,7 +733,6 @@ async def main(
             global_step,
             global_step - step_offset,
         )
-        wandb_finish(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE"))
         return {
             "steps": global_step,
             "policy_job_id": service.trainer_job_id,

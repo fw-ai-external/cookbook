@@ -63,15 +63,14 @@ from training.utils import (
     resolve_router_replay_enabled,
     setup_wandb,
     validate_config,
-    wandb_finish,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.data import compute_advantages
 from training.utils.dataloader import CursorDataLoader
-from training.utils.logging import log_run_resources
+from training.utils.logging import finish_metrics_on_exit, log_run_resources
 from training.utils.metrics import sampler_metrics, weight_sync_metrics
 from training.utils.rl.algorithm import grpo as objective
-from training.utils.rl.common import inference_drift_metrics
+from training.utils.rl.common import inference_drift_metrics, sample_train_metrics
 from training.utils.rl.heldout import RolloutEvaluationFn, run_evaluation
 from training.utils.rl.losses import (
     PolicyBatch,
@@ -242,29 +241,30 @@ async def main(
         lora_rank=cfg.lora_rank,
     )
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
-    setup_wandb(
-        cfg.wandb,
-        {
-            "completions_per_prompt": cfg.completions_per_prompt,
-            "prompt_groups_per_step": cfg.prompt_groups_per_step,
-            "max_completion_tokens": cfg.max_completion_tokens,
-            "temperature": cfg.temperature,
-            "tokenizer_id": cfg.deployment.tokenizer_model,
-            "shuffle": cfg.shuffle,
-            "seed": cfg.seed,
-            "algorithm": "grpo",
-            "trainer_loss": f"server_{objective.LOSS_FN}",
-            "eps_clip": policy_loss.eps_clip,
-            "eps_clip_high": policy_loss.upper_eps,
-            "lr": cfg.learning_rate,
-            "lr_schedule": lr_scheduler.type,
-        },
-    )
-
-    api_key = os.environ["FIREWORKS_API_KEY"]
-    base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
-    additional_headers = read_api_extra_headers_env()
     async with AsyncExitStack() as stack:
+        stack.enter_context(finish_metrics_on_exit(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE")))
+        setup_wandb(
+            cfg.wandb,
+            {
+                "completions_per_prompt": cfg.completions_per_prompt,
+                "prompt_groups_per_step": cfg.prompt_groups_per_step,
+                "max_completion_tokens": cfg.max_completion_tokens,
+                "temperature": cfg.temperature,
+                "tokenizer_id": cfg.deployment.tokenizer_model,
+                "shuffle": cfg.shuffle,
+                "seed": cfg.seed,
+                "algorithm": "grpo",
+                "trainer_loss": f"server_{objective.LOSS_FN}",
+                "eps_clip": policy_loss.eps_clip,
+                "eps_clip_high": policy_loss.upper_eps,
+                "lr": cfg.learning_rate,
+                "lr_schedule": lr_scheduler.type,
+            },
+        )
+
+        api_key = os.environ["FIREWORKS_API_KEY"]
+        base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
+        additional_headers = read_api_extra_headers_env()
         tokenizer = await run_in_thread(load_deployment_tokenizer, cfg.deployment, base_model=cfg.base_model)
         service = build_service_client(
             api_key=api_key,
@@ -463,6 +463,7 @@ async def main(
                     )
                 fwd_bwd_result.metrics.update(objective.metrics(batch, fwd_bwd_result, policy_loss))
                 fwd_bwd_result.metrics.update(inference_drift_metrics(batch, fwd_bwd_result))
+                fwd_bwd_result.metrics.update(sample_train_metrics(batch, fwd_bwd_result))
 
                 # 2. Exactly one optimizer mutation.
                 next_step = step + 1
@@ -557,7 +558,6 @@ async def main(
             global_step,
             global_step - step_offset,
         )
-        wandb_finish(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE"))
         return {
             "steps": global_step,
             "policy_job_id": service.trainer_job_id,

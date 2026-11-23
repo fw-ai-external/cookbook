@@ -465,6 +465,45 @@ def iter_response_logprobs(
         yield ResponseLogprobs(i, resp_pi[active], reference[active], resp_len)
 
 
+def sample_train_metrics(batch: Any, result: Any) -> Dict[str, float]:
+    """Exact sampling/trainer differences on active response tokens.
+
+    Compare against the original sampling logprobs, never a recomputed anchor
+    or raw serving logprobs. Counts allow token-weighted aggregation across
+    unequal chunks; the maximum must also reduce by max, not by mean.
+    This measures engine drift only when weights and distributions match.
+    """
+    policy_logprobs = result_logprobs(result)
+    for datum, policy in zip(batch.data, policy_logprobs, strict=True):
+        if policy.ndim != 1 or len(policy) != len(datum.loss_fn_inputs["target_tokens"].data):
+            raise ValueError("sample_train metrics require target-aligned trainer logprobs")
+
+    max_abs_diff = 0.0
+    mismatched_tokens = compared_tokens = 0
+    for pair in iter_response_logprobs(
+        batch.data,
+        policy_logprobs,
+        batch.rollout_logprobs,
+        batch.prompt_lens,
+        loss_name="sample_train",
+        source="rollout_logprobs",
+    ):
+        if not bool(torch.isfinite(pair.policy).all() & torch.isfinite(pair.reference).all()):
+            raise ValueError("sample_train metrics require finite active logprobs")
+        diff = pair.policy - pair.reference
+        max_abs_diff = max(max_abs_diff, diff.abs().max().item())
+        mismatched_tokens += int((diff != 0).sum().item())
+        compared_tokens += diff.numel()
+    if not compared_tokens:
+        return {}
+    return {
+        "sample_train_max_abs_diff": max_abs_diff,
+        "sample_train_mismatch_frac": mismatched_tokens / compared_tokens,
+        "sample_train_mismatched_tokens": float(mismatched_tokens),
+        "sample_train_compared_tokens": float(compared_tokens),
+    }
+
+
 def inference_drift_metrics(batch: Any, result: Any) -> Dict[str, float]:
     """k1/k3 drift from raw serving logprobs to the trainer policy for one call.
 

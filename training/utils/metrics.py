@@ -49,7 +49,14 @@ __all__ = [
 # Bookkeeping keys the trainer or SDK attach to every result; not diagnostics.
 _SKIPPED_RESULT_KEYS = frozenset({"step_id", "step", "response_tokens", "total_tokens"})
 # Plain (unsuffixed) counts that add across chunks instead of averaging.
-_SUMMED_RESULT_KEYS = frozenset({"active_tokens", "total_resp_tokens"})
+_SUMMED_RESULT_KEYS = frozenset(
+    {
+        "active_tokens",
+        "total_resp_tokens",
+        "sample_train_mismatched_tokens",
+        "sample_train_compared_tokens",
+    }
+)
 # Trainer-reported execution time, mapped next to the client wall time.
 _TRAINER_TIME_KEYS = {
     "trainer/forward_backward_duration_s": "perf/trainer_fwd_bwd_time",
@@ -100,6 +107,8 @@ def forward_backward_metrics(results: Sequence[Any]) -> dict[str, float]:
     values average over the chunks that reported them, so an optional
     diagnostic is never diluted by chunks without it. ``:last`` values describe
     one call and are dropped, except the trainer's busy wall-time percentage.
+    Sampling/trainer mismatch uses a global maximum and token counts rather
+    than chunk means.
     """
     totals: dict[str, float] = {}
     counts: dict[str, int] = {}
@@ -125,6 +134,8 @@ def forward_backward_metrics(results: Sequence[Any]) -> dict[str, float]:
                 continue
             if separator and reducer not in {"sum", "min", "max", "mean"}:
                 continue
+            if key == "sample_train_max_abs_diff":
+                reducer = "max"
             reducers[key] = reducer
             weight = datums if reducer == "mean" else 1
             if reducer == "min":
@@ -143,6 +154,10 @@ def forward_backward_metrics(results: Sequence[Any]) -> dict[str, float]:
     response = metrics.get("train/total_resp_tokens")
     if active is not None and response:
         metrics["train/mask_ratio"] = active / response
+    compared = metrics.get("train/sample_train_compared_tokens")
+    mismatched = metrics.get("train/sample_train_mismatched_tokens")
+    if compared and mismatched is not None:
+        metrics["train/sample_train_mismatch_frac"] = mismatched / compared
     metrics.update(trainer_time)
     if trainer_busy is not None:
         metrics["perf/trainer_busy_walltime_pct"] = trainer_busy
