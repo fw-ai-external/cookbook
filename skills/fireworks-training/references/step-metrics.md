@@ -80,9 +80,12 @@ diagnostics from the logprobs a server-side policy loss returns. Merge them
 into the result before `forward_backward_metrics` adds the `train/` prefix:
 
 ```python
+from training.utils.rl.common import inference_drift_metrics, sample_train_metrics
+
 result = policy.forward_backward(datums, objective.LOSS_FN, loss_fn_config=objective.loss_fn_config(cfg))
 result.metrics.update(objective.metrics(batch, result, cfg))      # trust region
 result.metrics.update(inference_drift_metrics(batch, result))     # sampler/trainer drift
+result.metrics.update(sample_train_metrics(batch, result))        # exact sampling-logprob comparison
 ```
 
 | Metric | Meaning |
@@ -141,6 +144,47 @@ about 5 MB), it adds the `:sum` counts exactly but averages the `:mean`
 fractions weighted by datum count. Fractions are then approximate; counts stay
 exact. The async recipes send a step as several requests, and
 `forward_backward_metrics` combines them the same way.
+
+### Exact sampling/trainer comparison
+
+Both RL reference loops log `train/sample_train_max_abs_diff` (the largest
+absolute logprob difference) and `train/sample_train_mismatch_frac` (the
+fraction of active response tokens with any nonzero difference, no tolerance).
+`sample_train_metrics` reuses the returned trainer logprobs and original
+`batch.rollout_logprobs`; it requires no extra forward or sampling requests.
+Custom-loss loops can merge the same helper after `forward_backward_custom`.
+Import it from `training.utils.rl.common`.
+
+The mismatch fraction is token-weighted across samples and chunks, unlike the
+per-sequence `inference_k1`/`inference_k3` averages. The step reducer uses
+`sample_train_mismatched_tokens` and `sample_train_compared_tokens` to preserve
+the fraction across unequal chunks, and takes the global maximum. A batch
+without active tokens reports no comparison, rather than an invented zero.
+
+The comparison includes zero-advantage responses but excludes prompt, tool and
+suffix positions masked out of training. It uses sampling logprobs, not raw
+inference logprobs or a recomputed clipping anchor. Temperature or support
+normalization differences, stale samples and optimizer updates can all produce
+nonzero values; these metrics isolate numerical engine mismatch only when the
+weights and compared distributions match. An exact nonzero difference alone
+is not a correctness verdict. `log_metrics` sends the resulting `train/*`
+payload to the existing W&B and JSONL sinks.
+
+### MLflow
+
+`setup_wandb` also initializes the optional Training SDK MLflow mirror, even
+when W&B is disabled. It uses the SDK's existing configuration, including
+`MLFLOW_TRACKING_URI` and `MLFLOW_TRACKING_TOKEN`; do not create another copy
+of the credential. An SDK with MLflow ingest support is required when enabled.
+Unconfigured runs keep the existing behavior; configured initialization errors
+fail before training instead of silently losing the requested metrics.
+
+`log_metrics` and legacy `wandb_log` mirror finite numeric metrics once, including
+both `train/sample_train_*` diagnostics. Training series use `train/step` when
+present; other series use the record's business step. `log_run_resources` adds
+trainer/deployment tags, and `wandb_finish` drains the SDK queue and closes the run.
+The sync and async RL recipes guarantee cleanup on success, failure and cancellation,
+so a retry in the same process starts a separate MLflow run.
 
 ### Sampler
 

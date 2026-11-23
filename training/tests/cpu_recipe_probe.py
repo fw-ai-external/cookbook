@@ -200,13 +200,13 @@ def recipe_step(service, client, batch, output):
             "resolve_router_replay_enabled": lambda **_kw: False,
             "validate_config": lambda *_a, **_kw: None,
             "setup_wandb": lambda *_a, **_kw: None,
-            "wandb_finish": lambda **_kw: None,
             "log_metrics": lambda metrics, **_kw: events.append(dict(metrics)),
             "log_metrics_json": lambda *_a, **_kw: None,
             "make_weight_sync": publisher,
             "TrainingCheckpoints": CheckpointFixture,
         }.items():
             stack.enter_context(patch.object(rl_loop, name, replacement))
+        stack.enter_context(patch("training.utils.logging.wandb_finish", lambda **_kw: None))
         start = time.perf_counter_ns()
         result = rl_loop.main(
             rl_loop.Config(

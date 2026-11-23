@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import logging
 import math
 import os
 import queue
+import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from numbers import Integral, Real
+from pathlib import Path
 from typing import Any
 
 from training.utils import fileio
@@ -22,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 _MetricSteps = dict[str, str | None]
 _METRIC_LOCK = threading.Lock()
+_mlflow_client: Any = None
+_mlflow_initialized = False
 _metrics_reporter: Callable[[dict[str, Any]], None] | None = None
 _reporting_from_log_metrics: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "reporting_from_log_metrics",
@@ -99,13 +105,72 @@ def _is_wandb_auth_error(exc: BaseException) -> bool:
     )
 
 
+def _setup_mlflow(wb: WandBConfig) -> None:
+    """Resolve the SDK's optional mirror once per training run."""
+    global _mlflow_client, _mlflow_initialized
+    with _METRIC_LOCK:
+        if _mlflow_initialized:
+            return
+        try:
+            # lazy: MLflow is optional and older SDKs do not expose this module
+            from fireworks.training.sdk import _mlflow
+        except ImportError:
+            config_dir = Path(
+                os.environ.get("FIREWORKS_MLFLOW_CONFIG_DIR")
+                or str(Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")) / "mlflow")
+            )
+            requested = (
+                bool(os.environ.get("MLFLOW_TRACKING_URI") or os.environ.get("MLFLOW_TRACKING_TOKEN"))
+                or os.environ.get("FIREWORKS_REQUIRE_MLFLOW", "").strip().lower() in {"1", "true", "yes", "on"}
+                or any((config_dir / name).exists() for name in ("tracking_uri", "token"))
+            )
+            if requested and not os.environ.get("FIREWORKS_SKIP_MLFLOW_REASON", "").strip():
+                raise RuntimeError("MLflow logging requires a Fireworks SDK with MLflow ingest support.") from None
+        else:
+            try:
+                _mlflow_client = _mlflow.client_from_env(
+                    project=wb.project, run_name=wb.run_name, tags={"fireworks.source": "cookbook"}
+                )
+            except Exception:
+                raise RuntimeError("MLflow initialization failed. Check the SDK MLflow configuration.") from None
+        _mlflow_initialized = True
+
+
+def _log_mlflow(record: dict[str, Any]) -> None:
+    if _mlflow_client is None:
+        return
+    batches: dict[int, dict[str, Any]] = {}
+    for key, value in record.items():
+        axis = record.get("train/step", record.get("step")) if key.startswith("train/") else record.get("step")
+        if isinstance(axis, bool) or not isinstance(axis, (int, float)) or not math.isfinite(axis):
+            continue
+        batches.setdefault(int(axis), {})[key] = value
+    try:
+        for step, values in batches.items():
+            _mlflow_client.log(values, step=step)
+    except Exception as exc:
+        logger.warning("Failed to enqueue MLflow metrics (%s)", type(exc).__name__)
+
+
+def _finish_mlflow(status: str) -> None:
+    global _mlflow_client, _mlflow_initialized
+    with _METRIC_LOCK:
+        client, _mlflow_client = _mlflow_client, None
+        _mlflow_initialized = False
+    if client is not None:
+        try:
+            client.finish(status=status)
+        except Exception as exc:
+            logger.warning("Failed to finish MLflow metrics (%s)", type(exc).__name__)
+
+
 def setup_wandb(
     wb: WandBConfig,
     config: dict[str, Any],
     *,
     metric_steps: _MetricSteps | None = None,
 ) -> bool:
-    """Initialize WandB if entity is provided. Returns True if active.
+    """Initialize the SDK MLflow mirror and optional W&B; return W&B status.
 
     If ``WANDB_API_KEY`` is not set, falls back to offline mode so runs
     are logged locally without requiring authentication. Auth/permission/config
@@ -113,6 +178,7 @@ def setup_wandb(
     the orchestration layer surfaces them as a user-actionable error
     (FIR2-1774).
     """
+    _setup_mlflow(wb)
     if not wb.entity:
         return False
     try:
@@ -135,6 +201,7 @@ def setup_wandb(
             entity=wb.entity, project=wb.project, name=wb.run_name, config=config
         )
     except Exception as exc:
+        _finish_mlflow("FAILED")
         if _is_wandb_auth_error(exc):
             raise WandbConfigError(
                 f"Weights & Biases authentication/configuration failed: {exc}. "
@@ -189,7 +256,9 @@ def wandb_log(metrics: dict[str, Any], step: int | None = None) -> None:
     except Exception:
         logger.warning("Failed to log metrics to W&B", exc_info=True)
     if not _reporting_from_log_metrics.get():
-        _submit_metric_report(_metrics_report_payload(metrics, step))
+        record = _metrics_report_payload(metrics, step)
+        _log_mlflow(record)
+        _submit_metric_report(record)
         _wait_for_metric_reports()
 
 
@@ -243,7 +312,7 @@ def log_metrics(
     step: int,
     metrics_file: str | None = None,
 ) -> None:
-    """Normalize and send one plain metric dictionary to JSONL and W&B.
+    """Normalize and send one metric dictionary to JSONL, W&B and SDK MLflow.
 
     ``COOKBOOK_METRICS_FILE`` enables the append-only canonical JSONL ledger.
     An explicit ``metrics_file`` overrides the environment for callers that
@@ -274,6 +343,7 @@ def log_metrics(
         record = _normalize_metrics(metrics, step)
         if path:
             fileio.append_jsonl(path, record)
+        _log_mlflow(record)
 
         # The exact JSONL record is the W&B payload. Its transport axis is
         # intentionally implicit and unique even when business steps repeat.
@@ -367,6 +437,11 @@ def log_run_resources(service: Any) -> dict[str, str]:
         "Run resources: %s",
         " ".join(f"{name}={value}" for name, value in resources.items()),
     )
+    if _mlflow_client is not None:
+        try:
+            _mlflow_client.set_tags({f"fireworks.{name}": value for name, value in resources.items()})
+        except Exception as exc:
+            logger.warning("Failed to tag MLflow run (%s)", type(exc).__name__)
     try:
         import wandb
 
@@ -377,8 +452,25 @@ def log_run_resources(service: Any) -> dict[str, str]:
     return resources
 
 
-def wandb_finish(*, metrics_file: str | None = None) -> None:
-    """Flush tracing, optionally attach local artifacts, then finish W&B."""
+@contextmanager
+def finish_metrics_on_exit(*, metrics_file: str | None = None) -> Iterator[None]:
+    """Finish run logging after resource cleanup, including failed attempts."""
+    try:
+        yield
+    except BaseException:
+        wandb_finish(metrics_file=metrics_file)
+        raise
+    else:
+        wandb_finish(metrics_file=metrics_file, status="FINISHED")
+
+
+def wandb_finish(*, metrics_file: str | None = None, status: str | None = None) -> None:
+    """Finish SDK MLflow, flush tracing and finish W&B."""
+    if status is None:
+        error = sys.exc_info()[0]
+        interrupted = error and issubclass(error, (KeyboardInterrupt, SystemExit, asyncio.CancelledError))
+        status = "KILLED" if interrupted else "FAILED" if error else "FINISHED"
+    _finish_mlflow(status)
     try:
         flush_phase_trace()
     except Exception:

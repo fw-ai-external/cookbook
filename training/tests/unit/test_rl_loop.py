@@ -429,7 +429,7 @@ def _run_loop(
         lambda metrics, *, step: (logged if logged is not None else []).append((step, dict(metrics))),
     )
     monkeypatch.setattr(module, "log_metrics_json", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "wandb_finish", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("training.utils.logging.wandb_finish", lambda *_args, **_kwargs: None)
     main_kwargs.setdefault("dynamic_filter_fn", None)
     return module.main(
         module.Config(

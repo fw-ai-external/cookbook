@@ -351,7 +351,6 @@ def test_main_trains_the_rollout_with_igpo_on_rl_loop(monkeypatch, tmp_path):
 
     for name, value in {
         "setup_wandb": lambda *args, **kwargs: None,
-        "wandb_finish": lambda *args, **kwargs: None,
         "log_metrics": lambda step_metrics, step: metrics.update(step_metrics),
         "load_deployment_tokenizer": load_deployment_tokenizer,
         "build_service_client": lambda **kwargs: service,
@@ -360,6 +359,7 @@ def test_main_trains_the_rollout_with_igpo_on_rl_loop(monkeypatch, tmp_path):
         "TrainingCheckpoints": Checkpoints,
     }.items():
         monkeypatch.setattr(rl_loop, name, value)
+    monkeypatch.setattr("training.utils.logging.wandb_finish", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         rl_loop.ReconnectableClient,
         "from_training_client",

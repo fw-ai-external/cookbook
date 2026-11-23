@@ -182,8 +182,9 @@ def _run_case(recipe: str, phase: str) -> None:
             )
         else:
             patch.setenv("FIREWORKS_API_KEY", "test-key")
-            for name in ("setup_wandb", "validate_config", "wandb_finish", "log_metrics", "log_run_resources"):
+            for name in ("setup_wandb", "validate_config", "log_metrics", "log_run_resources"):
                 patch.setattr(module, name, lambda *args, **kwargs: None)
+            patch.setattr("training.utils.logging.wandb_finish", lambda *args, **kwargs: None)
             if recipe == "rl_loop":
                 patch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
             patch.setattr(module, "load_deployment_tokenizer", load_deployment_tokenizer)
