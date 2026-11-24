@@ -154,13 +154,16 @@ def build_datums(batch: PolicyBatch, config: ReinforceConfig) -> list[sdk.Datum]
 def metrics(batch: PolicyBatch, result: Any, config: ReinforceConfig) -> dict[str, float]:
     low, high = config.weight_bounds
     outside = None if config.weighting == "none" else lambda ratio, *_: (ratio < low) | (ratio > high)
-    return policy_ratio_metrics(
+    result_metrics = policy_ratio_metrics(
         replace(batch, anchor_logprobs=batch.rollout_logprobs),
         result,
         loss_name="reinforce",
         prefix="reinforce",
         outside_trust_region=outside,
     )
+    if isinstance(config.score_centering, ExtraSamplingSC) and result_metrics["active_tokens"] > 0:
+        result_metrics["score_centering_mc"] = 1.0
+    return result_metrics
 
 
 def add_cli_args(parser: argparse.ArgumentParser) -> None:

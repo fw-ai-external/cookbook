@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""A small, synchronous, strictly on-policy GRPO recipe.
+"""A synchronous, strictly on-policy RL recipe.
 
 Each iteration has three visible phases:
 
 1. collect one rollout batch: ``completions_per_prompt`` calls of
    ``rollout_fn(row)`` per row, grouped per row and filtered,
-2. train the complete batch with one GRPO forward/backward and one optimizer step,
+2. train the complete batch with one policy forward/backward and one optimizer step,
 3. hotload the new policy with ``reset_prompt_cache="all"`` before collecting
    the next batch, preventing reuse of the prior policy's prefix namespace.
 
@@ -69,7 +69,7 @@ from training.utils.data import compute_advantages
 from training.utils.dataloader import CursorDataLoader
 from training.utils.logging import finish_metrics_on_exit, log_run_resources
 from training.utils.metrics import sampler_metrics, weight_sync_metrics
-from training.utils.rl.algorithm import grpo as objective
+from training.utils.rl.algorithm import grpo, server_reinforce
 from training.utils.rl.common import inference_drift_metrics, sample_train_metrics
 from training.utils.rl.heldout import RolloutEvaluationFn, run_evaluation
 from training.utils.rl.losses import (
@@ -148,6 +148,8 @@ class Config:
     """Initialize LoRA weights from a PEFT adapter; exclusive with ``init_from_checkpoint``."""
     save_final_checkpoint: bool = True
     output_model_id: str | None = None
+    reinforce: server_reinforce.ReinforceConfig | None = None
+    """Opt into built-in REINFORCE on the same group advantages."""
 
 
 # ---------------------------------------------------------------------------
@@ -210,15 +212,20 @@ async def main(
     # A completed rollout batch must not carry old-policy prefix KV into the
     # next batch, even when callers supply the shared deployment defaults.
     cfg = replace(config, deployment=replace(config.deployment, reset_prompt_cache="all"))
-    policy_loss = objective.GRPOConfig(eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high)
+    if cfg.reinforce is None:
+        objective, policy_loss = grpo, grpo.GRPOConfig(eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high)
+    else:
+        if cfg.temperature != 1.0:
+            raise ValueError("Built-in REINFORCE currently requires temperature=1")
+        objective, policy_loss = server_reinforce, cfg.reinforce
     if rollout_fn_factory is None:
         rollout_fn_factory = single_turn_rollout_fn(cfg.renderer_name)
     # Reference KL belongs in a custom train step: utils.rl.reference provides
     # LoRA base-only trainer and full-parameter frozen-inference forwards.
-    # Keep reference setup/scoring outside this fixed-objective GRPO loop;
+    # Keep reference setup/scoring outside this loop.
     # see skills/fireworks-training/references/rl-custom-loss.md.
     if cfg.completions_per_prompt < 2:
-        raise ValueError("completions_per_prompt must be >= 2 for GRPO.")
+        raise ValueError("completions_per_prompt must be >= 2 for group advantages.")
     if cfg.prompt_groups_per_step < 1:
         raise ValueError("prompt_groups_per_step must be >= 1.")
     if evaluation_interval < 1:
@@ -253,10 +260,13 @@ async def main(
                 "tokenizer_id": cfg.deployment.tokenizer_model,
                 "shuffle": cfg.shuffle,
                 "seed": cfg.seed,
-                "algorithm": "grpo",
+                "algorithm": "grpo" if cfg.reinforce is None else "reinforce",
                 "trainer_loss": f"server_{objective.LOSS_FN}",
-                "eps_clip": policy_loss.eps_clip,
-                "eps_clip_high": policy_loss.upper_eps,
+                **(
+                    {"eps_clip": policy_loss.eps_clip, "eps_clip_high": policy_loss.upper_eps}
+                    if cfg.reinforce is None
+                    else {"loss_fn_config": server_reinforce.loss_fn_config(cfg.reinforce)}
+                ),
                 "lr": cfg.learning_rate,
                 "lr_schedule": lr_scheduler.type,
             },
@@ -289,6 +299,8 @@ async def main(
         # Decide R3 after the trainer is bound: its create_model response is
         # the authoritative MoE signal, so no GET model is needed (private
         # early-access base models reject that with 403).
+        if cfg.reinforce is not None:
+            server_reinforce.check_trainer_support(training_client, cfg.reinforce)
         router_replay_enabled = await run_in_thread(
             resolve_router_replay_enabled,
             requested=True,
@@ -339,6 +351,8 @@ async def main(
             router_replay=router_replay_enabled,
         )
 
+        if cfg.reinforce is not None:
+            sample_kwargs.update(server_reinforce.sampling_kwargs(cfg.reinforce))
         sampler = await run_in_thread(service.create_deployment_sampler, tokenizer=tokenizer, training_client=training_client)
         stack.push_async_callback(close_in_thread, sampler.close)
         if router_replay_enabled and not getattr(sampler, "r3_store_id", None):
@@ -415,7 +429,8 @@ async def main(
             log_metrics(metrics, step=step)
 
         logger.info(
-            "Synchronous GRPO: %d prompt groups x %d completions per step",
+            "Synchronous %s: %d prompt groups x %d completions per step",
+            objective.LOSS_FN if cfg.reinforce is not None else "GRPO",
             cfg.prompt_groups_per_step,
             cfg.completions_per_prompt,
         )
@@ -443,16 +458,13 @@ async def main(
 
                 train_started = time.monotonic()
 
-                # 1. One server-side GRPO forward/backward, clipped against the
-                #    rollout logprobs (batch.anchor_logprobs).
+                # 1. One server-side policy forward/backward.
                 batch = combine_prompt_groups(prompt_groups)
                 batch_metrics: dict[str, float] = {}
                 if prepare_batch_fn is not None:
                     batch, batch_metrics = await run_in_thread(prepare_batch_fn, policy, batch)
                 # Fork recipes (utils in training.utils.rl): recompute anchors before
                 # build_datums; apply tis.apply_tis(datums, batch, cap=2.0) afterwards.
-                # Client-side loss: policy.forward_backward_custom(
-                #     batch.data, objective.make_loss_fn(batch, policy_loss)).
                 datums = await run_in_thread(objective.build_datums, batch, policy_loss)
                 with elapsed_timer("fwd_bwd"):
                     fwd_bwd_result = await run_in_thread(
@@ -513,10 +525,9 @@ async def main(
                 metrics["train/lr"] = step_lr
                 reward = metrics.get("rollout/filtered_reward", 0.0)
                 logger.info(
-                    "Step %d | reward %.3f | clip_frac %.3f | inference_k3 %.4f",
+                    "Step %d | reward %.3f | inference_k3 %.4f",
                     step,
                     reward,
-                    metrics.get("train/ppo_clip_frac", 0.0),
                     metrics.get("train/inference_k3", 0.0),
                 )
                 log_metrics_json(step, reward=reward)

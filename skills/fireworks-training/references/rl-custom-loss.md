@@ -106,10 +106,9 @@ score-centering estimator. Complete-support replay also requires
 vocabulary. When replay renormalizes over the captured support, skip
 full-vocabulary inference drift comparisons. Capture one estimator per batch.
 
-In the async recipe, set `Config.reinforce` to a
+In either `rl_loop` or `async_rl_loop`, set `Config.reinforce` to a
 `server_reinforce.ReinforceConfig` with `ExtraSamplingSC(num_samples=16)` or
-`TopSamplingSC(head_size=128)`. The recipe preflights the selected trainer
-capability before rollout. Existing callers using a probability head must
+`TopSamplingSC(head_size=128)`. Both recipes preflight the selected trainer capability before rollout. Existing callers using a probability head must
 explicitly select `top_sampling` on compatible SDK and trainer versions.
 A positive `sampler_kl_coeff` requires score centering and applies to response
 tokens independently of TIS/MIS weighting.
