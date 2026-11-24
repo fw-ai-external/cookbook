@@ -27,7 +27,7 @@ uv pip install -e .
 python3 -m venv .venv && source .venv/bin/activate && pip install -e .
 ```
 
-The cookbook requires `fireworks-ai>=1.2.35,<2`, available as a stable
+The cookbook requires `fireworks-ai>=1.2.37,<2`, available as a stable
 PyPI release. `--pre` is not required. The legacy `0.19.20` package does not
 contain `fireworks.training`; install the cookbook dependencies above to upgrade.
 Training requires Python 3.11+ (the setup examples use 3.12). The cookbook declares
@@ -61,6 +61,25 @@ The recipe import check is intentional: a clean base install should run the
 standard DPO/RL recipes without optional example-only packages such as
 `eval-protocol`. Install the `dev` extra only when running tests or
 eval-protocol examples.
+
+For TITO rollouts and artifact writing, also verify the native SDK extension:
+
+```bash
+python -c "from fireworks.training.sdk.tito import _native; print('TITO native extension OK')"
+```
+
+The prebuilt native wheel supports Linux x86-64 with glibc 2.34+ and
+CPython 3.11+. If your Linux or macOS environment installed the universal
+wheel, you can build the extension from a compatible
+[Fireworks Python SDK checkout](https://github.com/fw-ai-external/python-sdk).
+With Cargo and a system linker available, run these commands from the SDK root
+in the same Python environment as the Cookbook:
+
+```bash
+bash scripts/build_tito_extension.sh
+python -m pip install -e '.[training-sdk]'  # Or: uv pip install -e '.[training-sdk]'
+python -c "from fireworks.training.sdk.tito import _native; print('TITO native extension OK')"
+```
 
 ## Dev dependencies (tests, coverage)
 
