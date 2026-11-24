@@ -25,7 +25,7 @@ from training.examples.harbor_rl.records import (
 from training.examples.harbor_rl.tasks.dabstep.manifest import (
     make_numeric_scorer_sign_sensitive,
 )
-from training.examples.harbor_rl.tito.e2b_templates import prebuild_e2b_templates
+from training.examples.harbor_rl.sandboxes.e2b.templates import prebuild_e2b_templates
 from training.examples.harbor_rl.tito.trial import (
     DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
     load_harbor_rows,

@@ -30,7 +30,7 @@ from training.examples.harbor_rl.harnesses.pi.rollout import make_rollout_fn
 from training.examples.harbor_rl import common
 from training.examples.harbor_rl.records import select_rows, write_json
 from training.examples.harbor_rl.tasks.textworld.dataset import load_frozen_dataset
-from training.examples.harbor_rl.tito.e2b_templates import prebuild_e2b_templates
+from training.examples.harbor_rl.sandboxes.e2b.templates import prebuild_e2b_templates
 from training.examples.harbor_rl.tito.evaluate import make_fixed_evaluation
 from training.examples.harbor_rl.tito.trial import load_harbor_rows
 from training.recipes.async_rl_loop import Config, RolloutFnFactory, main

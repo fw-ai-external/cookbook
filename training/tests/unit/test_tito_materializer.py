@@ -362,6 +362,20 @@ def test_incremental_junction_replaces_only_declared_checkpoint_tail() -> None:
     _assert_coverage_conserved(run)
 
 
+def test_declared_trim_preserves_a_still_matching_checkpoint() -> None:
+    first = _turn("one", (1, 2), (3, 4))
+    second = _turn(
+        "two", (1, 2, 3, 4, 5), (6,),
+        disposition="append", prefix_match_tokens=4, incremental_checkpoint_trim_tokens=1,
+    )
+    run = materialize_tito_trajectory(
+        _result((first, second), (_attempt("one"), _attempt("two"))), reward=1.0,
+    )
+    assert run.segments[0].tokens == [1, 2, 3, 4, 5, 6]
+    assert run.segments[0].loss_mask == [0, 0, 1, 1, 0, 1]
+    assert run.metadata["tito_metrics"]["tito/coverage/lost_checkpoint_trimmed"] == 0
+
+
 def test_later_continuation_proves_prior_ambiguous_turn_visible() -> None:
     first = _turn("one", (1, 2), (3, 4))
     second = _turn(

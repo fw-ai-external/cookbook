@@ -13,6 +13,7 @@ import pytest
 from fireworks.training.sdk import TITOMetricSummary, TITOTrajectoryArtifact
 
 from training.examples.harbor_rl.sandboxes.daytona.artifacts import artifact_reader as daytona_reader
+from training.examples.harbor_rl.sandboxes.e2b.artifacts import artifact_reader as e2b_reader
 from training.examples.harbor_rl.tito._artifact_transfer import (
     collect_trajectory,
     decode_artifact,
@@ -418,5 +419,50 @@ def test_verified_receipt_has_no_second_hash_pass(monkeypatch, tmp_path):
                 decode_artifact([path.read_bytes()], manifest, verified=True)
                 == artifact
             )
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("sandbox_lost", [False, True])
+def test_e2b_stream_uses_shared_retry_and_abandons_a_gone_sandbox(
+    tmp_path, sandbox_lost
+):
+    e2b = pytest.importorskip("e2b.exceptions")
+
+    class E2BFiles(Files):
+        async def read(self, path, *, format, request_timeout):
+            assert format == "stream" and request_timeout > 0
+            if sandbox_lost and path == SIDECAR_ARTIFACT_PATH:
+                self.calls.append(path)
+                raise e2b.SandboxNotFoundException("sandbox gone")
+            return await self.download_file_stream(path)
+
+    async def run():
+        artifact, payloads = _artifact_files()
+        files = E2BFiles(payloads, fault="truncate_once")
+        environment = SimpleNamespace(_sandbox=SimpleNamespace(files=files))
+        timings = {}
+        receive = collect_trajectory(
+            environment,
+            e2b_reader,
+            trajectory_id="current-attempt",
+            bundle_digest="expected-bundle",
+            spool=tmp_path / "trajectory.tito",
+            measurements=timings,
+        )
+        if sandbox_lost:
+            with pytest.raises(RecoverableRolloutError) as error:
+                await receive
+            assert error.value.reason == "artifact_transfer"
+            assert list(tmp_path.iterdir()) == []
+        else:
+            path, manifest = await receive
+            assert (
+                decode_artifact([path.read_bytes()], manifest, verified=True)
+                == artifact
+            )
+        assert files.calls.count(SIDECAR_ARTIFACT_MANIFEST_PATH) == 1
+        assert files.calls.count(SIDECAR_ARTIFACT_PATH) == (1 if sandbox_lost else 2)
+        assert timings["artifact_retries"] == (0 if sandbox_lost else 1)
 
     asyncio.run(run())

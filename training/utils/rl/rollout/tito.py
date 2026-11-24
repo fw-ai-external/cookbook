@@ -133,20 +133,10 @@ class _SampleBuilder:
             },
         )
 
-    def can_append(self, turn: TITOTurn) -> bool:
-        prompt = list(turn.exact_prompt_ids)
-        trim_tokens = turn.incremental_checkpoint_trim_tokens
-        retained = len(self.tokens) - trim_tokens
-        return (
-            0 <= retained
-            and len(prompt) >= retained
-            and prompt[:retained] == self.tokens[:retained]
-        )
-
-    def can_realign(self, turn: TITOTurn) -> bool:
+    def realign(self, turn: TITOTurn, *, trainable: bool = True) -> None:
         start = turn.realign_from_token
         prompt = turn.exact_prompt_ids
-        return (
+        if not (
             turn.prompt_disposition == "realign"
             and start is not None
             and 0 <= start <= min(len(self.tokens), len(prompt))
@@ -154,14 +144,9 @@ class _SampleBuilder:
             and turn.prefix_match_tokens is not None
             and turn.prefix_match_tokens >= start
             and turn.realigned_masked_tokens == len(prompt) - start
-        )
-
-    def realign(self, turn: TITOTurn, *, trainable: bool = True) -> None:
-        if not self.can_realign(turn):
-            raise ValueError("turn has invalid bounded realignment evidence")
+        ):
+            raise ValueError("realign disposition does not match its exact evidence")
         self._check_capture_fields(turn)
-        start = turn.realign_from_token
-        assert start is not None
         # Only sampled completions at and after `start` leave training; the
         # overwritten tail may also hold tool-output or other prompt-suffix
         # tokens, which were never sampled and are not coverage.
@@ -173,7 +158,6 @@ class _SampleBuilder:
             for origin, mask in zip(overwritten_origin, overwritten_mask)
             if origin and mask == 0
         )
-        prompt = list(turn.exact_prompt_ids)
         replacement = prompt[start:]
         self.tokens[start:] = replacement
         self.logprobs[start:] = [0.0] * len(replacement)
@@ -197,13 +181,25 @@ class _SampleBuilder:
         self._append_completion(turn, trainable=trainable)
 
     def append(self, turn: TITOTurn, *, trainable: bool = True) -> None:
-        prompt = list(turn.exact_prompt_ids)
-        if not self.can_append(turn):
-            raise ValueError("turn does not extend this materialization segment")
         trim_tokens = turn.incremental_checkpoint_trim_tokens
-        if prompt[: len(self.tokens)] != self.tokens:
-            retained = len(self.tokens) - trim_tokens
-            if trim_tokens <= 0 or retained < len(self.prompt_ids):
+        checkpoint_length = len(self.tokens)
+        retained = checkpoint_length - trim_tokens
+        prompt = turn.exact_prompt_ids
+        expected_prefix = self.tokens[:retained] if trim_tokens > 0 else self.tokens
+        if (
+            not 0 <= trim_tokens <= checkpoint_length
+            or len(prompt) < retained
+            or list(prompt[:retained]) != expected_prefix
+        ):
+            message = (
+                "append disposition does not extend the exact checkpoint"
+                if self.turns
+                else "turn does not extend this materialization segment"
+            )
+            raise ValueError(message)
+        # A declared trim can still leave the entire checkpoint intact.
+        if trim_tokens and list(prompt[retained:checkpoint_length]) != self.tokens[retained:]:
+            if retained < len(self.prompt_ids):
                 raise ValueError(
                     "incremental checkpoint trim is not safely materializable"
                 )
@@ -526,22 +522,14 @@ def _materialize_tito_trajectory(
                     builder.realigned_masked_tokens += turn.realigned_masked_tokens
                 builder.append(turn, trainable=trainable)
                 continue
-            if turn.prompt_disposition == "append" and not builder.can_append(turn):
-                raise ValueError(
-                    "append disposition does not extend the exact checkpoint"
-                )
-            elif turn.prompt_disposition == "realign" and not builder.can_realign(turn):
-                raise ValueError(
-                    "realign disposition does not match its exact evidence"
-                )
-            elif turn.prompt_disposition not in {"append", "realign"}:
+            if turn.prompt_disposition == "realign":
+                builder.realign(turn, trainable=trainable)
+            elif turn.prompt_disposition == "append":
+                builder.append(turn, trainable=trainable)
+            else:
                 raise ValueError(
                     f"unknown TITO prompt disposition: {turn.prompt_disposition!r}"
                 )
-            if turn.prompt_disposition == "realign":
-                builder.realign(turn, trainable=trainable)
-            else:
-                builder.append(turn, trainable=trainable)
         if builder is not None:
             builders.append(builder)
 

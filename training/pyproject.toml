@@ -113,6 +113,7 @@ packages = [
     "training.examples.harbor_rl.sandboxes",
     "training.examples.harbor_rl.sandboxes.daytona",
     "training.examples.harbor_rl.sandboxes.docker",
+    "training.examples.harbor_rl.sandboxes.e2b",
     "training.examples.harbor_rl.tasks",
     "training.examples.harbor_rl.tasks.dabstep",
     "training.examples.harbor_rl.tasks.deep_swe",
