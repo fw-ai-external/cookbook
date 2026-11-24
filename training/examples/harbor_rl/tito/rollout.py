@@ -190,6 +190,7 @@ def materialize_harbor_trajectory(
         )
     if outcome.reward is None:
         return None
+    started = time.monotonic()
     try:
         rollout = materialize_tito_trajectory(
             artifact,
@@ -208,7 +209,10 @@ def materialize_harbor_trajectory(
         raise RecoverableRolloutError(
             "Harbor trial produced no policy-visible trainable segment"
         )
-    _attach_trial_phase_metrics(rollout, outcome.phase_timings)
+    _attach_trial_phase_metrics(rollout, {
+        **outcome.phase_timings,
+        "artifact_materialization_seconds": time.monotonic() - started,
+    })
     return rollout
 
 
@@ -262,7 +266,7 @@ class HarborSettings:
 
     tito: TITOSidecarSettings
     environment: str = "docker"
-    """``docker`` or ``e2b``."""
+    """``docker``, ``e2b`` or ``daytona``."""
     trial_config: str | Path | Mapping[str, Any] | None = None
     """Harbor ``TrialConfig`` YAML path or mapping."""
     trials_dir: str | Path | None = None
@@ -280,8 +284,8 @@ class HarborSettings:
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
-        if self.environment not in {"docker", "e2b"}:
-            raise ValueError("Harbor environment must be docker or e2b")
+        if self.environment not in {"docker", "e2b", "daytona"}:
+            raise ValueError("Harbor environment must be docker, e2b or daytona")
         if self.e2b_template_manifest is not None and self.environment != "e2b":
             raise ValueError("e2b_template_manifest requires the E2B environment")
         if not self.reward_key:

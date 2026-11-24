@@ -504,9 +504,10 @@ agent is required by `async_rl_loop`, and all retain the ordinary
 
 ## Multi-turn task sandboxes: local Docker or a remote provider
 
-Harbor trials select the task sandbox through `HarborSettings.environment` —
-`"docker"` (local containers) or `"e2b"` (remote microVMs). The execution model is identical in both; only placement and cost
-differ.
+Harbor trials select the task sandbox through `HarborSettings.environment`.
+Use `"docker"` for local containers and `"e2b"` or `"daytona"` for remote sandboxes.
+Install Harbor's Daytona extra with a Daytona SDK that supports streaming file
+downloads. The OpenCode example accepts `--harbor-environment daytona`.
 
 ### One sandbox per trial, not per turn
 

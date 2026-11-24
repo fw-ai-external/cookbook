@@ -1003,7 +1003,8 @@ async def serve(spec_path: Path) -> None:
         await sidecar.start()
         _atomic_write(Path(SIDECAR_PID_PATH), f"{os.getpid()}\n".encode())
         endpoint = await sidecar.create_trajectory_async(
-            metadata=dict(spec.get("trajectory_metadata") or {})
+            metadata=dict(spec.get("trajectory_metadata") or {}),
+            **({"trajectory_id": spec["trajectory_id"]} if "trajectory_id" in spec else {}),
         )
         _atomic_write(
             Path(SIDECAR_ENDPOINT_PATH),

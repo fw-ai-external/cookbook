@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import re
 import threading
+from bisect import bisect_left
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 _COUNTER_ROOT = "tito/trial/"
 _FAILED_PHASE_ROOT = "tito/trial_failed/"
@@ -24,7 +26,51 @@ _SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
 
 _LOCK = threading.Lock()
 _COUNTERS: dict[str, float] = {}
-_DISTRIBUTIONS: dict[str, list[float]] = {}
+_DURATION_BUCKETS = (
+    0.001,
+    0.01,
+    0.1,
+    0.5,
+    1.0,
+    5.0,
+    10.0,
+    30.0,
+    60.0,
+    180.0,
+    300.0,
+    900.0,
+)
+
+
+@dataclass(slots=True)
+class _Distribution:
+    bins: list[int] | None
+    count: int = 0
+    total: float = 0.0
+    minimum: float = float("inf")
+    maximum: float = -float("inf")
+
+    def observe(self, value: float) -> None:
+        self.count += 1
+        self.total += value
+        self.minimum = min(self.minimum, value)
+        self.maximum = max(self.maximum, value)
+        if self.bins is not None:
+            self.bins[bisect_left(_DURATION_BUCKETS, value)] += 1
+
+    def quantile_upper_bound(self, quantile: float) -> float:
+        assert self.bins is not None
+        total = 0
+        for bound, count in zip(
+            (*_DURATION_BUCKETS, self.maximum), self.bins, strict=True
+        ):
+            total += count
+            if total >= self.count * quantile:
+                return min(bound, self.maximum)
+        raise AssertionError("duration histogram has an incorrect observation count")
+
+
+_DISTRIBUTIONS: dict[str, _Distribution] = {}
 
 
 def _slug(reason: str) -> str:
@@ -39,7 +85,15 @@ def _increment(name: str, amount: float = 1.0) -> None:
 
 def _observe(name: str, value: float) -> None:
     with _LOCK:
-        _DISTRIBUTIONS.setdefault(name, []).append(float(value))
+        distribution = _DISTRIBUTIONS.get(name)
+        if distribution is None:
+            bins = (
+                [0] * (len(_DURATION_BUCKETS) + 1)
+                if name.endswith("_seconds")
+                else None
+            )
+            distribution = _DISTRIBUTIONS[name] = _Distribution(bins=bins)
+        distribution.observe(float(value))
 
 
 def record_trial_attempt() -> None:
@@ -71,8 +125,8 @@ def record_failed_trial_wall(seconds: float) -> None:
 
 def record_failed_trial_phases(phases: Mapping[str, float]) -> None:
     """Harbor phase brackets of a trial that ran but yielded no trajectory."""
-    for phase, seconds in phases.items():
-        _observe(f"{_FAILED_PHASE_ROOT}{phase}", float(seconds))
+    for phase, value in phases.items():
+        _observe(f"{_FAILED_PHASE_ROOT}{phase}", value)
 
 
 def drain() -> dict[str, float]:
@@ -82,12 +136,15 @@ def drain() -> dict[str, float]:
         distributions = _DISTRIBUTIONS
         _reset_locked()
     drained: dict[str, float] = dict(counters)
-    for name, values in distributions.items():
-        drained[f"{name}_count"] = float(len(values))
-        drained[f"{name}_sum"] = float(sum(values))
-        drained[f"{name}_min"] = float(min(values))
-        drained[f"{name}_max"] = float(max(values))
-        drained[f"{name}_mean"] = float(sum(values) / len(values))
+    for name, distribution in distributions.items():
+        drained[f"{name}_count"] = float(distribution.count)
+        drained[f"{name}_sum"] = distribution.total
+        drained[f"{name}_min"] = distribution.minimum
+        drained[f"{name}_max"] = distribution.maximum
+        drained[f"{name}_mean"] = distribution.total / distribution.count
+        if distribution.bins is not None:
+            drained[f"{name}_p95_upper_bound"] = distribution.quantile_upper_bound(0.95)
+            drained[f"{name}_p99_upper_bound"] = distribution.quantile_upper_bound(0.99)
     return drained
 
 

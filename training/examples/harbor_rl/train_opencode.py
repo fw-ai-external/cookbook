@@ -60,7 +60,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--harbor-registry-path", default=None)
     parser.add_argument(
-        "--harbor-environment", choices=("docker", "e2b"), default="docker"
+        "--harbor-environment", choices=("docker", "e2b", "daytona"), default="docker"
     )
     parser.add_argument(
         "--harbor-trials-dir",

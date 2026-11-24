@@ -14,7 +14,8 @@ import httpx
 import pyqwest
 import pytest
 
-from training.examples.harbor_rl.tito import harness_exec, sidecar
+from training.examples.harbor_rl.harnesses import exec as harness_exec
+from training.examples.harbor_rl.tito import sidecar
 
 
 class LocalExec:

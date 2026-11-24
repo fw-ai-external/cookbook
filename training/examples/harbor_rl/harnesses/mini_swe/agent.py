@@ -10,7 +10,7 @@ from harbor.agents.model_connection import ResolvedModelConnection
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from training.examples.harbor_rl.tito.harness_exec import exec_harness
+from training.examples.harbor_rl.harnesses.exec import exec_harness
 from training.examples.harbor_rl.tito.sidecar import (
     install_sidecar,
     run_harness_with_sidecar,

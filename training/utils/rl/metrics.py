@@ -56,6 +56,16 @@ _TITO_PUBLIC_DISTRIBUTIONS = {
     "tito/trial/bound_utilization": "tito/trial/bound_utilization",
 }
 
+_TITO_MODEL_DISTRIBUTIONS = {
+    "tito/server/generation_seconds": "decode_seconds",
+    "tito/server/prefill_seconds": "prefill_seconds",
+    "tito/server/prefill_queue_seconds": "prefill_queue_seconds",
+    "tito/server/generation_queue_seconds": "generation_queue_seconds",
+    "tito/server/client_ttft_seconds": "client_ttft_seconds",
+    "tito/server/upstream_ttft_seconds": "server_ttft_seconds",
+    "tito/server/processing_seconds": "server_processing_seconds",
+}
+
 # Harbor phase brackets that partition a trial's wall clock. Whatever the
 # brackets do not cover is the inter-phase gap where silent provider hangs
 # live, so it is published rather than left implicit.
@@ -64,11 +74,12 @@ _TITO_TRIAL_PHASE_SOURCES = (
     "tito/trial/agent_setup_seconds",
     "tito/trial/agent_execution_seconds",
     "tito/trial/verifier_seconds",
+    "tito/trial/artifact_collection_seconds",
+    "tito/trial/artifact_admission_seconds",
 )
 
-# Per-step wall-time sums (across completed trajectories) published as flat
-# gauges. inter_call_gap + request_wall partition the agent-execution window;
-# trial phases bracket sandbox build, agent install, execution, and scoring.
+# Per-step sums across completed trajectories. Inter-call gaps and sampled
+# request durations do not partition the rollout when branches overlap.
 _TITO_PUBLIC_SUMS = {
     "tito/turn/inter_call_gap_seconds": "tito/harness/wall_seconds_sum",
     "tito/turn/request_wall_seconds": "tito/model/request_wall_seconds_sum",
@@ -202,22 +213,26 @@ def publish_tito_sidecar_metrics(
         value = merged.get(f"{source}_sum")
         if value is not None:
             metrics[destination] = value
-    harness_sum = merged.get("tito/turn/inter_call_gap_seconds_sum")
-    model_sum = merged.get("tito/turn/request_wall_seconds_sum")
-    sampler_sum = merged.get("tito/calls/sampler_wall_seconds_sum")
-    if model_sum is not None and sampler_sum is not None:
-        # Client-visible model wall minus server-side generation: queueing on
-        # a saturated deployment plus transport. Without this term a contended
-        # deployment reads as "sampling is slow".
-        metrics["tito/model/queue_overhead_seconds_sum"] = max(0.0, model_sum - sampler_sum)
-    if harness_sum is not None and model_sum is not None:
-        window = harness_sum + model_sum
-        if window > 0:
-            metrics["tito/harness/wait_fraction"] = harness_sum / window
-            if sampler_sum is not None:
-                sampling = min(sampler_sum, model_sum)
-                metrics["tito/model/sampling_fraction"] = sampling / window
-                metrics["tito/model/queue_fraction"] = (model_sum - sampling) / window
+    for source, public_name in (
+        ("model_requests", "requests"),
+        ("upstream_attempts", "attempts"),
+        ("upstream_retry_attempts", "retries"),
+        ("upstream_completions", "completed_requests"),
+        ("generated_tokens", "generated_tokens"),
+    ):
+        counter = f"tito/calls/{source}"
+        if counter in merged:
+            metrics[f"tito/model/{public_name}"] = merged[counter]
+    completion_key = "tito/calls/upstream_completions"
+    comparable = [summary for summary in summaries if completion_key in summary]
+    completions = sum(float(summary[completion_key]) for summary in comparable)
+    for source, destination in _TITO_MODEL_DISTRIBUTIONS.items():
+        if completions:
+            covered = sum(float(summary.get(f"{source}_count", 0)) for summary in comparable)
+            metrics[f"tito/model/{destination}_coverage"] = covered / completions
+        if count := merged.get(f"{source}_count"):
+            metrics[f"tito/model/{destination}_count"] = count
+            metrics[f"tito/model/{destination}_sum"] = merged[f"{source}_sum"]
 
     trial_wall_sum = merged.get("tito/trial/trial_wall_seconds_sum")
     if trial_wall_sum is not None:
@@ -226,6 +241,27 @@ def publish_tito_sidecar_metrics(
 
     trajectory_count = float(merged.get("tito/trajectory/policy_turns_count", 0.0))
     metrics["tito/trajectory/count"] = trajectory_count
+    if trajectory_count and "tito/tool/observed_rollouts" in merged:
+        metrics["tito/tool/rollout_coverage"] = float(merged.get("tito/tool/observed_rollouts", 0)) / trajectory_count
+    for name in ("succeeded", "failed", "unclosed", "work_seconds", "busy_seconds"):
+        key = f"tito/tool/{name}"
+        if key in merged:
+            destination = f"{key}_sum" if name.endswith("_seconds") else key
+            metrics[destination] = merged[key]
+    for name in (
+        "artifact_transferred_bytes",
+        "artifact_retries",
+        "artifact_metadata_retries",
+        "artifact_first_byte_seconds",
+        "artifact_read_seconds",
+        "artifact_codec_seconds",
+        "artifact_collection_seconds",
+        "artifact_admission_seconds",
+        "artifact_materialization_seconds",
+    ):
+        key = f"tito/trial/{name}"
+        if f"{key}_sum" in merged:
+            metrics[f"{key}_sum"] = merged[f"{key}_sum"]
     new_segments = float(merged.get("tito/lineage/new_segment", 0.0))
     splits = max(0.0, new_segments - trajectory_count)
     eligible_boundaries = max(0.0, turn_count - trajectory_count)

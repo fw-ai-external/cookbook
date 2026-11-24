@@ -522,8 +522,6 @@ class TestTitoHarnessTimingMetrics:
         assert metrics["tito/model/request_wall_seconds_sum"] == pytest.approx(80.0)
         assert metrics["tito/model/sampler_wall_seconds_sum"] == pytest.approx(60.0)
         assert metrics["tito/harness/environment_setup_seconds_sum"] == pytest.approx(20.0)
-        # 40 harness seconds in a 120-second harness+model window.
-        assert metrics["tito/harness/wait_fraction"] == pytest.approx(40.0 / 120.0)
 
     def test_promotes_harness_distributions(self):
         from training.utils.rl.metrics import publish_tito_sidecar_metrics
@@ -537,7 +535,7 @@ class TestTitoHarnessTimingMetrics:
         assert metrics["tito/calls/sampling_seconds_mean"] == pytest.approx(15.0)
         assert metrics["tito/trial/environment_setup_seconds_mean"] == pytest.approx(10.0)
 
-    def test_wait_fraction_omitted_without_model_window(self):
+    def test_no_wall_sums_when_there_is_no_model_measurement(self):
         from training.utils.rl.metrics import publish_tito_sidecar_metrics
 
         metrics: dict = {}
@@ -638,21 +636,7 @@ class TestTitoTimingDecomposition:
             summary[f"{base}_max"] = value
         return summary
 
-    def test_queue_overhead_separates_contention_from_sampling(self):
-        from training.utils.rl.metrics import publish_tito_sidecar_metrics
-
-        metrics: dict = {}
-        publish_tito_sidecar_metrics(metrics, [self._summary()])
-
-        # 60s client-visible model wall, 45s of it real generation.
-        assert metrics["tito/model/queue_overhead_seconds_sum"] == pytest.approx(15.0)
-        assert metrics["tito/harness/wait_fraction"] == pytest.approx(40.0 / 100.0)
-        assert metrics["tito/model/sampling_fraction"] == pytest.approx(45.0 / 100.0)
-        assert metrics["tito/model/queue_fraction"] == pytest.approx(15.0 / 100.0)
-        assert metrics["tito/calls/sampling_seconds_mean"] == pytest.approx(22.5)
-        assert "tito/turn/sampling_seconds_mean" not in metrics
-
-    def test_sampler_wall_above_request_wall_never_goes_negative(self):
+    def test_model_duration_coverage_uses_measured_server_data(self):
         from training.utils.rl.metrics import publish_tito_sidecar_metrics
 
         metrics: dict = {}
@@ -661,16 +645,45 @@ class TestTitoTimingDecomposition:
             [
                 self._summary(
                     **{
-                        "tito/calls/sampler_wall_seconds_sum": 90.0,
-                        "tito/calls/sampler_wall_seconds_max": 60.0,
+                        "tito/calls/upstream_completions": 2,
+                        "tito/calls/upstream_attempts": 3,
+                        "tito/calls/generated_tokens": 320,
+                        "tito/server/generation_seconds_count": 1,
+                        "tito/server/generation_seconds_sum": 7.0,
+                        "tito/server/generation_seconds_min": 7.0,
+                        "tito/server/generation_seconds_max": 7.0,
                     }
                 )
             ],
         )
 
-        assert metrics["tito/model/queue_overhead_seconds_sum"] == 0.0
-        assert metrics["tito/model/queue_fraction"] == 0.0
-        assert metrics["tito/model/sampling_fraction"] == pytest.approx(60.0 / 100.0)
+        assert metrics["tito/model/decode_seconds_sum"] == 7.0
+        assert metrics["tito/model/decode_seconds_coverage"] == 0.5
+        assert metrics["tito/model/prefill_seconds_coverage"] == 0.0
+        assert "tito/model/prefill_seconds_sum" not in metrics
+        assert "tito/model/queue_overhead_seconds_sum" not in metrics
+        assert metrics["tito/model/attempts"] == 3
+        assert metrics["tito/model/generated_tokens"] == 320
+        assert metrics["tito/calls/sampling_seconds_mean"] == pytest.approx(22.5)
+
+    def test_legacy_model_timings_do_not_enter_new_coverage_ratio(self):
+        from training.utils.rl.metrics import publish_tito_sidecar_metrics
+
+        metrics: dict = {}
+        publish_tito_sidecar_metrics(
+            metrics,
+            [
+                {
+                    "tito/server/generation_seconds_count": 1,
+                    "tito/server/generation_seconds_sum": 7.0,
+                    "tito/server/generation_seconds_min": 7.0,
+                    "tito/server/generation_seconds_max": 7.0,
+                },
+                {"tito/calls/upstream_completions": 1},
+            ],
+        )
+        assert metrics["tito/model/decode_seconds_sum"] == 7.0
+        assert metrics["tito/model/decode_seconds_coverage"] == 0.0
 
     def test_unaccounted_trial_time_exposes_inter_phase_gaps(self):
         from training.utils.rl.metrics import publish_tito_sidecar_metrics

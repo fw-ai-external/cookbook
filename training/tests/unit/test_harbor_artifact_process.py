@@ -304,6 +304,29 @@ def test_artifact_failures_leave_worker_usable(pool, tmp_path):
     )
 
 
+@pytest.mark.parametrize("fault", ["missing_complete", "bit_flip", "last_byte"])
+def test_invalid_artifact_never_reaches_the_materializer(tmp_path, fault):
+    outcome = _write_artifact(tmp_path, routing=False)
+    root = outcome.trial_path / "artifacts/tito/compact"
+    if fault == "missing_complete":
+        (root / "COMPLETE").unlink()
+    else:
+        artifact = root / "trajectory.tito"
+        data = artifact.read_bytes()
+        if fault == "bit_flip":
+            middle = len(data) // 2
+            data = data[:middle] + bytes([data[middle] ^ 1]) + data[middle + 1 :]
+        else:
+            data = data[:-1]
+        artifact.write_bytes(data)
+    with pytest.raises(RecoverableRolloutError):
+        _finish_harbor_trial(
+            outcome,
+            materializer=lambda _: pytest.fail("unverified data reached the materializer"),
+            **_completion_options(),
+        )
+
+
 def test_setup_timeout_preserves_retry_policy(tmp_path):
     outcome = HarborTrialOutcome(
         "task", "trial", tmp_path, None, {}, "AgentSetupTimeoutError", "setup timed out"
