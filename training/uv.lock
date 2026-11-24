@@ -1071,7 +1071,7 @@ wheels = [
 
 [[package]]
 name = "fireworks-ai"
-version = "1.2.35"
+version = "1.2.37"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1084,14 +1084,15 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a1/bd/b182af4a955e54ba55ba88670e6a4efbba8c7ce636d046d21d1572e28462/fireworks_ai-1.2.35.tar.gz", hash = "sha256:41e293f25d0d05dd5c295d3ccf922c972f12ad6a476b51c876ab1cf223561d4c", size = 909307, upload-time = "2026-11-19T09:18:40.851Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ff/75/9a7bc8cf3d262a21c2825dbc06a66d30f2cf54d25b9c3b3388c0766f31c3/fireworks_ai-1.2.37.tar.gz", hash = "sha256:289bf458b55eaa4160ec33bc959f967568418ff73cf4cbc8132cd9bf1db5c481", size = 932886, upload-time = "2026-11-24T01:32:34.477Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/28/84363d71f35d2eeb86385956dc84652150e6017541c1b8a8e8c099749d60/fireworks_ai-1.2.35-py3-none-any.whl", hash = "sha256:113fe2dd0f57160ece09e31e48f459c52fa9d39cbc08d9f135fdf2bc58b9f2c9", size = 844347, upload-time = "2026-11-19T09:18:39.202Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/c3/149cafc2463176e3ddad56d8e24d25c073c4003c2ccc0aee35acda81e849/fireworks_ai-1.2.37-cp311-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:2dfdc064c2e305faad7fe514abdeee85022467085731fc59f0a5ad450d87c775", size = 1174010, upload-time = "2026-11-24T01:32:31.842Z" },
+    { url = "https://files.pythonhosted.org/packages/16/40/d06638eec2f5a8eac3ff514a436b61fe2722f7185a28a039d70c4d6b1177/fireworks_ai-1.2.37-py3-none-any.whl", hash = "sha256:b2b1ef3d20e905a721d1842b4e1580252da107c6f33924c92a70fb399e604c61", size = 857573, upload-time = "2026-11-24T01:32:33.274Z" },
 ]
 
 [[package]]
 name = "fireworks-training-cookbook"
-version = "2026.11.24.1"
+version = "2026.11.13.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -1138,7 +1139,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "datasets", specifier = ">=5.0.1" },
     { name = "eval-protocol", marker = "extra == 'eval'", specifier = "==0.3.33" },
-    { name = "fireworks-ai", specifier = ">=1.2.35,<2" },
+    { name = "fireworks-ai", specifier = ">=1.2.37,<2" },
     { name = "fireworks-training-cookbook", extras = ["eval"], marker = "extra == 'dev'" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.23.0,<1" },
     { name = "huggingface-hub", specifier = ">=1.5.0,<2.0" },
