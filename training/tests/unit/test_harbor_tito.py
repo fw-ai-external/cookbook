@@ -43,7 +43,10 @@ from training.examples.harbor_rl.harnesses.opencode.constants import (
 from training.examples.harbor_rl.harnesses.pi import prepare_tasks as prepare_pi_tasks
 from training.examples.harbor_rl.harnesses.pi import rollout as pi_rollout
 from training.examples.harbor_rl.tito import sidecar as sidecar_runtime
-from training.examples.harbor_rl.tito import e2b_templates
+from training.examples.harbor_rl.sandboxes import artifacts as sandbox_artifacts
+from training.examples.harbor_rl.sandboxes.e2b import config as e2b_config
+from training.examples.harbor_rl.sandboxes.e2b import failures as e2b_failures
+from training.examples.harbor_rl.sandboxes.e2b import templates as e2b_templates
 from training.examples.harbor_rl.tito import rollout as tito_rollout
 from training.examples.harbor_rl.tito import trial as harbor_adapter
 from training.utils.rl.async_rl.errors import RecoverableRolloutError, DiscardTrajectoryError
@@ -538,7 +541,7 @@ def test_context_limit_is_shared_by_inference_and_training_retention(
 
 @pytest.mark.parametrize("configured,expected", [(None, "1.1"), ("", "1.1"), ("1.1", "1.1"), ("2", "2")])
 def test_e2b_transport_default_and_explicit_override(monkeypatch, tmp_path, configured, expected) -> None:
-    monkeypatch.setattr(tito_rollout.importlib, "import_module", lambda _: SimpleNamespace(
+    monkeypatch.setattr(e2b_config.importlib, "import_module", lambda _: SimpleNamespace(
         resolve_http_version=lambda: os.environ["E2B_HTTP_VERSION"]
     ))
     monkeypatch.delenv("E2B_HTTP_VERSION", raising=False)
@@ -560,14 +563,14 @@ def test_docker_does_not_configure_e2b_transport(monkeypatch, tmp_path) -> None:
 
 def test_invalid_e2b_transport_fails_before_bundle_or_sandbox_io(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("E2B_HTTP_VERSION", "invalid")
-    with pytest.raises(tito_rollout.UserConfigError, match="E2B_HTTP_VERSION"):
+    with pytest.raises(e2b_config.UserConfigError, match="E2B_HTTP_VERSION"):
         rollout.make_rollout_fn(_setup(tmp_path), harbor=_harbor(tmp_path, environment="e2b"))
 
 
 def test_unsupported_e2b_sdk_does_not_claim_transport_selection(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(tito_rollout.importlib, "import_module", lambda _: SimpleNamespace())
+    monkeypatch.setattr(e2b_config.importlib, "import_module", lambda _: SimpleNamespace())
     monkeypatch.delenv("E2B_HTTP_VERSION", raising=False)
-    with pytest.raises(tito_rollout.UserConfigError, match="does not support E2B_HTTP_VERSION"):
+    with pytest.raises(e2b_config.UserConfigError, match="does not support E2B_HTTP_VERSION"):
         rollout.make_rollout_fn(_setup(tmp_path), harbor=_harbor(tmp_path, environment="e2b"))
     assert "E2B_HTTP_VERSION" not in os.environ
 
@@ -1439,7 +1442,7 @@ def test_frozen_e2b_manifest_selects_only_the_builtin_adapter(tmp_path, environm
     else:
         config = harbor_adapter._build_trial_config(_fake_harbor(), **kwargs)
         assert config.environment.type is None
-        assert config.environment.import_path.endswith("e2b_frozen:FrozenE2BEnvironment")
+        assert config.environment.import_path.endswith("sandboxes.e2b.frozen:FrozenE2BEnvironment")
         assert config.environment.kwargs["frozen_manifest"] == str(tmp_path / "pins.json")
         assert config.environment.delete is True
         assert config.environment.force_build is False
@@ -1891,13 +1894,13 @@ def test_e2b_stream_open_timeout_requires_exact_provider_traceback() -> None:
             f"{marker}"
         ),
     )
-    assert harbor_adapter._is_retryable_e2b_stream_open_timeout(
+    assert e2b_failures._is_retryable_e2b_stream_open_timeout(
         exception, harbor_environment="e2b"
     )
-    assert not harbor_adapter._is_retryable_e2b_stream_open_timeout(
+    assert not e2b_failures._is_retryable_e2b_stream_open_timeout(
         exception, harbor_environment="docker"
     )
-    assert not harbor_adapter._is_retryable_e2b_stream_open_timeout(
+    assert not e2b_failures._is_retryable_e2b_stream_open_timeout(
         SimpleNamespace(
             exception_type="TimeoutException",
             exception_message=marker,
@@ -1923,7 +1926,7 @@ def test_e2b_sidecar_cleanup_stream_timeout_is_retryable() -> None:
             f"TITO sidecar failure cleanup failed: {marker} (60.0 seconds)."
         ),
     )
-    assert harbor_adapter._is_retryable_e2b_stream_open_timeout(
+    assert e2b_failures._is_retryable_e2b_stream_open_timeout(
         exception, harbor_environment="e2b"
     )
 
@@ -1940,13 +1943,13 @@ def test_e2b_sidecar_readiness_timeout_requires_exact_wrapped_traceback() -> Non
             f"RuntimeError: Agent install failed: {marker}"
         ),
     )
-    assert harbor_adapter._is_retryable_e2b_sidecar_readiness_timeout(
+    assert e2b_failures._is_retryable_e2b_sidecar_readiness_timeout(
         exception, harbor_environment="e2b"
     )
-    assert not harbor_adapter._is_retryable_e2b_sidecar_readiness_timeout(
+    assert not e2b_failures._is_retryable_e2b_sidecar_readiness_timeout(
         exception, harbor_environment="docker"
     )
-    assert not harbor_adapter._is_retryable_e2b_sidecar_readiness_timeout(
+    assert not e2b_failures._is_retryable_e2b_sidecar_readiness_timeout(
         SimpleNamespace(
             exception_type="RuntimeError",
             exception_message=marker,
@@ -1963,7 +1966,7 @@ def test_e2b_sidecar_readiness_timeout_requires_exact_wrapped_traceback() -> Non
             f"TimeoutError: {marker}"
         ),
     )
-    assert harbor_adapter._is_retryable_e2b_sidecar_readiness_timeout(
+    assert e2b_failures._is_retryable_e2b_sidecar_readiness_timeout(
         inner_only_wrapper,
         harbor_environment="e2b",
     )
@@ -2358,9 +2361,12 @@ def test_unbounded_agent_budget_leaves_the_trial_unbounded(
     harbor = _fake_harbor()
     harbor.Trial = Trial
     monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
-    # The task is unresolved here. The fake Harbor trial intentionally has
-    # no pre-teardown hook and provides only its final collected artifact.
+    # The fake trial provides only its final collected artifact.
     kwargs = _bound_probe_kwargs(tmp_path) | {"harbor_environment": environment}
+    if environment == "e2b":
+        # Older E2B SDKs use Harbor collection even for resolved tasks.
+        monkeypatch.setattr(sandbox_artifacts, "e2b_supports_artifact_streaming", lambda: False)
+        kwargs["task_config"] = _resolved_single_step_task(tmp_path)
     outcome = asyncio.run(harbor_adapter.run_harbor_trial(**kwargs))
     assert outcome.reward == 1.0
     # No bound was derived, so no bound utilization is reported for it.
@@ -2423,7 +2429,10 @@ def test_temporary_receipt_failure_does_not_override_a_harbor_timeout(monkeypatc
     assert error.value.__cause__.reason == "artifact_transfer"
 
 
-def test_transfer_admission_releases_before_slow_verification(monkeypatch, tmp_path):
+@pytest.mark.parametrize("environment", ["docker", "e2b"])
+def test_transfer_admission_releases_before_slow_verification(
+    monkeypatch, tmp_path, environment
+):
     async def run():
         count = 8
         active = peak = verifying = 0
@@ -2475,10 +2484,11 @@ def test_transfer_admission_releases_before_slow_verification(monkeypatch, tmp_p
         harbor = _fake_harbor()
         harbor.Trial = Trial
         monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
+        monkeypatch.setattr(sandbox_artifacts, "e2b_supports_artifact_streaming", lambda: True)
         monkeypatch.setattr(harbor_adapter, "collect_trajectory", collect)
         monkeypatch.setattr(harbor_adapter, "_finish_harbor_trial", finish)
         kwargs = _bound_probe_kwargs(tmp_path) | {
-            "harbor_environment": "docker",
+            "harbor_environment": environment,
             "task_config": _resolved_single_step_task(tmp_path),
             "sidecar_launch_spec": json.dumps(
                 {"bundle_digest": "abc", "inference_base_url": "https://api.fireworks.ai"}

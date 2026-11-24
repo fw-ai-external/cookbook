@@ -23,6 +23,7 @@ from training.examples.harbor_rl.sandboxes._files import (
     CHUNK_BYTES,
     ArtifactReader,
     ArtifactReaderFactory,
+    ArtifactSourceUnavailable,
 )
 from training.examples.harbor_rl.tito._artifact_io import wait_for_artifact_worker
 from training.examples.harbor_rl.tito.sidecar import (
@@ -171,7 +172,7 @@ async def _small_file(
                             )
                         payload.extend(chunk)
             return bytes(payload)
-        except (FileNotFoundError, ValueError):
+        except (ArtifactSourceUnavailable, FileNotFoundError, ValueError):
             raise
         except Exception:
             if attempt:
@@ -293,7 +294,7 @@ async def collect_trajectory(
                 return spool, manifest
             except Exception as exc:
                 if (
-                    isinstance(exc, FileNotFoundError)
+                    isinstance(exc, (ArtifactSourceUnavailable, FileNotFoundError))
                     or getattr(exc, "errno", None) in _LOCAL_STORAGE_ERRORS
                 ):
                     reason = "artifact_transfer"

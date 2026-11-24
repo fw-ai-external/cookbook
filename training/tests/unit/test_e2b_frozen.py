@@ -12,7 +12,7 @@ pytest.importorskip("e2b")
 from harbor.models.task.config import EnvironmentConfig
 from harbor.models.trial.paths import TrialPaths
 
-from training.examples.harbor_rl.tito import e2b_frozen
+from training.examples.harbor_rl.sandboxes.e2b import frozen as e2b_frozen
 
 
 @pytest.fixture

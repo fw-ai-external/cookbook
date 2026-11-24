@@ -209,7 +209,10 @@ def build_policy_datums(batch: PolicyBatch) -> List[sdk.Datum]:
         )
         active = loss_mask > 0.5
 
-        rollout_row = list(batch.rollout_logprobs[i])
+        rollout_values = batch.rollout_logprobs[i]
+        anchor_values = batch.anchor_logprobs[i]
+        shared_anchor = anchor_values is rollout_values
+        rollout_row = list(rollout_values)
         if len(rollout_row) != n_tokens:
             raise ValueError(
                 "rollout_logprobs must align exactly with target_tokens "
@@ -224,21 +227,26 @@ def build_policy_datums(batch: PolicyBatch) -> List[sdk.Datum]:
                 response_start + resp_len,
                 source="rollout_logprobs",
             )
-            _coerce_response_logprobs(
+            rollout_response = _coerce_response_logprobs(
                 rollout_row[response_start:],
                 active,
                 policy_loss="policy",
                 sample_idx=i,
                 source="rollout_logprobs",
             )
-        anchor = list(batch.anchor_logprobs[i])
+            if shared_anchor:
+                # The default anchor can reuse the validated rollout response.
+                rollout_row[response_start:] = rollout_response
+            del rollout_response
+
+        anchor = rollout_row if shared_anchor else list(anchor_values)
         if len(anchor) != n_tokens:
             raise ValueError(
                 f"anchor_logprobs must align exactly with target_tokens for sample {i}: "
                 f"expected {n_tokens}, got {len(anchor)}."
             )
         anchor[:response_start] = [0.0] * response_start
-        if resp_len:
+        if resp_len and not shared_anchor:
             anchor[response_start:] = _coerce_response_logprobs(
                 anchor[response_start:],
                 active,

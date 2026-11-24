@@ -330,7 +330,15 @@ class TestBuildPolicyDatums:
 
     def test_anchor_defaults_to_rollout_logprobs(self):
         rollout = [[-0.1, -0.2, -0.3]]
-        assert _policy_batch([self._datum()], [1.0], rollout, [2]).anchor_logprobs is rollout
+        batch = _policy_batch([self._datum()], [1.0], rollout, [2])
+        assert batch.anchor_logprobs is rollout
+
+        shared = build_policy_datums(batch)[0].loss_fn_inputs["logprobs"].data
+        batch.anchor_logprobs = [rollout[0].copy()]
+        separate = build_policy_datums(batch)[0].loss_fn_inputs["logprobs"].data
+
+        assert shared == separate
+        assert rollout == [[-0.1, -0.2, -0.3]]
 
     @pytest.mark.parametrize("advantage", [0.0, -0.0, 1.0 / 3, -1.23456789])
     @pytest.mark.parametrize(

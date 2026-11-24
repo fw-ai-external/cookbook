@@ -10,10 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib
 import logging
 import math
-import os
 import tempfile
 import time
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Set
@@ -23,6 +21,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from training.examples.harbor_rl.sandboxes.e2b.config import configure_http_transport
 from training.examples.harbor_rl.tito._artifact_io import ArtifactProcessPool
 from training.examples.harbor_rl.tito.sidecar import (
     TITOSidecarSettings,
@@ -42,7 +41,6 @@ from training.examples.harbor_rl.tito.trial import (
     task_name_from_row,
     validate_harbor_retry_exceptions,
 )
-from training.utils.errors import UserConfigError
 from training.utils.phase_tracing import phase_span
 from training.utils.rl import trial_events
 from training.utils.rl.async_rl.errors import (
@@ -318,21 +316,7 @@ class HarborRollout:
         self._settings = settings
         self._e2b_http_version = None
         if settings.environment == "e2b":
-            version = os.environ.get("E2B_HTTP_VERSION") or "1.1"
-            if version not in {"1.1", "2"}:
-                raise UserConfigError("E2B_HTTP_VERSION must be '1.1' or '2'")
-            try:
-                connection_config = importlib.import_module("e2b.connection_config")
-            except ImportError as error:
-                raise UserConfigError("E2B HTTP selection requires a supported e2b SDK (use the validated e2b==2.55.0)") from error
-            resolver = getattr(connection_config, "resolve_http_version", None)
-            if not callable(resolver):
-                raise UserConfigError("Installed e2b SDK does not support E2B_HTTP_VERSION; use the validated e2b==2.55.0")
-            os.environ["E2B_HTTP_VERSION"] = version
-            if resolver() != version:
-                raise UserConfigError("Installed e2b SDK did not honor E2B_HTTP_VERSION")
-            self._e2b_http_version = version
-            logger.info("Harbor E2B HTTP transport version=%s", version)
+            self._e2b_http_version = configure_http_transport()
         self._run_prefix = "harbor-" + harness.name.replace("_", "-")
         self._trial_config = load_harbor_trial_config(settings.trial_config)
         self._retry_include_exceptions = validate_harbor_retry_exceptions(
