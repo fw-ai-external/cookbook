@@ -19,6 +19,7 @@ from fireworks.training.sdk.routing import RoutingReferences
 from fireworks.training.sdk.sampling import SampledCompletion
 from training.renderer import get_text_content
 from training.renderer.base import Message, Renderer
+from training.utils.rl.algorithm import server_reinforce
 from training.utils.rl.losses import PromptGroup
 from training.utils.supervised import has_non_text_chunks
 from training.utils.termination import TerminatedBySignal
@@ -365,6 +366,8 @@ def _run_loop(
     logged: list[tuple[int, dict[str, Any]]] | None = None,
     group_for_row=None,
     checkpoint_fn=None,
+    reinforce: server_reinforce.ReinforceConfig | None = None,
+    sample_kwargs: dict[str, Any] | None = None,
     **main_kwargs: Any,
 ) -> dict[str, Any]:
     samplers = iter(["train", "eval"])
@@ -402,6 +405,8 @@ def _run_loop(
 
     def factory(setup):
         events.append(f"factory:{setup.sampler.name}")
+        if sample_kwargs is not None:
+            sample_kwargs.update(setup.sample_kwargs)
 
         async def rollout_fn(row, *, cursor_index=None, rollout_idx=None, evaluation=False):
             if evaluation:
@@ -437,6 +442,7 @@ def _run_loop(
             completions_per_prompt=2,
             prompt_groups_per_step=main_kwargs.pop("prompt_groups_per_step", 1),
             save_final_checkpoint=False,
+            reinforce=reinforce,
             dcp_save_interval=main_kwargs.pop("dcp_save_interval", 0),
             deployment=module.DeployConfig(tokenizer_model="tokenizer"),
         ),
@@ -478,7 +484,7 @@ class _Policy:
         return SimpleNamespace(result_async=result_async)
 
     def optim_step(self, _params, **kwargs):
-        assert kwargs["grad_accumulation_normalization"] == module.objective.NORMALIZATION
+        assert kwargs["grad_accumulation_normalization"] == module.grpo.NORMALIZATION
         self.events.append("optim")
         return SimpleNamespace(metrics={"grad_norm": 3.0, "trainer/optim_step_duration_s:sum": 0.1})
 
@@ -504,6 +510,52 @@ def test_main_collects_trains_and_hotloads_before_next_batch(monkeypatch) -> Non
     # Rollout logprobs are the anchor; no snapshot forward runs.
     for datum in policy.datums:
         assert datum.loss_fn_inputs["logprobs"].data == pytest.approx([-0.1, -0.2])
+
+
+def test_main_trains_with_mc_score_centering(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = server_reinforce.ReinforceConfig(score_centering=server_reinforce.ExtraSamplingSC())
+    expected_loss_config = server_reinforce.loss_fn_config(config)
+    references = RoutingReferences.from_dict(
+        {
+            "length": 2,
+            "files": [{"store_id": "test-store", "file_id": "draws", "format": "parquet_v1", "row_count": 2}],
+            "spans": [{"input_token_start": 0, "count": 2, "file_index": 0, "file_row_start": 0}],
+        }
+    )
+
+    class Policy(_Policy):
+        def validate_loss_capabilities(self, loss_fn: str, loss_fn_config: dict[str, Any]) -> None:
+            assert (loss_fn, loss_fn_config) == ("reinforce", expected_loss_config)
+            self.events.append("validated")
+
+        def forward_backward(
+            self, data: list[sdk.Datum], loss_fn: str, loss_fn_config: dict[str, Any] | None = None
+        ) -> SimpleNamespace:
+            assert (loss_fn, loss_fn_config) == ("reinforce", expected_loss_config)
+            assert all(datum.model_input.sample_extra_references == references.to_dict() for datum in data)
+            return _grpo_result(len(data))
+
+    events: list[str] = []
+    logged: list[tuple[int, dict[str, Any]]] = []
+    sample_kwargs: dict[str, Any] = {}
+    group = _group(sample_extra_references=[references, references])
+    result = _run_loop(
+        monkeypatch,
+        policy=Policy(events),
+        events=events,
+        rows=[{"id": 0}],
+        group_for_row=lambda _row: group,
+        logged=logged,
+        reinforce=config,
+        sample_kwargs=sample_kwargs,
+    )
+
+    assert result["steps"] == 1
+    assert sample_kwargs["sample_extra_tokens"] == 16
+    assert sample_kwargs["sample_extra_format"] == "parquet_v1"
+    assert events.index("validated") < events.index("sample:0") < events.index("optim")
+    assert events.index("optim") < events.index("hotload:/step-1")
+    assert any(metrics.get("train/score_centering_mc") == 1.0 for _, metrics in logged)
 
 
 def test_main_logs_one_record_per_step_from_metric_helpers(monkeypatch) -> None:

@@ -290,9 +290,9 @@ def main():
                 traced(base.AsyncHttpxClientWrapper.build_request, "sdk_build_http_request"),
             ),
             patch.object(
-                rl_loop.objective, "build_datums", traced(rl_loop.objective.build_datums, "cookbook_build_datums")
+                rl_loop.grpo, "build_datums", traced(rl_loop.grpo.build_datums, "cookbook_build_datums")
             ),
-            patch.object(rl_loop.objective, "metrics", traced(rl_loop.objective.metrics, "cookbook_grpo_metrics")),
+            patch.object(rl_loop.grpo, "metrics", traced(rl_loop.grpo.metrics, "cookbook_grpo_metrics")),
             patch.object(
                 rl_loop, "inference_drift_metrics", traced(rl_loop.inference_drift_metrics, "cookbook_drift_metrics")
             ),
