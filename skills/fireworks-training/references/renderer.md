@@ -156,8 +156,10 @@ assistant headers and `<|content_model_end_sampling|>` carry SFT loss.
 Tool arguments are parsed JSON objects before entering the template. The
 cookbook normalizes its legacy `reasoning` field to `reasoning_content`; an
 explicit `reasoning_content` value takes precedence, including an empty value.
-Quoted protocol-marker spellings become special token IDs as in HF, including
-markers within payload text. `content_invoke_tool_text` responses stay visible
+Quoted protocol-marker spellings in names and payload text stay ordinary text,
+as in the publisher's tml-renderers; only the template's framing becomes special
+token IDs, so a message cannot open or close a block. This differs from HF's
+tokenizer for those inputs. `content_invoke_tool_text` responses stay visible
 text even when tools are available; only JSON tool blocks become tool calls.
 These two edge cases are shared with the serving Inkling renderer.
 
