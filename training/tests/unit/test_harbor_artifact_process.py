@@ -159,7 +159,6 @@ def test_reward_only_evaluation_does_not_require_tito_artifact(tmp_path):
         raw_rewards={"reward": 0.75},
         reward_key="reward",
         terminal_failure_reward=0.0,
-        has_exception=False,
         retry_names=frozenset(),
         retryable_e2b_timeout=False,
         retryable_sidecar_readiness=False,
@@ -238,7 +237,6 @@ def _completion_options(**overrides):
             raw_rewards={"reward": 0.0, "partial": 0.75},
             reward_key="partial",
             terminal_failure_reward=None,
-            has_exception=False,
             retry_names=frozenset(),
             retryable_e2b_timeout=False,
             retryable_sidecar_readiness=False,
@@ -339,7 +337,6 @@ def test_setup_timeout_preserves_retry_policy(tmp_path):
             ),
             **_completion_options(
                 raw_rewards=None,
-                has_exception=True,
                 retry_names=frozenset({"AgentSetupTimeoutError"}),
             ),
         )
