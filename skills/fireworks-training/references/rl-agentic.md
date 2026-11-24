@@ -389,6 +389,19 @@ If every row is rejected, it can finish with zero optimizer steps. Treat the
 returned step plus `producer/trajectory_drops_total` and
 `producer/rows_rejected_total` as an experiment success check.
 
+### Malformed tool calls
+
+The agent receives the usual tool parse error and the SDK records a
+`TITOMalformedToolCall` in `artifact.malformed_tool_call` when it can retain the
+exact rejected policy turn. The status contains a `reason_code` and a
+`turn_id`. The SDK leaves scoring to the caller.
+
+The Cookbook TITO materializer assigns reward `0.0` to a verified malformed
+tool action and includes its sampled tokens in the training loss mask. This
+covers missing or unknown tool names, invalid argument JSON, and arguments
+that decode to a non-object at a normal stop. Ambiguous parser errors, length
+truncations, and sampler failures follow the existing failure policy.
+
 ## Responsibility split
 
 The SDK owns protocol-neutral request normalization, exact-token linear

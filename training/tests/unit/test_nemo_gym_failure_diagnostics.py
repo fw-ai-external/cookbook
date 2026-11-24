@@ -135,6 +135,62 @@ def test_native_adapter_preserves_model_error_over_agent_http(
         thread.stop()
 
 
+@pytest.mark.parametrize(
+    ("agent_status", "propagated"), [(200, False), (422, True), (429, False), (500, False), (500, True)],
+)
+def test_native_rollout_scores_terminal_malformed_tool_call(
+    monkeypatch: pytest.MonkeyPatch, agent_status: int, propagated: bool,
+) -> None:
+    def reject(*_args: Any) -> TITOParsedAssistant:
+        raise TITOParseError("bad function name", reason_code="tool_unknown_name")
+
+    monkeypatch.setattr(StubRenderer, "parse_assistant", reject)
+    sampler = StubSampler()
+    proxy = make_proxy(monkeypatch, sampler)
+    proxy._initial_sampler = None
+    thread = nemo_train.ProxyThread(proxy)
+    thread.start(0)
+
+    async def run() -> None:
+        async def handler(request: web.Request) -> web.Response:
+            payload = await request.json()
+            async with aiohttp.ClientSession() as http:
+                response = await http.post(
+                    f"http://127.0.0.1:{proxy.port}/v1/chat/completions",
+                    json=body(user=payload["_ng_rollout_id"]),
+                )
+                assert response.status == 422
+                error_body = await response.read()
+            if propagated:
+                if agent_status == 500:
+                    # NeMo middleware embeds the upstream body as text.
+                    return web.json_response(f"Hit an exception calling an inner server: {error_body}", status=500)
+                return web.Response(body=error_body, status=422, content_type="application/json")
+            return web.json_response({"reward": 1.0}, status=agent_status)
+
+        app = web.Application()
+        app.router.add_post("/run", handler)
+        async with TestServer(app) as server:
+            rollout = nemo_train.build_rollout_fn_factory(
+                proxy_thread=thread, agent_url=str(server.make_url("")), run_timeout_s=10
+            )(SimpleNamespace(sampler=sampler, sample_kwargs={}))
+            if agent_status != 200 and not propagated:
+                with pytest.raises(DiscardTrajectoryError, match="tito_sdk_parse_error"):
+                    await rollout({"id": 0}, cursor_index=0, rollout_idx=0)
+            else:
+                result = await rollout({"id": 0}, cursor_index=0, rollout_idx=0)
+                assert len(result.segments) == 1
+                assert result.segments[0].reward == 0.0
+                assert result.segments[0].tokens[-2:] == [7, 8]
+                assert result.segments[0].loss_mask[-2:] == [1, 1]
+            assert proxy.active_rollout_ids() == []
+
+    try:
+        asyncio.run(run())
+    finally:
+        thread.stop()
+
+
 @pytest.mark.parametrize("body_failure", ["payload", "content_type", "invalid_json"])
 @pytest.mark.parametrize("close_session", [False, True])
 def test_response_body_failure_is_closed_only_after_abandon(

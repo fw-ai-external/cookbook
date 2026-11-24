@@ -368,6 +368,7 @@ def _materialize_tito_trajectory(
     harness_abandoned_turn_ids: set[str] | None = None,
     max_context_tokens: int | None = None,
     debug_enabled: bool = False,
+    required_trainable_turn_id: str | None = None,
 ) -> RolloutRun:
     """Convert every retained exact segment without decoding/re-tokenizing.
 
@@ -427,6 +428,7 @@ def _materialize_tito_trajectory(
         and call.turn_id is not None
     }
     samples: list[RolloutSample] = []
+    required_turn_retained = False
     materialized_segments: list[dict[str, Any]] = []
     masked_fail_closed_turns = 0
     retention_dropped_turns = 0
@@ -512,6 +514,8 @@ def _materialize_tito_trajectory(
                 continue
 
             trainable = turn.turn_id not in fail_closed_turn_ids
+            if trainable and turn.turn_id == required_trainable_turn_id:
+                required_turn_retained = True
             if builder is None:
                 # A post-hoc retention split may begin at any later exact
                 # prompt after an over-limit turn.  The complete prompt becomes
@@ -559,6 +563,9 @@ def _materialize_tito_trajectory(
                     ),
                 }
             )
+    if required_trainable_turn_id is not None and not required_turn_retained:
+        raise ValueError("malformed tool call was not retained as a trainable turn")
+
     sampled_completion_tokens = sum(
         len(turn.exact_completion_ids) for turn in chronological_turns
     )
@@ -649,15 +656,20 @@ def materialize_tito_trajectory(
     max_context_tokens: int | None = None,
     debug_enabled: bool = False,
 ) -> RolloutRun:
-    """Validate an exact trajectory; local parsing failures discard its entirety."""
+    """Materialize an exact trajectory, scoring a retained malformed tool action at zero."""
     from fireworks.training.sdk import dump_tito_failure_trace
 
     if max_context_tokens is not None and max_context_tokens < 1:
         raise ValueError("max_context_tokens must be positive")
 
-    failure = trajectory_discard_error(result)
-    if failure is not None:
-        raise failure
+    malformed = getattr(result, "malformed_tool_call", None)
+    if malformed is not None:
+        reward = 0.0
+        harness_visible_turn_ids = set(harness_visible_turn_ids or ()) | {malformed.turn_id}
+    else:
+        failure = trajectory_discard_error(result)
+        if failure is not None:
+            raise failure
     try:
         return _materialize_tito_trajectory(
             result,
@@ -666,6 +678,7 @@ def materialize_tito_trajectory(
             harness_abandoned_turn_ids=harness_abandoned_turn_ids,
             max_context_tokens=max_context_tokens,
             debug_enabled=debug_enabled,
+            required_trainable_turn_id=malformed.turn_id if malformed is not None else None,
         )
     except (ValueError, TypeError, AssertionError) as exc:
         trace_path = dump_tito_failure_trace(

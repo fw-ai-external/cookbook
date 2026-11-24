@@ -360,6 +360,7 @@ def build_rollout_fn_factory(
             succeeded = False
             failure = None
             reward_failure = False
+            run_error_body = b""
             try:
                 await proxy_thread.open_session(rollout_id)
                 async with aiohttp.ClientSession() as http:
@@ -368,6 +369,15 @@ def build_rollout_fn_factory(
                         json=body,
                         timeout=aiohttp.ClientTimeout(total=run_timeout_s),
                     ) as resp:
+                        if resp.status in {422, 500}:
+                            # Bound how much work an error body can add to a failed /run.
+                            try:
+                                async with asyncio.timeout(1.0):
+                                    run_error_body = await resp.content.readexactly(16 * 1024)
+                            except asyncio.IncompleteReadError as error:
+                                run_error_body = error.partial
+                            except (aiohttp.ClientError, TimeoutError):
+                                pass
                         resp.raise_for_status()
                         try:
                             result = await resp.json()
@@ -382,14 +392,23 @@ def build_rollout_fn_factory(
                 failure = error
             finally:
                 session = await proxy_thread.finish_session(rollout_id, abandon=not succeeded)
-            if session is not None and session.artifact is not None:
-                discard = trajectory_discard_error(session.artifact)
-                if discard is not None:
-                    raise discard
-            if session is not None and session.failure is not None:
-                session.raise_if_rejected()
-                if failure is not None and not reward_failure:
-                    raise session.failure from failure
+            if (
+                session is not None
+                and session.artifact is not None
+                and session.has_malformed_tool_call
+                and (failure is None or session.run_propagates_malformed_tool_call(run_error_body))
+            ):
+                reward = 0.0
+                failure = None
+            elif session is not None:
+                if session.artifact is not None:
+                    discard = trajectory_discard_error(session.artifact)
+                    if discard is not None:
+                        raise discard
+                if session.failure is not None:
+                    session.raise_if_rejected()
+                    if failure is not None and not reward_failure:
+                        raise session.failure from failure
             if failure is not None:
                 reason = (
                     "nemo_reward_invalid"
@@ -439,7 +458,7 @@ def build_rollout_fn_factory(
                 session.turn_count,
                 len(run.segments),
                 sum(sum(s.loss_mask) for s in run.segments),
-                result.get("reward"),
+                reward,
                 time.monotonic() - t0,
             )
             return run if run.segments else None

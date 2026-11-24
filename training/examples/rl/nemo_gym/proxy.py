@@ -110,8 +110,27 @@ class RolloutSession:
                 diagnostics=self.failure.as_error_record(),
             )
 
+    @property
+    def has_malformed_tool_call(self) -> bool:
+        if self.artifact is None or getattr(self.artifact, "malformed_tool_call", None) is None:
+            return False
+        return self.failure is None or (
+            self.failure.code == "tito_sdk_parse_error"
+            and self.failure.origin == "sdk_parser"
+            and self.failure.context.get("call_id") == self.artifact.metadata["tito_failure"]["call_id"]
+        )
+
+    def run_propagates_malformed_tool_call(self, body: bytes) -> bool:
+        if not body or self.failure is None or not self.has_malformed_tool_call:
+            return False
+        # NeMo Gym can wrap the upstream JSON error as text in a 500. Match
+        # its exact SDK call ID without depending on the wrapper's wording.
+        call_id = self.failure.context["call_id"]
+        return call_id.encode() in body and b"tito_sdk_parse_error" in body
+
     def to_run(self, *, reward: float) -> RolloutRun:
-        self.raise_if_rejected()
+        if not self.has_malformed_tool_call:
+            self.raise_if_rejected()
         if self.artifact is None:
             return RolloutRun(segments=[], run_id=self.rollout_id)
         return materialize_tito_trajectory(self.artifact, reward=reward)
