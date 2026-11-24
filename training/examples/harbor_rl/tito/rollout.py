@@ -279,8 +279,7 @@ class HarborSettings:
     retry_include_exceptions: frozenset[str] = DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS
     max_concurrent_trials: int = DEFAULT_MAX_CONCURRENT_TRIALS
     terminal_failure_reward: float | None = None
-    """Reward for terminal agent failures without a verifier reward; ``None``
-    retries and then discards them."""
+    """Optional reward for an agent limit reached without a verifier verdict."""
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
@@ -457,6 +456,8 @@ class HarborRollout:
             )
         rollout = outcome.rollout
         if rollout is None:
+            trial_events.record_trial_discarded("harbor_no_trainable_rollout")
+            trial_events.record_failed_trial_phases(outcome.phase_timings)
             logger.warning(
                 "Harbor/%s retained an untrained rewardless trajectory for %s (%s)",
                 harness.name,
@@ -464,6 +465,8 @@ class HarborRollout:
                 outcome.exception_type,
             )
             return None
+        if outcome.reward_source is not None:
+            trial_events.record_trial_reward(outcome.reward_source)
         rollout.run_id = run_id
         rollout.metadata.update(
             {
@@ -471,6 +474,7 @@ class HarborRollout:
                 "trial_name": outcome.trial_name,
                 "harbor_rewards": outcome.rewards,
                 "harbor_reward_key": settings.reward_key,
+                "harbor_reward_source": outcome.reward_source,
                 "harbor_exception_type": outcome.exception_type,
                 "harbor_environment_type": outcome.environment_type,
                 "harness_tool_timeout_seconds": settings.tool_timeout_seconds,

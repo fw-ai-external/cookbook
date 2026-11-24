@@ -108,7 +108,7 @@ def add_harness_args(
         "--terminal-failure-reward",
         type=float,
         default=terminal_failure_reward,
-        help=("Reward for terminal agent failures without a verifier reward; " "unset retries and then discards them"),
+        help="Optional reward for an agent time or context limit reached without a verifier verdict",
     )
     parser.add_argument("--tito-debug", action=argparse.BooleanOptionalAction, default=tito_debug)
 

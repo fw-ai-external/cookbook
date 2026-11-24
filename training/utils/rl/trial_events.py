@@ -19,6 +19,7 @@ import threading
 from bisect import bisect_left
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 _COUNTER_ROOT = "tito/trial/"
 _FAILED_PHASE_ROOT = "tito/trial_failed/"
@@ -113,6 +114,11 @@ def record_trial_discarded(reason: str) -> None:
     _increment(f"{_COUNTER_ROOT}discard_reason/{_slug(reason)}")
 
 
+def record_trial_reward(source: Literal["verifier", "terminal_fallback"]) -> None:
+    """One materialized trial with a verifier or configured terminal reward."""
+    _increment(f"{_COUNTER_ROOT}reward_source/{source}")
+
+
 def record_trial_timeout() -> None:
     """The whole-trial bound fired: a silent hang became a retryable failure."""
     _increment(f"{_COUNTER_ROOT}whole_trial_bound_firings")
@@ -167,6 +173,7 @@ __all__ = [
     "record_trial_attempt",
     "record_trial_discarded",
     "record_trial_retry",
+    "record_trial_reward",
     "record_trial_timeout",
     "reset",
 ]

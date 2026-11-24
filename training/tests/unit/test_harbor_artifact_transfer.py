@@ -22,7 +22,10 @@ from training.examples.harbor_rl.tito.sidecar import (
     SIDECAR_ARTIFACT_PATH,
     SIDECAR_COMPLETE_PATH,
 )
-from training.utils.rl.async_rl.errors import RecoverableRolloutError
+from training.utils.rl.async_rl.errors import (
+    DiscardTrajectoryError,
+    RecoverableRolloutError,
+)
 
 
 class _DaytonaNotFoundError(Exception):
@@ -267,7 +270,6 @@ def test_stream_receipt_survives_verification_and_process_materialization(tmp_pa
                 raw_rewards={"reward": 1},
                 reward_key="reward",
                 terminal_failure_reward=None,
-                has_exception=False,
                 retry_names=frozenset(),
                 retryable_e2b_timeout=False,
                 retryable_sidecar_readiness=False,
@@ -298,14 +300,13 @@ def test_missing_stream_hook_preserves_the_original_agent_error(tmp_path, except
         None: "artifact_unsealed",
         "AgentTimeoutError": "AgentTimeoutError",
     }
-    error_type = RecoverableRolloutError if exception in expected else RuntimeError
+    error_type = RecoverableRolloutError if exception in expected else DiscardTrajectoryError
     with pytest.raises(error_type) as error:
         _finish_harbor_trial(
             HarborTrialOutcome("example", "run", tmp_path, None, {}, exception, None),
             raw_rewards=None,
             reward_key="reward",
             terminal_failure_reward=None,
-            has_exception=exception is not None,
             retry_names=frozenset({"AgentTimeoutError"}),
             retryable_e2b_timeout=False,
             retryable_sidecar_readiness=False,
@@ -317,7 +318,7 @@ def test_missing_stream_hook_preserves_the_original_agent_error(tmp_path, except
     if exception in expected:
         assert error.value.reason == expected[exception]
     else:
-        assert exception in str(error.value)
+        assert error.value.diagnostics["final_error_kind"] == exception
 
 
 @pytest.mark.parametrize(

@@ -1651,7 +1651,6 @@ def test_parser_failure_evidence_survives_temporary_trial_cleanup(tmp_path, monk
             raw_rewards={"reward": 1},
             reward_key="reward",
             terminal_failure_reward=None,
-            has_exception=False,
             retry_names=frozenset(),
             retryable_e2b_timeout=False,
             retryable_sidecar_readiness=False,
@@ -1691,7 +1690,7 @@ def test_detached_failure_trace_survives_missing_compact_artifact(
         harbor_adapter._finish_harbor_trial(
             replace(_outcome(), trial_path=trial_path),
             raw_rewards={"reward": 1}, reward_key="reward",
-            terminal_failure_reward=None, has_exception=False,
+            terminal_failure_reward=None,
             retry_names=frozenset(), retryable_e2b_timeout=retry_kind == "e2b_timeout",
             retryable_sidecar_readiness=retry_kind == "sidecar_readiness",
         )
@@ -1724,7 +1723,7 @@ def test_missing_or_corrupt_collected_artifact_is_retryable(tmp_path) -> None:
     _write_collected_artifact(tmp_path, _artifact())
     artifact_path = tmp_path / "artifacts" / "tito" / "compact" / "trajectory.tito"
     artifact_path.write_bytes(artifact_path.read_bytes() + b"corrupt")
-    with pytest.raises(RecoverableRolloutError, match="byte count mismatch"):
+    with pytest.raises(RecoverableRolloutError, match="byte count"):
         harbor_adapter._load_sidecar_artifact(tmp_path)
 
 
@@ -1813,8 +1812,8 @@ def test_harbor_trial_selects_configured_numeric_reward(monkeypatch, tmp_path, f
     harbor = _fake_harbor()
     harbor.Trial = Trial
     monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
-    outcome = asyncio.run(
-        harbor_adapter.run_harbor_trial(
+    async def run_trial() -> harbor_adapter.HarborTrialOutcome:
+        return await harbor_adapter.run_harbor_trial(
             task_config={},
             inference_key="inference-key",
             run_id="partial-reward-test",
@@ -1832,7 +1831,13 @@ def test_harbor_trial_selects_configured_numeric_reward(monkeypatch, tmp_path, f
             reward_key="partial",
             e2b_template_manifest=tmp_path / "pins.json" if frozen else None,
         )
-    )
+
+    outcome = asyncio.run(run_trial())
+    repeated = asyncio.run(run_trial())
+    assert outcome.trial_path != repeated.trial_path
+    assert outcome.trial_path.is_dir()
+    assert repeated.trial_path.is_dir()
+    assert outcome.reward_source == repeated.reward_source == "verifier"
     assert outcome.reward == 0.75
     assert outcome.environment_type == "e2b"
     assert outcome.rewards == {"reward": 0.0, "partial": 0.75}
@@ -2412,9 +2417,9 @@ def test_temporary_receipt_failure_does_not_override_a_harbor_timeout(monkeypatc
             {"bundle_digest": "abc", "inference_base_url": "https://api.fireworks.ai"}
         ),
     }
-    with pytest.raises(RuntimeError, match="non-retryable AgentTimeoutError") as error:
+    with pytest.raises(DiscardTrajectoryError) as error:
         asyncio.run(harbor_adapter.run_harbor_trial(**kwargs))
-    assert not isinstance(error.value, RecoverableRolloutError)
+    assert error.value.diagnostics["final_error_kind"] == "AgentTimeoutError"
     assert error.value.__cause__.reason == "artifact_transfer"
 
 
@@ -2491,3 +2496,148 @@ def test_transfer_admission_releases_before_slow_verification(monkeypatch, tmp_p
             await results
 
     asyncio.run(run())
+
+
+
+@pytest.mark.parametrize(
+    ("exception_type", "readiness", "expected_reason"),
+    [
+        ("VerifierTimeoutError", False, "VerifierTimeoutError"),
+        ("RemoteProtocolError", False, "RemoteProtocolError"),
+        ("RuntimeError", True, "harbor_sidecar_readiness"),
+    ],
+)
+@pytest.mark.parametrize("with_artifact", [False, True])
+def test_infrastructure_failure_preempts_numeric_verifier_reward(
+    tmp_path, exception_type, readiness, expected_reason, with_artifact
+) -> None:
+    outcome = replace(_outcome(), trial_path=tmp_path, exception_type=exception_type)
+    if with_artifact:
+        _write_collected_artifact(tmp_path, _artifact())
+    with pytest.raises(RecoverableRolloutError) as error:
+        harbor_adapter._finish_harbor_trial(
+            outcome,
+            raw_rewards={"reward": 0.0},
+            reward_key="reward",
+            terminal_failure_reward=0.0,
+            retry_names=harbor_adapter.DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
+            retryable_e2b_timeout=False,
+            retryable_sidecar_readiness=readiness,
+            require_trajectory_artifact=with_artifact,
+        )
+    assert error.value.reason == expected_reason
+
+
+@pytest.mark.parametrize(
+    ("exception_type", "terminal_reason", "raw_rewards", "expected_reward", "expected_source"),
+    [
+        ("NonZeroAgentExitCodeError", None, {"reward": 0.0}, 0.0, "verifier"),
+        ("AgentTimeoutError", None, {"reward": -1.0}, -1.0, "verifier"),
+        ("AgentTimeoutError", None, None, 0.0, "terminal_fallback"),
+        (None, "context_budget_exhausted", None, 0.0, "terminal_fallback"),
+    ],
+)
+def test_harbor_distinguishes_verifier_and_configured_limit_rewards(
+    tmp_path, exception_type, terminal_reason, raw_rewards, expected_reward, expected_source
+) -> None:
+    outcome = replace(_outcome(), trial_path=tmp_path, exception_type=exception_type)
+    artifact = _terminal_artifact(status="failed", reason=terminal_reason) if terminal_reason else _artifact()
+    _write_collected_artifact(tmp_path, artifact)
+    finished = harbor_adapter._finish_harbor_trial(
+        outcome,
+        raw_rewards=raw_rewards,
+        reward_key="reward",
+        terminal_failure_reward=0.0,
+        retry_names=frozenset(),
+        retryable_e2b_timeout=False,
+        retryable_sidecar_readiness=False,
+    )
+    assert finished.reward == expected_reward
+    assert finished.reward_source == expected_source
+    assert finished.exception_type == exception_type
+
+
+@pytest.mark.parametrize("raw_rewards", [{}, {"partial": 1.0}])
+def test_terminal_fallback_does_not_hide_a_missing_verifier_key(tmp_path, raw_rewards) -> None:
+    outcome = replace(_outcome(), trial_path=tmp_path, exception_type="AgentTimeoutError")
+    _write_collected_artifact(tmp_path, _artifact())
+    with pytest.raises(RecoverableRolloutError) as failure:
+        harbor_adapter._finish_harbor_trial(
+            outcome,
+            raw_rewards=raw_rewards,
+            reward_key="reward",
+            terminal_failure_reward=0.0,
+            retry_names=frozenset(),
+            retryable_e2b_timeout=False,
+            retryable_sidecar_readiness=False,
+        )
+    assert failure.value.reason == "harbor_missing_verifier_reward"
+
+
+def test_generic_agent_failure_without_verdict_preserves_diagnostics(tmp_path, monkeypatch) -> None:
+    from fireworks.training.sdk.tito import _failure_trace
+
+    monkeypatch.setattr(
+        _failure_trace,
+        "_default_recorder",
+        _failure_trace._FailureTraceRecorder(
+            _failure_trace.TITOFailureTraceConfig(root_dir=tmp_path / "retained", min_free_bytes=0)
+        ),
+    )
+    trial_path = tmp_path / "trial"
+    outcome = replace(_outcome(), trial_path=trial_path, exception_type="NonZeroAgentExitCodeError")
+    _write_collected_artifact(trial_path, _artifact())
+    with pytest.raises(DiscardTrajectoryError) as error:
+        harbor_adapter._finish_harbor_trial(
+            outcome,
+            raw_rewards=None,
+            reward_key="reward",
+            terminal_failure_reward=0.0,
+            retry_names=frozenset(),
+            retryable_e2b_timeout=False,
+            retryable_sidecar_readiness=False,
+        )
+    assert error.value.code == "harbor_agent_error_without_reward"
+    assert error.value.trace_path is not None
+    assert Path(error.value.trace_path).is_file()
+
+
+def test_malformed_sidecar_byte_count_is_retryable(tmp_path) -> None:
+    _write_collected_artifact(tmp_path, _artifact())
+    compact = tmp_path / "artifacts" / "tito" / "compact"
+    manifest_path = compact / Path(harbor_adapter.SIDECAR_ARTIFACT_MANIFEST_PATH).name
+    manifest = json.loads(manifest_path.read_text())
+    manifest["bytes"] = {"invalid": True}
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(RecoverableRolloutError, match="byte count"):
+        harbor_adapter._load_sidecar_artifact(tmp_path)
+
+
+def test_verifier_failure_hidden_by_agent_timeout_retries(monkeypatch, tmp_path) -> None:
+    from datetime import datetime, timezone
+
+    async def run(trial):
+        path = Path(trial.config.trials_dir) / trial.config.trial_name
+        _write_collected_artifact(path, _artifact())
+        stamp = datetime.now(timezone.utc)
+        return SimpleNamespace(
+            task_name="example",
+            trial_name=trial.config.trial_name,
+            verifier_result=None,
+            verifier=SimpleNamespace(started_at=stamp, finished_at=stamp),
+            exception_info=SimpleNamespace(
+                exception_type="AgentTimeoutError", exception_message="agent timed out"
+            ),
+        )
+
+    harbor = _fake_harbor()
+    harbor.Trial = _bound_probe_trial(run)
+    monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
+    with pytest.raises(RecoverableRolloutError) as failure:
+        asyncio.run(
+            harbor_adapter.run_harbor_trial(
+                **_bound_probe_kwargs(tmp_path), terminal_failure_reward=0.0
+            )
+        )
+    assert failure.value.reason == "harbor_verifier_missing_result"
+    assert failure.value.diagnostics["final_error_kind"] == "AgentTimeoutError"
