@@ -7,8 +7,8 @@ id-identical ``tokenizer.json``. Pass the output directory as
 ``--tokenizer-model`` together with ``--renderer-name kimi_k31``.
 
 Only data files are read. The checkpoint's Python (``tokenization_kimi.py``) is
-hash-checked, because the token pattern and reserved-token naming below are
-copied from it, but never imported.
+provenance evidence, because the token pattern and reserved-token naming below
+are copied from it: it is hash-checked when present and never imported.
 
 The conversion itself lives in the reviewed shared implementation behind
 ``training.utils.kimi_native_tokenizer`` (SDK-first with a generated snapshot
@@ -60,7 +60,7 @@ def download_source() -> Path:
 
 
 def verify_source_dir(source_dir: str | Path) -> Path:
-    """Fail closed unless every pinned source file is present and unchanged."""
+    """Fail closed unless every pinned data file is present and every pinned file present is unchanged."""
     root = Path(source_dir)
     _native.verify_source_dir(root, profile=_native.KIMI_K31_PROFILE)
     return root
