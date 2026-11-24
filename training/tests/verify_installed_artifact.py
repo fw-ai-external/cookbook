@@ -64,6 +64,7 @@ def main() -> None:
         "examples/rl/deepmath/dataset.jsonl",
         "examples/rl/frozen_lake/seeds.jsonl",
         "examples/embedding/retrieval_pairs.jsonl",
+        "examples/harbor_rl/harnesses/pi/extension.ts",
         "examples/harbor_rl/tasks/mimo/music_scorer/baselines/ref_full4k.json",
         "examples/distillation/serverless_k3_privileged/data/gsm8k_privileged.jsonl",
         "examples/distillation/serverless_k3_privileged/data/gsm8k_200.jsonl",

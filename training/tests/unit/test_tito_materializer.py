@@ -1287,3 +1287,88 @@ def test_tito_does_not_silently_drop_partial_extra_draw_capture(missing_first):
             _result((first, second), (_attempt("one"), _attempt("two"))), reward=1.0
         )
     assert "sample_extra_references must be present for every turn" in str(failure.value.__cause__)
+
+
+def test_tree_confirms_the_parent_across_segments_and_masks_the_shared_prefix() -> None:
+    root = _turn("root", (1,), (2,))
+    unrelated = _turn("unseen", (8,), (9,))
+    child = replace(
+        _turn(
+            "child",
+            (1, 2, 3),
+            (4,),
+            messages=(
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": "root"},
+                {"role": "tool", "content": "result"},
+            ),
+        ),
+        parent_turn_id=root.turn_id,
+    )
+    artifact = replace(
+        _result(
+            (root, unrelated, child),
+            (_attempt("child"),),
+            segment_turns=((root,), (unrelated,), (child,)),
+        ),
+        lineage_mode="tree",
+    )
+    run = materialize_tito_trajectory(artifact, reward=1.0)
+    assert [(s.tokens, s.loss_mask) for s in run.segments] == [
+        ([1, 2], [0, 1]),
+        ([1, 2, 3, 4], [0, 0, 0, 1]),
+    ]
+    _assert_coverage_conserved(run)
+
+
+def test_tree_materializes_two_branches_and_charges_each_completion_once() -> None:
+    root_msg = {"role": "user", "content": "q"}
+    root = _turn("root", (1, 2), (3,), messages=(root_msg,))
+    root_history = (root_msg, dict(root.assistant.message))
+
+    def child(name, parent, context, prompt, completion, append):
+        return replace(
+            _turn(
+                name,
+                prompt,
+                (completion,),
+                messages=(*context, {"role": "tool", "content": f"tool-{name}"}),
+                disposition="append" if append else "new_segment",
+                prefix_match_tokens=len(parent.exact_checkpoint_ids),
+            ),
+            parent_turn_id=parent.turn_id,
+        )
+
+    left = child("left", root, root_history, (1, 2, 3, 4), 5, True)
+    right = child("right", root, root_history, (1, 2, 3, 6), 7, False)
+    left_leaf = child(
+        "left-leaf",
+        left,
+        (*left.request.messages, dict(left.assistant.message)),
+        (1, 2, 3, 4, 5, 8),
+        9,
+        True,
+    )
+    right_leaf = child(
+        "right-leaf",
+        right,
+        (*right.request.messages, dict(right.assistant.message)),
+        (1, 2, 3, 6, 7, 10),
+        11,
+        True,
+    )
+    artifact = replace(
+        _result(
+            (root, left, right, left_leaf, right_leaf),
+            (_attempt("left-leaf"), _attempt("right-leaf")),
+            segment_turns=((root, left, left_leaf), (right, right_leaf)),
+        ),
+        lineage_mode="tree",
+    )
+    run = materialize_tito_trajectory(artifact, reward=0.5)
+    assert [(s.tokens, s.loss_mask) for s in run.segments] == [
+        ([1, 2, 3, 4, 5, 8, 9], [0, 0, 1, 0, 1, 0, 1]),
+        ([1, 2, 3, 6, 7, 10, 11], [0, 0, 0, 0, 1, 0, 1]),
+    ]
+    assert [s.reward for s in run.segments] == [0.5, 0.5]
+    _assert_coverage_conserved(run)

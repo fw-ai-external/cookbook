@@ -255,6 +255,7 @@ def test_sidecar_bundle_is_deterministic_and_minimal(tmp_path) -> None:
     assert "tokenizer/chat_template.jinja" in names
     assert not any("model_formats/" in name for name in names)
     assert "python-sdk/fireworks/training/sdk/tito/_sidecar.py" in names
+    assert any(name.endswith("/tito/_native.abi3.so") for name in names)
     with zipfile.ZipFile(first.path) as archive:
         assert all(
             info.compress_type == zipfile.ZIP_LZMA for info in archive.infolist()
@@ -341,7 +342,8 @@ def test_deep_swe_preparation_writes_reproducible_manifest(tmp_path) -> None:
     assert set(persisted["prepared_sha256"]) == {"task-a", "task-b"}
 
 
-def test_training_entry_has_no_central_gateway_configuration(monkeypatch) -> None:
+@pytest.mark.parametrize("lineage_override", [None, "tree"])
+def test_training_entry_has_no_central_gateway_configuration(monkeypatch, lineage_override) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
@@ -355,6 +357,7 @@ def test_training_entry_has_no_central_gateway_configuration(monkeypatch) -> Non
             "accounts/example/trainingShapes/test",
             "--renderer-name",
             "glm_moe_dsa_preserve_thinking",
+            *(["--tito-lineage-mode", lineage_override] if lineage_override else []),
             "--tito-prompt-mode",
             "incremental",
             "--deployment-id",
@@ -384,6 +387,7 @@ def test_training_entry_has_no_central_gateway_configuration(monkeypatch) -> Non
     harbor = factory.keywords["harbor"]
     assert factory.keywords["version"] == DEFAULT_OPENCODE_VERSION
     assert harbor.tito.prompt_mode == "incremental"
+    assert harbor.tito.lineage_mode == (lineage_override or "linear")
     assert harbor.environment == "e2b"
     assert harbor.trials_dir is None
     assert harbor.max_concurrent_trials == 32
@@ -629,7 +633,7 @@ def test_launch_spec_carries_limits_and_debug_without_runtime_aliases(tmp_path) 
     assert "gateway" not in json.dumps(value).lower()
 
 
-def test_launch_spec_keeps_full_history_as_the_default(tmp_path) -> None:
+def test_launch_spec_defaults_to_full_history_and_linear_lineage(tmp_path) -> None:
     setup = _setup(tmp_path)
 
     spec = sidecar_runtime.build_launch_spec(
@@ -641,6 +645,19 @@ def test_launch_spec_keeps_full_history_as_the_default(tmp_path) -> None:
     )
 
     assert spec.prompt_mode == "full_history"
+    assert json.loads(sidecar_runtime.launch_spec_json(spec))["lineage_mode"] == "linear"
+
+
+def test_chat_outcome_records_and_clears_context_overflow(monkeypatch, tmp_path) -> None:
+    marker = tmp_path / "context-overflow.json"
+    monkeypatch.setattr(sidecar_runtime, "SIDECAR_CONTEXT_OVERFLOW_PATH", str(marker))
+
+    sidecar_runtime._record_context_outcome("tito_context_overflow")
+    assert json.loads(marker.read_text()) == {"reason": "context_budget_exhausted"}
+    sidecar_runtime._record_context_outcome("invalid_api_key")
+    assert json.loads(marker.read_text()) == {"reason": "context_budget_exhausted"}
+    sidecar_runtime._record_context_outcome(None)
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize("backend_managed", [False, True])
@@ -851,7 +868,10 @@ def test_moe_sampling_only_sidecar_starts_and_closes_on_trajectory_failure(
         instance = None
 
         @classmethod
-        def from_deployment_sampler(cls, *_args, **_kwargs):
+        def from_deployment_sampler(cls, *_args, **kwargs):
+            assert kwargs["on_chat_outcome"] is sidecar_runtime._record_context_outcome
+            assert kwargs["default_drift_policy"].lineage_mode == "linear"
+            assert kwargs["prompt_mode"] == "full_history"
             instance = cls()
             FakeSidecar.instance = instance
             return instance

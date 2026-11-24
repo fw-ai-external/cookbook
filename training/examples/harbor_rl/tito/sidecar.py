@@ -14,7 +14,7 @@ import tempfile
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Awaitable, Literal, Mapping, Sequence
 
 if TYPE_CHECKING:
     from training.utils.rl.rollout.setup import RolloutSetup
@@ -92,12 +92,15 @@ class TITOSidecarSettings:
     max_masked_tokens: int = 1024
     on_other_mismatch: str = "new_segment"
     keepalive_seconds: float = 5.0
+    lineage_mode: Literal["linear", "tree"] = "linear"
 
     def __post_init__(self) -> None:
         if not self.renderer_name:
             raise ValueError("TITO renderer_name is required")
         if self.prompt_mode not in {"full_history", "incremental"}:
             raise ValueError("invalid TITO prompt mode")
+        if self.lineage_mode not in {"linear", "tree"}:
+            raise ValueError("invalid TITO lineage mode")
         if self.max_masked_tokens < 0:
             raise ValueError("TITO max_masked_tokens must be non-negative")
         if self.on_other_mismatch not in {"new_segment", "reject"}:
@@ -136,6 +139,7 @@ class TITOSidecarLaunchSpec:
     debug_redact_text: bool
     r3_store_id: str | None = None
     backend_managed_concurrency: bool = False
+    lineage_mode: Literal["linear", "tree"] = "linear"
 
 
 def _source_roots() -> tuple[Path, Path]:
@@ -439,6 +443,7 @@ def build_launch_spec(
         model=getattr(setup.sampler, "model", setup.model),
         renderer_name=settings.renderer_name,
         prompt_mode=settings.prompt_mode,
+        lineage_mode=settings.lineage_mode,
         max_context_tokens=max_context_tokens,
         max_output_tokens=max_output_tokens,
         sampling_defaults=sampling_defaults,
@@ -748,6 +753,14 @@ def _atomic_write(path: Path, payload: bytes, mode: int = 0o600) -> None:
     temporary.replace(path)
 
 
+def _record_context_outcome(error_code: str | None) -> None:
+    marker = Path(SIDECAR_CONTEXT_OVERFLOW_PATH)
+    if error_code == "tito_context_overflow":
+        _atomic_write(marker, b'{"reason": "context_budget_exhausted"}\n')
+    elif error_code != "invalid_api_key":
+        marker.unlink(missing_ok=True)
+
+
 async def sidecar_failure_disposition(environment: Any) -> str | None:
     """Read the sidecar's typed last-policy disposition without log matching."""
 
@@ -951,34 +964,7 @@ async def serve(spec_path: Path) -> None:
         )
     call_classifier = build_call_classifier(str(spec["call_classifier"]))
 
-    class _ContextAwareSidecar(TITOSidecar):
-        """Expose context exhaustion to the harness as a typed terminal reason."""
-
-        async def _handle_openai_chat(self, request: Any) -> Any:
-            response = await super()._handle_openai_chat(request)
-            error_code: str | None = None
-            body = getattr(response, "body", None)
-            if body:
-                try:
-                    error_code = str(
-                        (json.loads(bytes(body)).get("error") or {}).get("code") or ""
-                    )
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    error_code = None
-            marker = Path(SIDECAR_CONTEXT_OVERFLOW_PATH)
-            if error_code == "tito_context_overflow":
-                _atomic_write(
-                    marker,
-                    json.dumps(
-                        {"reason": "context_budget_exhausted"}, sort_keys=True
-                    ).encode()
-                    + b"\n",
-                )
-            else:
-                marker.unlink(missing_ok=True)
-            return response
-
-    sidecar = _ContextAwareSidecar.from_deployment_sampler(
+    sidecar = TITOSidecar.from_deployment_sampler(
         sampler,
         renderer=renderer,
         max_context_tokens=int(spec["max_context_tokens"]),
@@ -991,8 +977,10 @@ async def serve(spec_path: Path) -> None:
         default_drift_policy=TrajectoryDriftPolicy(
             max_masked_tokens=int(spec.get("max_masked_tokens", 1024)),
             on_other_mismatch=str(spec.get("on_other_mismatch", "new_segment")),  # type: ignore[arg-type]
+            lineage_mode=spec.get("lineage_mode", "linear"),
         ),
-        prompt_mode=str(spec.get("prompt_mode", "full_history")),  # type: ignore[arg-type]
+        prompt_mode=spec.get("prompt_mode", "full_history"),
+        on_chat_outcome=_record_context_outcome,
     )
     try:
         interrupted = asyncio.Event()

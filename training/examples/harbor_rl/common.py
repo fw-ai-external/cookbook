@@ -67,6 +67,15 @@ def add_model_args(parser: argparse.ArgumentParser) -> None:
         help=("Production-certified TITO renderer matching the model and " "tokenizer; unsupported pairs fail closed"),
     )
     parser.add_argument(
+        "--tito-lineage-mode",
+        choices=("tree", "linear"),
+        default="linear",
+        help=(
+            "Use tree for new runs to reduce repeated training context on interleaved branches. "
+            "Linear is the compatibility default and is planned for deprecation."
+        ),
+    )
+    parser.add_argument(
         "--tito-prompt-mode",
         choices=("full_history", "incremental"),
         default="full_history",
@@ -199,6 +208,7 @@ def harbor_settings(
             renderer_name=args.renderer_name,
             bundle_root=run_dir / "sidecar-bundles",
             prompt_mode=args.tito_prompt_mode,
+            lineage_mode=args.tito_lineage_mode,
             debug_enabled=args.tito_debug,
             debug_redact_text=debug_redact_text,
         ),
