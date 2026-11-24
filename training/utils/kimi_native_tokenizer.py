@@ -9,7 +9,7 @@ treated as absence; any other import failure propagates unchanged.
 
 The loaded tokenizer is built entirely from reviewed installed code and
 hash-pinned data files; checkpoint Python (``tokenization_kimi.py``) is
-hash-checked as provenance evidence but never imported.
+provenance evidence, hash-checked when present and never imported.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import importlib
 from pathlib import Path
 from typing import Any
 
-_CAPABILITY = "kimi-k3-k31-native-tokenizer/chat-and-saved-bundles-v3"
+_CAPABILITY = "kimi-k3-k31-native-tokenizer/chat-and-saved-bundles-offline-v4"
 _SDK_MODULE = "fireworks.training.sdk.kimi_native_tokenizer"
 
 # Which backend supplied the implementation: "sdk" (delegation) or
@@ -70,7 +70,7 @@ KIMI_NUM_RESERVED_SPECIAL_TOKENS = _impl.KIMI_NUM_RESERVED_SPECIAL_TOKENS
 
 
 def verify_source_dir(source_dir: str | Path, *, profile: str | None = None) -> str:
-    """Fail closed unless every pinned source file is present and unchanged."""
+    """Fail closed unless every pinned data file is present and every pinned file present is unchanged."""
     return _impl.verify_source_dir(source_dir, profile=profile)
 
 

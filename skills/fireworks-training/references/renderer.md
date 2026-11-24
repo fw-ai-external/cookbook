@@ -114,6 +114,9 @@ not be selected by the history-mode enum.
   `kimi_k3_disable_thinking` removes the thinking channel entirely. Use the
   public `moonshotai/Kimi-K3` tokenizer and pin revision
   `301be1b88c89c0d3a763da6301352cb8fe399e90` for reproducible training.
+  An offline image (`HF_HUB_OFFLINE` set at process start) needs only
+  `tiktoken.model` and `tokenizer_config.json` cached at the pinned revision;
+  `tokenization_kimi.py` is optional and verified when present.
 - **Kimi K3.1 Pro**: same XTML protocol and tokenizer class as K3 with a newer
   encoder (non-string tool arguments keep their JSON literal bytes; the same
   `low`/`high`/`max` tiers, with a `medium` request folded into `high`).

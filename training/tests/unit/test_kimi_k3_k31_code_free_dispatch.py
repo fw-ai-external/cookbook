@@ -218,6 +218,53 @@ def test_native_bundle_matches_checkpoint_tokenizer(official_dir: Path) -> None:
         assert native.convert_tokens_to_ids(name) == oracle.convert_tokens_to_ids(name), name
 
 
+@pytest.fixture
+def offline_hub(official_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str, Path]:
+    """One profile's data files as an offline image bakes them: no checkpoint Python, no network."""
+    import socket
+
+    from huggingface_hub import constants
+
+    profile = json.loads((official_dir / "config.json").read_text())["model_type"]
+    repository, revision, base_model = (
+        (KIMI_K3_REPOSITORY, KIMI_K3_REVISION, "accounts/fireworks/models/kimi-k3")
+        if profile == KIMI_K3_PROFILE
+        else (K31_REPOSITORY, K31_REVISION, "accounts/fireworks/models/kimi-k3p1-pro")
+    )
+    snapshot = tmp_path / "hub" / ("models--" + repository.replace("/", "--")) / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    for filename in ("config.json", "tiktoken.model", "tokenizer_config.json"):
+        shutil.copyfile(official_dir / filename, snapshot / filename)
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path / "hub"))
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True)
+
+    def no_network(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("an offline Kimi load opened a network connection")
+
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+    return repository, base_model, snapshot
+
+
+def test_recipe_load_works_from_an_offline_data_only_cache(
+    official_dir: Path, offline_hub: tuple[str, str, Path]
+) -> None:
+    expected = cookbook_tokenizers.load_tokenizer(str(official_dir))
+    repository, base_model, _ = offline_hub
+    # The SFT/DPO recipes resolve the repository, then load with no revision.
+    loaded = cookbook_tokenizers.load_tokenizer(repository, "", base_model=base_model)
+    assert loaded.name_or_path == repository
+    for text in _ENCODE_BATTERY:
+        assert loaded.encode(text) == expected.encode(text), text[:40]
+
+
+def test_offline_canary_never_executes(offline_hub: tuple[str, str, Path], tmp_path: Path) -> None:
+    repository, base_model, snapshot = offline_hub
+    marker = _write_config_canary(snapshot, tmp_path / "canary_executed")
+    loaded = cookbook_tokenizers.load_tokenizer(repository, "", True, base_model=base_model)
+    assert not type(loaded).__module__.startswith("transformers_modules.")
+    assert not marker.exists()
+
+
 def test_vendored_k3_encoder_matches_certification_sha256() -> None:
     import hashlib
 
