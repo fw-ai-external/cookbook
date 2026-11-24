@@ -3,10 +3,14 @@
 Reference: thinkingmachines/Inkling-2-Small at
 2ad1157016e1aac77b6ff1b770e7c05229403134. Composite transparency before
 lossless transport; FireTitan owns pixel normalization and patchification.
+Marker spellings such as ``<|end_message|>`` inside names and payloads stay
+ordinary text, as in the publisher's tml-renderers and the Inkling 2 serving
+formatter: only the template's own framing becomes special tokens.
 """
 
 from __future__ import annotations
 
+import functools
 import io
 import json
 import re
@@ -42,7 +46,22 @@ _IMAGE = "<|unused_200054|>"
 _END = "<|end_message|>"
 _STOP = "<|content_model_end_sampling|>"
 _WIRE = "_inkling2_wire"
+_MARKER_OPEN = "<|"
+# No special-token name starts with "~" and tojson leaves it alone. Every "<|" gains the same character, so the
+# template's sorted keys keep their order; restoring drops the one inserted after each "<|".
+_ESCAPED_MARKER_OPEN = "<|~"
 _MAX_RENDER_PIXELS = 25_000_000
+
+
+def _escape_markers(value: Any) -> Any:
+    """``value`` with ``<|`` escaped in every string, mapping keys included, so no quoted marker is a special token."""
+    if isinstance(value, str):
+        return value.replace(_MARKER_OPEN, _ESCAPED_MARKER_OPEN)
+    if isinstance(value, dict):
+        return {_escape_markers(key): _escape_markers(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_escape_markers(item) for item in value)
+    return value
 
 
 class Inkling2ImageTokenCounter:
@@ -89,6 +108,13 @@ class Inkling2Renderer(Renderer):
         effort = "0" if reasoning_effort == 0 else str(reasoning_effort)
         self._effort = f"<|message_system|><|content_text|>Thinking effort level: {effort}{_END}"
 
+    @functools.cached_property
+    def _special_split(self) -> re.Pattern[str]:
+        """Splits rendered text at special-token spellings, keeping them (odd indices)."""
+        decoder = self.tokenizer.added_tokens_decoder.values()
+        specials = sorted((token.content for token in decoder if token.special), key=len, reverse=True)
+        return re.compile("(" + "|".join(map(re.escape, specials)) + ")")
+
     @property
     def has_extension_property(self) -> bool:
         return True
@@ -116,10 +142,17 @@ class Inkling2Renderer(Renderer):
             **kwargs,
         )
 
-    def _encode(self, text: str) -> sdk.EncodedTextChunk:
-        # Deliberately recognize quoted special-token spellings, like HF's
-        # apply_chat_template(tokenize=True), rather than encode_ordinary.
-        return sdk.EncodedTextChunk(tokens=self.tokenizer.encode(text, add_special_tokens=False))
+    def _encode(self, wire: str) -> sdk.EncodedTextChunk:
+        """Template framing as special tokens; the text between them, unescaped, as ordinary text, so a quoted
+        marker spelling stays text."""
+        tokens = []
+        for index, part in enumerate(self._special_split.split(wire)):
+            if index % 2:
+                tokens.append(self.tokenizer.convert_tokens_to_ids(part))
+            elif part:
+                text = part.replace(_ESCAPED_MARKER_OPEN, _MARKER_OPEN)
+                tokens += self.tokenizer.encode(text, add_special_tokens=False, split_special_tokens=True)
+        return sdk.EncodedTextChunk(tokens=tokens)
 
     def to_openai_message(self, message: Message) -> dict[str, Any]:
         if message.get("unparsed_tool_calls"):
@@ -251,7 +284,8 @@ class Inkling2Renderer(Renderer):
         longest_run = max((len(match[0]) for match in re.finditer(r"_+", repr(raw))), default=0)
         image_marker = "__inkling_image_chunk__" + "_" * (longest_run + 1)
         template = self.tokenizer.chat_template.replace(_IMAGE, image_marker)
-        wire = self._template([raw], chat_template=template)
+        # Escaped, quoted markers cannot pass for the template's framing (or its image placeholder).
+        wire = self._template([_escape_markers(raw)], chat_template=template)
         if raw["role"] == "system":
             if not wire.endswith(self._effort):
                 raise RendererError("Unexpected Inkling 2 reasoning-effort template")
@@ -279,7 +313,7 @@ class Inkling2Renderer(Renderer):
         messages = []
         if tools:
             sentinel = {"role": "user", "content": ""}
-            wire = self._template([sentinel], tools=tools)
+            wire = self._template([sentinel], tools=_escape_markers(tools))
             suffix = self._effort + f"<|message_user|><|content_text|>{_END}"
             if not wire.endswith(suffix):
                 raise RendererError("Unexpected Inkling 2 tool template preamble")
