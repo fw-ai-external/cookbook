@@ -113,7 +113,6 @@ Telemetry: `question_id: research-q3` (legacy: `discover-q3`), field `intake_q3_
 
 | Option ID | Option | Suggested path |
 |---|---|---|
-| `managed` | Simplest managed job | managed |
 | `serverless` | My own loop, in-session eval, or RL on shared compute | serverless |
 | `dedicated` | Full-parameter, embedding recipe, or reserved capacity | training_api_dedicated |
 | `no_preference` | No preference | easiest compatible path |

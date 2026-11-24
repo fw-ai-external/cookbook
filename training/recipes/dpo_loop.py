@@ -259,8 +259,8 @@ class Config:
 
     init_from_checkpoint: str | None = None
     warm_start_from_adapter: str | None = None
-    """Fireworks PEFT model resource. When set, initializes LoRA weights from
-    the authorized adapter at training start (weights-only, fresh optimizer).
+    """Promoted PEFT model resource, ``accounts/<account>/models/<name>``.
+    Initializes LoRA weights at training start (weights-only, fresh optimizer).
     Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
     output_model_id: str | None = None
     reference_checkpoint_file: str | None = None

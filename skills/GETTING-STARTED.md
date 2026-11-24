@@ -74,7 +74,7 @@ and monitors the job. Built-in starters (see
 | Code-first SFT with a base-vs-tuned comparison | your own chat JSONL or a public Hugging Face example | Serverless Training API |
 
 Muse Glimmer 30B LoRA SFT is free for jobs started before `2026-12-01T00:00:00-08:00`
-(Nov 30) on Managed SFT (UI or API) and on the Serverless Training API
+(Nov 30) on the Serverless Training API
 ([source](https://docs.fireworks.ai/fine-tuning/models)). RL, DPO,
 deployments, inference, and Dedicated trainers are not covered. After the
 deadline the agent resolves live pricing instead.
@@ -114,25 +114,14 @@ cost before asking for approval, then runs the job itself.
 1. Start a new chat with the first example above.
 2. Confirm the first reply offers concrete starters and asks one question.
 3. Pick the prompt-router starter.
-4. Confirm the next reply is a complete plan (Managed SFT, `$0` training line)
+4. Confirm the next reply is a complete plan (Serverless Training API, `$0` training line)
    and that nothing has been created.
 5. Do not approve the plan.
 
-## Authentication
+## Connect your account
 
-The agent runs jobs through the Fireworks Python SDK with `FIREWORKS_API_KEY`.
-Create a key at <https://app.fireworks.ai/settings/users/api-keys>, then set it
-in the terminal the agent uses, with hidden input:
-
-```bash
-read -s FIREWORKS_API_KEY
-echo
-export FIREWORKS_API_KEY
-```
-
-Or put `FIREWORKS_API_KEY=...` in a gitignored `.env` at the repository root.
-Never paste an API key into chat. `firectl` stays useful for your own
-read-only checks; it blocks agent mutations by design.
+Follow the [Fireworks quickstart](https://docs.fireworks.ai/getting-started/quickstart) to connect your account.
+Use the Python SDK for agent-driven runs and the CLI for your own checks.
 
 ## Journey telemetry
 
@@ -143,10 +132,6 @@ raw chat messages, datasets, credentials, or paths.
 
 Say `do not track this session` to keep interaction telemetry local. Training
 still works.
-
-Remote journey events use `firectl skill-journey record` when supported by the
-installed firectl version. Existing BigQuery and CDC data remain authoritative
-only for training job and billing outcomes.
 
 ## Update
 

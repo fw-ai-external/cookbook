@@ -79,8 +79,6 @@ pip install -e .
 # Download the training and calibration splits.
 python -m training.examples.decision.kalshi_v1.prepare_data --splits train,dev
 
-# A Fireworks key is needed for training and inference.
-export FIREWORKS_API_KEY=...
 python -m training.examples.decision.kalshi_v1.train_kalshi_decision \
   --output-model-id kalshi-decision-v1-glimmer
 ```
@@ -91,8 +89,7 @@ the calibrated checkpoint. The full recipe was previously validated on the
 serverless pool; the small smoke run is not the checkpoint evaluated below.
 
 **This reproduction uses the Training API.** It requires the decision loss;
-ordinary managed chat SFT is not an equivalent command. The example does not
-use the managed SFT CLI.
+ordinary chat SFT is not an equivalent command.
 
 ## Test data and evaluation
 
@@ -188,18 +185,18 @@ The decision API reads option probabilities directly, with no generated answer
 text, and packs independent question branches sharing one context. The serving
 route must support your model and its saved decision temperatures.
 
-```bash
-curl https://api.fireworks.ai/inference/v1/systemone \
-  -H "Authorization: Bearer $FIREWORKS_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "accounts/<your-account>/models/kalshi-decision-v1-glimmer",
-    "state": "<event title, rules and open date>",
-    "questions": {
-      "winner": {"type": "choice", "instructions": "Which outcome will happen?",
-                 "criteria": {"a": "<outcome A>", "b": "<outcome B>"}}
-    }
-  }'
+Use the [Fireworks quickstart](https://docs.fireworks.ai/getting-started/quickstart) to connect your account. Send the following
+JSON body to `POST https://api.fireworks.ai/inference/v1/systemone`.
+
+```json
+{
+"model": "accounts/<your-account>/models/kalshi-decision-v1-glimmer",
+"state": "<event title, rules and open date>",
+"questions": {
+  "winner": {"type": "choice", "instructions": "Which outcome will happen?",
+             "criteria": {"a": "<outcome A>", "b": "<outcome B>"}}
+}
+  }
 ```
 
 The response contains the selected choice and per-option probabilities. A

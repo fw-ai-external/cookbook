@@ -6,7 +6,7 @@ the task shape fits but no case study does.
 
 Cookbook root: `training/`. Live table: [`training/README.md`](https://github.com/fw-ai-external/cookbook/blob/main/training/README.md).
 
-For greenfield users, offer the preloaded menu in `starter-jobs.md` before
+For greenfield users, offer the starter menu in `starter-jobs.md` before
 walking the full catalog interview.
 
 ## Tier 1 — Case studies (`training/case-studies/`)
@@ -30,8 +30,8 @@ Minimal scripts; often the best match for novel domains.
 
 | Path | Method | Task signal | Bundled data |
 |---|---|---|---|
-| `muse_glimmer/README.md` | SFT | Mini cookbook: free Muse Glimmer SFT end to end (Managed SFT, serverless SFT with eval, vision, own data, cleanup; paid DeepMath RL as an extra) | account-preloaded / HF / bundled |
-| `sft/muse_glimmer_starter.py` | SFT | Free Muse Glimmer first job: Managed SFT on preloaded data, or serverless with base-vs-tuned holdout | account-preloaded / HF |
+| `muse_glimmer/README.md` | SFT | Mini cookbook: free Muse Glimmer serverless SFT end to end (public example or own data, base-vs-tuned eval, cleanup; paid DeepMath RL as an extra) | HF / bundled |
+| `sft/muse_glimmer_starter.py` | SFT | Free Muse Glimmer first job: serverless SFT with base-vs-tuned holdout | HF / local |
 | `sft/train_sft.py`, `sft/train_sft_serverless.py` | SFT | Generic supervised fine-tuning (dedicated / serverless) | local JSONL |
 | `dpo/train_dpo.py`, `dpo/train_dpo_serverless.py` | DPO | Preference tuning (dedicated / serverless) | local JSONL / prepared UltraFeedback |
 | `embedding/train_embedding.py` | embedding | Query and passage pairs | local JSONL |
@@ -81,9 +81,9 @@ case_study: <slug>          # omit if tier = example | recipe
 cookbook_entry_tier: case_study | example | recipe
 cookbook_entry_path: training/...
 implied_method: sft | dpo | orpo | rft | igpo | distillation | embedding
-suggested_path: managed | serverless | training_api_dedicated
+suggested_path: serverless | training_api_dedicated
 dataset_plan:
-  source: local | account_preloaded | cookbook_bundled | huggingface | labeling_required
+  source: local | cookbook_bundled | huggingface | labeling_required
   candidates: []
 eval_plan:
   metric:

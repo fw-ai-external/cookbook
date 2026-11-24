@@ -104,10 +104,7 @@ and keep `close_session_on_exit=False` until listing/promotion is complete.
 Use the session endpoints, not an underlying shared trainer's job ID:
 
 ```python
-import os
-from fireworks.training.sdk import FireworksClient
-
-fw = FireworksClient(api_key=os.environ["FIREWORKS_API_KEY"])
+# fw is a configured FireworksClient.
 rows = fw.list_training_session_checkpoints(
     "accounts/<account>/trainingSessions/<session>"
 )
@@ -168,25 +165,8 @@ returning. A callback failure aborts training without attempting sampler export;
 retrying the same save retries publication. Weights without the matching cursor
 are not a complete recovery point.
 
-For a crash-safe session creation intent, persist a unique `ts-` session ID and
-an ownership nonce before calling
-`FireworksClient.reserve_training_session(session_id, display_name=nonce)`.
-Then attach with
-`FiretitanServiceClient.from_reserved_training_session(full_name,
-expected_display_name=nonce, api_key=..., base_url=...,
-additional_headers=...)`. The factory reads the session and verifies its
-account, name, nonce, and unbound state; it starts fresh SDK counters without
-creating another session. Hold an exclusive caller lease from reservation
-through first model creation. Never use this factory for a bound session:
-recovery creates a new owned session and loads the qualified DCP reference and
-its committed cursor. The existing `session_id=` constructor mode only provides
-heartbeat/shadow access and cannot allocate training clients.
-
-Resolve credentials for each invocation and never persist them in run state.
-`service.close()` stops the heartbeat and closes connections; it does not delete
-the control-plane session. Explicit session deletion invalidates active session
-routes but can leave an expired tombstone with listable checkpoints. Session
-lifetime is separate from checkpoint retention: verify the exact saved DCP or
+For recovery, start a new session and restore the selected checkpoint and its
+matching data cursor. Session lifetime is separate from checkpoint retention: verify the exact saved DCP or
 sampler checkpoint and its source metadata before recovery, and create a new
 session rather than trying to revive an expired one. Checkpoint bytes remain
 subject to the [serverless retention policy](https://docs.fireworks.ai/fine-tuning/training-api/serverless);
@@ -244,18 +224,27 @@ Two ways to use it:
 
 ## Warm-start from a promoted adapter (LoRA only)
 
-To continue LoRA training from a previously-trained adapter, set `warm_start_from_adapter` on the recipe `Config` to a promoted PEFT Model resource name (`accounts/<account>/models/<name>`):
+On a Dedicated Training recipe that supports adapter warm starts, set
+`warm_start_from_adapter` to the promoted PEFT Model resource name
+(`accounts/<account>/models/<name>`).
 
 ```python
 cfg = Config(
     base_model="accounts/fireworks/models/qwen3-8b",
     lora_rank=16,
     warm_start_from_adapter="accounts/<acct>/models/my-lora",
+    init_from_checkpoint=None,
     ...
 )
 ```
 
-Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh. The adapter must be a promoted PEFT Model resource name (`accounts/<account>/models/<name>`). Raw local directories and `gs://` paths are rejected because they bypass the Model-resource ownership check.
+Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh. The adapter must be a promoted PEFT Model resource name (`accounts/<account>/models/<name>`). Pass the promoted model's resource name.
+
+Use the adapter's base model and LoRA rank. To continue from an existing promoted
+adapter when its DCP checkpoint is unavailable, pass that adapter's Model resource
+name directly as above. Start a fresh trainer run so an existing resumable
+checkpoint does not take priority. The recipe starts at step and data cursor 0;
+configure the dataset and training duration for the additional training you want.
 
 Priority inside `TrainingCheckpoints.resume` (highest first):
 
@@ -329,15 +318,15 @@ To initialize a new recipe run from another DCP checkpoint:
 
 - Dedicated: use `init_from_checkpoint=f"{prior_job_id}:step-N"` for a
   cross-job checkpoint, or a bare checkpoint name for a phase handoff on the
-  current trainer. Raw URI and filesystem-path references are not supported.
-  A bare dedicated name deliberately keeps the existing step-0 initialization
-  behavior used for phase handoffs on one trainer.
+  current trainer. A bare dedicated name starts the recipe at step 0 for
+  phase handoffs.
 - Serverless: use the fully-qualified
   `"<account>/run-<32 lowercase hex>/<checkpoint>"` logical name. Bare names
-  refer to the current run. Raw URI (including `gs://`, `tinker://`, and
-  `cross_job://`) and absolute-path references are not supported by pooled
-  trainers, and `<other-session>:<checkpoint>` is rejected rather than silently
-  redirected to the current run.
+  refer to the current run. Use the full logical name to select a checkpoint
+  from another run.
+
+These fields accept logical checkpoint names. Raw storage URIs and filesystem
+paths are rejected.
 
 ### Serverless: every resume starts a new run
 
@@ -410,7 +399,7 @@ weights with a fresh optimizer, use `warm_start_from_adapter` on supported
 (non-serverless) recipes.
 
 The Muse Glimmer starter (`training/examples/sft/muse_glimmer_starter.py`) runs
-its own serverless LoRA loop rather than a recipe. Its `launch` saves a
+a serverless LoRA loop with `launch --surface serverless`. It saves a
 resumable checkpoint every 20 optimizer steps (`--dcp-save-interval`; `0` turns
 saving off) and prints each `<account>/run-<id>/starter-step-<N>` reference. A
 run that fails or is interrupted prints the `launch` command that continues

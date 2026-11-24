@@ -6,80 +6,18 @@ Use this reference for agent-assisted BYOB and CMEK setup. Always confirm the cu
 
 ## Bring your own bucket
 
-BYOB lets Fireworks read a training dataset from customer-managed object storage. Use least-privilege access scoped to the required bucket and prefix, and revoke access after the approved workflow completes.
-
-```python
-client.datasets.create(dataset_id="<dataset-id>",
-                       dataset={"externalUrl": "gs://<bucket>/<prefix>/data.jsonl", "format": "CHAT"})
-```
-
-**For a user who runs commands themselves (`firectl`):**
-
-```bash
-firectl dataset create <dataset-id> \
-  --external-url gs://<bucket>/<prefix>/data.jsonl
-```
-
-Use the equivalent `s3://` or Azure URL only when live docs confirm support for
-the selected workflow. Dataset registration is protected work and requires the
-final-plan confirmation in `../../configure/SKILL.md`.
-
-### GCS
-
-Use the exact service-account identities supplied during onboarding. Grant only the documented bucket-policy read and object-view permissions required by the current flow. Do not copy service-account emails from another account or an old run.
-
-### AWS S3
-
-- Prefer OIDC federation to long-lived access keys.
-- Restrict the trust policy by issuer, subject, and audience exactly as current onboarding specifies.
-- Grant only `s3:GetObject` and the required `s3:ListBucket` prefix.
-- Pass the reviewed IAM role only on commands that support it according to `--help`.
-
-### Azure Blob
-
-Prefer workload identity federation. If a supported workflow requires a Fireworks secret resource, reference its resource name without exposing the credential value.
+BYOB lets a training run read a dataset from customer-managed object storage.
+For a recipe that accepts GCS datasets, use the dataset path as input. See the
+[migration guide](https://docs.fireworks.ai/fine-tuning/migrate-from-managed-training)
+for current input formats and the [Data security guide](https://docs.fireworks.ai/guides/security_compliance/data_security.md)
+for your cloud's access requirements.
 
 ## Customer-managed encryption keys
 
-CMEK uses the customer's cloud KMS key to wrap Fireworks-managed data-encryption keys. Keep these concerns separate:
-
-- BYOB controls where the source dataset lives.
-- CMEK controls encryption of supported Fireworks-managed artifacts at rest.
-- Neither substitutes for in-memory training isolation or inference data-handling policy.
-
-Before setup:
-
-1. Confirm the selected cloud and training method are supported in the live Training security section.
-2. Confirm the exact issuer, subject, audience, and permissions for the user's account.
-3. Show the role and key resource names without secret material.
-4. Key registration is a `firectl` step for the user: read the installed `firectl ... --help` for the current command and give it to them to run.
-5. Obtain confirmation before registering a key or starting a job.
-
-Do not publish or automate a draft CLI contract from memory.
-
-## Rotation and revocation
-
-- Treat key disablement or IAM removal as a potentially disruptive action.
-- Explain which active and stored artifacts depend on the key before asking for confirmation.
-- Verify access after rotation with a read-only listing or status check.
-- Use the cloud provider's audit log for KMS operations.
-
-## Secure RFT
-
-For proprietary prompts or rewards:
-
-1. Keep dataset access least-privileged through BYOB when supported.
-2. Keep evaluator or environment credentials in the secret-management surface.
-3. Use the Training API path appropriate to the reviewed workflow.
-4. Follow `references/rl-agentic.md` for custom Training API trajectories.
-5. Revoke temporary storage access and tear down billable resources after the run.
-
-## Non-negotiables
-
-- Never place cloud credentials, signed URLs, raw IAM policy output, or customer data in a run report.
-- Never reuse another account's onboarding identities or OIDC audience.
-- Never claim a method or cloud is CMEK-supported without checking live docs.
-- Keep human-readable policy in public docs; this reference only governs operational execution.
+CMEK provides customer-managed encryption for supported training artifacts.
+Confirm support for your training method and cloud before starting a run. Follow
+the [Data security guide](https://docs.fireworks.ai/guides/security_compliance/data_security.md)
+for setup and lifecycle guidance.
 
 ## Related
 

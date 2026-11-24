@@ -14,8 +14,6 @@ ACTIVE_SKILLS = ("research", "configure", "debug", "migrate-tinker")
 REDIRECTS = ("discover", "fireworks-training")
 EXPECTED_SKILLS = (*ACTIVE_SKILLS, *REDIRECTS)
 CONFIGURE_PATH_OPTIONS = {
-    "managed_firectl",
-    "managed_sdk",
     "serverless",
     "dedicated",
 }
@@ -398,7 +396,6 @@ def check_cost_contract(errors: list[str]) -> None:
         reference,
         (
             "docs.fireworks.ai/fine-tuning/cost-estimator",
-            "Managed",
             "Serverless",
             "Dedicated",
             "Embedding, IGPO, or distillation",

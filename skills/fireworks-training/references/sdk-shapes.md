@@ -11,18 +11,40 @@ hand-set when a shape is in use.
 
 ## Training shape
 
-By default, recipes auto-select the smallest validated training shape that can
-fit the configured model and context length:
+Whether `cfg.trainer.training_shape_id` can stay unset depends on whether the
+run creates a deployment:
+
+| Run | `training_shape_id` unset |
+| --- | --- |
+| Trainer only (SFT, DPO, ORPO, embedding) | Works: backend trainer creation picks a validated shape. |
+| Creates a new dedicated rollout deployment (RL or distillation) | Works when `deployment.deployment_shape` explicitly supplies a compatible shape. Otherwise set a training shape whose validated profile links one. |
+| Reattaches to an existing `deployment.deployment_id` | Works: the deployment already has its shape. |
+
+For a new dedicated rollout deployment, prefer the validated trainer and
+deployment shape pair. Set its training shape:
 
 ```python
-cfg.trainer.training_shape_id = None
+cfg.trainer.training_shape_id = "accounts/fireworks/trainingShapes/qwen3-4b-minimum"
 ```
 
-Set `cfg.trainer.training_shape_id` only when you need an explicit override:
+To find one, call the read-only lookup in `training.utils`, which returns
+a compatible validated shape for the base model and tuning mode. This example
+assumes a configured `TrainerJobManager` named `mgr`:
 
 ```python
-cfg.trainer.training_shape_id = "accounts/fireworks/trainingShapes/ts-qwen3-8b-policy"
+from training.utils import auto_select_training_shape
+
+shape_id = auto_select_training_shape(
+    mgr, base_model="accounts/fireworks/models/qwen3-4b", lora_rank=0, public_only=True
+)
+profile = mgr.resolve_training_profile(shape_id)
+if not profile.deployment_shape_version:
+    raise ValueError("Choose a training shape with a linked deployment shape.")
+cfg.trainer.training_shape_id = shape_id
 ```
+
+Use the run's LoRA rank and context length for the lookup. If the result lacks a
+linked deployment shape, choose a compatible shape explicitly.
 
 The recipe then does:
 
@@ -42,8 +64,9 @@ trainer/deployment provisioning path.
 
 **Do not create deployments without a [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape).** Shapeless deployments are the most common cause of failed deployment creations, and the [shapeless path](https://docs.fireworks.ai/guides/ondemand-deployments#explicitly-creating-a-deployment-without-a-shape-advanced-users-only) will be deprecated. Find a deployable shape, or pass `default` to let the server pick one.
 
-Do not set `cfg.deployment.deployment_shape` manually. The SDK resolves it from
-the requested [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape) or the selected training profile, and recipes read
+The SDK uses an explicit `cfg.deployment.deployment_shape` if supplied.
+Otherwise it reads the deployment shape from the selected training profile.
+Use a compatible versioned deployment shape for an explicit override, and read
 the resolved value from the service:
 
 ```python
@@ -53,8 +76,7 @@ deployment_shape = service.deployment_shape
 ```
 
 That is a **versioned** path (`accounts/fw/deploymentShapes/ds-x/versions/abc123`).
-Recipes take the deployment shape from that training-shape profile; do not
-create deployments without one. Overriding individual fields on top of a shape — e.g. `replica_count` — is
+A new Cookbook deployment requires a shape from one of these two sources. Overriding individual fields on top of a shape — e.g. `replica_count` — is
 supported; the shape owns accelerator selection, so manual accelerator fields
 are never forwarded. If no shape fits a workload, [contact us](https://fireworks.ai/contact).
 
@@ -70,11 +92,7 @@ For **LoRA** (`lora_rank > 0`), two valid options:
 - **Shared session (recommended, saves GPUs)**: leave `cfg.trainer.reference_training_shape_id` unset. `service.create_reference_client(...)` reuses the policy session with the adapter disabled for reference logprobs — no separate trainer, no extra GPUs.
 - **Separate LoRA-capable ref trainer**: set `cfg.trainer.reference_training_shape_id` to a `LORA_TRAINER` shape (typically the same as the policy shape). The SDK provisions a frozen reference runtime on its own GPUs and requests `trainer_mode=LORA_TRAINER` shape matching.
 
-The CI pattern for the saves-GPUs variant is `ref_shape = "" if lora_rank > 0 else None`, letting backend auto-selection handle the full-parameter reference.
-
-## When to skip validation
-
-`cfg.trainer.skip_validations=True` is a superuser-only escape hatch for shapes not yet registered. Agents should not set this unless explicitly told to.
+Use the shared reference option for LoRA. For full-parameter training, select a compatible reference profile.
 
 ## Listing available shapes
 

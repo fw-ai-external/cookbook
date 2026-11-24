@@ -46,9 +46,6 @@ You have a model that is accurate but **does not sound right**, and it is easier
 answers is better* than to write the ideal one. That is preference tuning: brand voice, tone,
 helpfulness, less rambling. And you want to understand the mechanism, not just call an API.
 
-**If you only want to ship**, use managed DPO jobs instead: [`../dpo_style/`](https://github.com/fw-ai-external/cookbook/tree/main/training/case-studies/dpo_style) does the
-same training server-side in four SDK calls. Read that one to *use* DPO; read this one to *understand*
-it, because here every number in the log has a line of code you can point at.
 
 ## What the notebook does
 
@@ -111,12 +108,11 @@ reward with two changes: the base model is GLM 5.3 Flash, and the splits are dis
 | Stage | What it does | Needs |
 | --- | --- | --- |
 | `briefs` | Reads the Fireworks blog sitemap, freezes the first 2,500 characters of each article, and makes a tweet brief and a LinkedIn brief per article. Newest 20 articles are the test set, the next 6 are validation, the rest train. Writes `pack/antislop_briefs.jsonl`. | nothing |
-| `drafts` | 8 drafts per training brief from the base model through the public inference API, temperature 1.0, low reasoning effort. | `FIREWORKS_API_KEY` |
-| `score` | Per draft: a sanity gate, the AI-text detector's human probability (with its version), and a four-axis LLM judge (`deepseek-v4p1-flash`: faithful, coherent, on_format, natural). A failed scorer call is recorded as a failure, never as a zero. | `FIREWORKS_API_KEY`, `GPT_ZERO_API_KEY` |
+| `drafts` | 8 drafts per training brief from the base model through the public inference API, temperature 1.0, low reasoning effort. | Fireworks account access |
+| `score` | Per draft: a sanity gate, the AI-text detector's human probability (with its version), and a four-axis LLM judge (`deepseek-v4p1-flash`: faithful, coherent, on_format, natural). A failed scorer call is recorded as a failure, never as a zero. | Fireworks and GPTZero access |
 | `pairs` | Default mode `gated-detector`: a draft can be *chosen* only if it meets the exact format spec and the judge rates it faithful, coherent and on-format (>= 0.8 each); eligible drafts are ranked by the detector score alone, and the best is paired with the worst (margin >= 0.1, at most 3 pairs per brief). `ANTISLOP_REWARD_MODE=hybrid` reproduces HumanSound's 0.5/0.5 blend instead. Writes `pack/antislop_pairs.jsonl` and `pack/manifest.json` (counts, settings, detector versions, hashes). Scores stay out of the public pack. | the score file |
 
 ```bash
-export FIREWORKS_API_KEY=fw_...  GPT_ZERO_API_KEY=...
 python build_antislop_pack.py all        # or: briefs | drafts | score | pairs
 ```
 
@@ -138,15 +134,12 @@ uv pip install -e .
 uv pip install ipykernel matplotlib openai        # not declared in pyproject
 python -m ipykernel install --user --name cookbook-training --display-name "cookbook (3.12)"
 
-export FIREWORKS_API_KEY=fw_...
 jupyter lab case-studies/dpo_antislop/dpo_glm53_flash.ipynb
 ```
 
-**Use an account-scoped API key.** Serverless training rejects keys with access to multiple
-accounts; creating the training client fails with `create_session: account not found`.
+Connect the account you want to train on using the [Fireworks quickstart](https://docs.fireworks.ai/getting-started/quickstart).
 
-The GLM 5.3 Flash tokenizer is the public `zai-org/GLM-5.3-Flash`. It needs no Hugging Face token and
-no remote code. `transformers` prints a model-type warning when it loads; that is expected for this
+The GLM 5.3 Flash tokenizer is the public `zai-org/GLM-5.3-Flash`. It is available publicly. `transformers` prints a model-type warning when it loads; that is expected for this
 text-only use.
 
 On Colab, uncomment the block at the top of the setup cell. It clones the repo and installs

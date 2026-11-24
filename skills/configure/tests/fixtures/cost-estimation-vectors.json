@@ -1,30 +1,5 @@
 [
   {
-    "name": "managed-sft",
-    "items": 50000,
-    "epochs": 2,
-    "prompt_tokens": 400,
-    "response_tokens": 100,
-    "rate_per_million": 3,
-    "expected_tokens": 50000000,
-    "expected_center": 150,
-    "expected_low": 105,
-    "expected_high": 195
-  },
-  {
-    "name": "managed-dpo",
-    "items": 10000,
-    "epochs": 3,
-    "prompt_tokens": 200,
-    "chosen_tokens": 100,
-    "rejected_tokens": 150,
-    "rate_per_million": 1,
-    "expected_tokens": 19500000,
-    "expected_center": 19.5,
-    "expected_low": 13.65,
-    "expected_high": 25.35
-  },
-  {
     "name": "serverless-sft",
     "items": 10000,
     "epochs": 2,

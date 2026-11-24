@@ -26,11 +26,10 @@ compatible path and name it in the plan (never silent defaults).
 
 | Signal | Default `workflow_path` |
 |---|---|
-| Plain SFT on chat JSONL, text or vision, no custom code | `managed_sdk` (agent runs SDK `supervised_fine_tuning_jobs`) |
+| Plain SFT on chat JSONL, text or vision, no custom code | `serverless` (cookbook SFT recipe or starter) |
 | User wants to write a loop, sample in-session, or compare base vs tuned without a deployment | `serverless` |
 | RL, serverless DPO, distillation, custom loss | `serverless` |
-| User will run commands themselves in a terminal | `managed_firectl` |
-| Full-parameter, model not on the serverless pool, reserved capacity, custom infra | `dedicated` |
+| ORPO, full-parameter, model outside the serverless pool, reserved capacity, custom infra | `dedicated` |
 
 Choose Dedicated only when an easier path cannot do the job. When the user asks
 for Dedicated without such a reason, recommend the easier path in one sentence
@@ -47,7 +46,7 @@ When `run.md` includes research handoff fields (legacy: discover handoff), reuse
 | `cookbook_entry_path` | Exact starting path for every tier |
 | `notebook`, `readme` | Supporting entry files when present |
 | `implied_method` | Method (SFT, DPO, …) |
-| `suggested_path` | `managed` \| `serverless` \| `training_api_dedicated` |
+| `suggested_path` | `serverless` \| `training_api_dedicated` |
 | `dataset_plan` | Approved source and dataset candidates |
 | `eval_plan` | Approved metric, baseline requirement, and cookbook hook |
 
@@ -69,15 +68,14 @@ Prompt: `How do you want to run this training job?`
 
 | Option ID | Label | `workflow_path` | `execution_surface` |
 |---|---|---|---|
-| `managed_sdk` | Managed — I run it for you through the Python SDK (easiest) | managed_sdk | sdk |
 | `serverless` | Training API — serverless (your own loop, in-session eval, RL) | serverless | training_api |
-| `managed_firectl` | Managed — you run the `firectl` commands yourself | managed_firectl | firectl |
 | `dedicated` | Training API — dedicated trainer (full-parameter, reserved capacity) | dedicated | training_api |
 
 List the recommended option first.
 
 **Training API access:** if the account cannot reach the serverless pool, say so
-and offer Managed SFT. See
+and route to Dedicated Training or account support; Managed SFT no longer
+accepts jobs. See
 `../../fireworks-training/references/training-api.md`.
 
 ## Q-method — Supervision signal (when method unclear)
@@ -102,10 +100,6 @@ DPO unless the user explicitly requests ORPO before the final plan.
 For vague goals ("make my chatbot better"), run the full discriminating list in
 `../../fireworks-training/references/choose-method.md` one question per turn.
 
-`managed_firectl` and `managed_sdk` use the same managed backend. The agent
-uses the SDK because `firectl` blocks agent mutations; choose `managed_firectl`
-only when the user will run the commands.
-
 ## Record in run manifest
 
 After the path is confirmed, update the private run manifest and record
@@ -116,8 +110,8 @@ After the path is confirmed, update the private run manifest and record
 
 ```yaml
 entry_skill: configure
-workflow_path: managed_firectl | managed_sdk | serverless | dedicated
-execution_surface: firectl | sdk | training_api
+workflow_path: serverless | dedicated
+execution_surface: training_api
 implied_method: sft | dpo | orpo | rft | igpo | distillation | embedding
 inherited_from_research: true | false
 research_handoff:  # when present (legacy: discover_handoff)
@@ -129,7 +123,7 @@ research_handoff:  # when present (legacy: discover_handoff)
   readme: training/...    # when present
   suggested_path: <from discover>
   dataset_plan:
-    source: local | account_preloaded | cookbook_bundled | huggingface | labeling_required
+    source: local | cookbook_bundled | huggingface | labeling_required
     candidates: []
   eval_plan:
     metric:
@@ -147,12 +141,12 @@ Every confirmed plan includes a **Path** section:
 
 | Field | Example |
 |---|---|
-| Workflow | Managed / Training API serverless / dedicated |
-| Surface | `firectl sftj` / SDK `supervised_fine_tuning_jobs` / `sft_loop.py` |
+| Workflow | Training API serverless / dedicated |
+| Surface | `sft_loop.py` / `dpo_loop.py` / other cookbook recipe or starter |
 | Why | One sentence tied to user choice |
-| Availability | Managed and Serverless Training are GA; Dedicated Training needs account access |
+| Availability | Serverless Training is GA; Dedicated Training needs account access |
 
-Never show only `firectl` commands when the user chose SDK or Training API.
+Never show only `firectl` commands; agents launch through the SDK.
 
 ### DPO recipe on serverless trainers
 

@@ -12,9 +12,12 @@ Docs: https://docs.fireworks.ai/fine-tuning/training-api/introduction · Cookboo
 
 Before selecting a Training API path, confirm that the target account was enabled through onboarding or account settings. For dedicated work, read the account and shared shape inventories with `firectl training-shape list`; this proves shape visibility but does not by itself prove serverless entitlement. If no authoritative read-only entitlement signal is available, mark access unverified and ask the user to confirm enablement. Do not discover access by creating a trainer or serverless session.
 
-## Managed training vs Training API
+## Managed training is retired
 
-Use **managed training** for standard SFT/DPO/ORPO jobs. Reach for the **Training API** when you need a custom **loss/reward**, **RL with rollouts** (inference-in-the-loop), forward-pass internals (for example MoE routing for R3), distillation, or multi-turn/agentic trajectories.
+Managed SFT, DPO, and ORPO no longer accept new jobs; run all of them on the
+**Training API** (serverless or dedicated). To rerun an old managed job, see
+`training/examples/tools/README.md` and the
+[migration guide](https://docs.fireworks.ai/fine-tuning/training-api/migrate-from-managed).
 
 ## Training API infrastructure
 
@@ -48,14 +51,14 @@ about jobs that already exist, see `managed-rft-operations.md`.
 
 The reward can come from two places:
 
-1. **An inline `reward_fn`** — write the reward as Python in the forked recipe. The agent-drivable default; no evaluator resource, any key.
+1. **An inline `reward_fn`** — write the reward as Python in the forked recipe. The agent-drivable default; uses no evaluator resource.
 2. **An LLM-judge rubric** — when correctness isn't a clean 0/1 (tone, quality, open-ended), score completions with a judge model against a rubric. Implement it inside `reward_fn` (call a judge model, map its verdict to a float). If the user gives no evaluator and no rubric, infer a data-grounded rubric from the training samples and confirm it with them before spending.
 
 ## Default workflow: fork a cookbook recipe
 
 > **Cookbook implementation:** use the exact recipe and SDK references routed
-> from `../../configure/SKILL.md`. This file explains managed versus Training
-> API choices; this reference directory and `training/` contain implementation
+> from `../../configure/SKILL.md`. This file explains serverless versus
+> dedicated Training API choices; this reference directory and `training/` contain implementation
 > depth.
 
 **Approval gate still applies.** Training API cookbook recipes can create trainers, rollout deployments, checkpoints, promoted models, and paid inference. Before running a recipe or any create/promote/deploy action, show the account, recipe, dataset, full resolved trainer and deployment config, cost drivers, evaluation plan, and teardown plan; get explicit approval for this run. A deployment or materially expanded sweep gets its own approval.
@@ -68,37 +71,18 @@ Don't write a loop from scratch — fork a recipe in the `training/` tree of `fw
 
 Recipes cover SFT, DPO/ORPO, and RL. The RL loops train GRPO; DAPO, GSPO, CISPO, DRO, DPPO and others are objective modules in `training/utils/rl/algorithm/` that a forked loop calls (see `rl-custom-loss.md`). SAO/PPO and IGPO have their own recipes.
 
-## Quick reference: Managed and Serverless SFT
+## Quick reference: Serverless SFT
 
-Both blocks ran live on Muse Glimmer 30B. When the cookbook checkout has the
-Muse starter or `sft_loop`, run those and fork them for custom loops; use these
-blocks when they are missing. Load `.env` in-process first with an
-explicit search from the working directory:
-`from dotenv import find_dotenv, load_dotenv; load_dotenv(find_dotenv(usecwd=True))`.
+This block ran live on Muse Glimmer 30B. When the cookbook checkout has the
+Muse starter or `sft_loop`, run those and fork them for custom loops; use this
+block when they are missing.
 
-Managed SFT on a dataset already in the account:
-
-```python
-from fireworks import Fireworks
-c = Fireworks(account_id=ACCOUNT)
-job = c.supervised_fine_tuning_jobs.create(
-    supervised_fine_tuning_job_id=JOB_ID,
-    base_model="accounts/fireworks/models/muse-glimmer-30b",
-    dataset=f"accounts/{ACCOUNT}/datasets/{DATASET_ID}",
-    output_model=f"accounts/{ACCOUNT}/models/{JOB_ID}",
-    epochs=1, lora_rank=8, eval_auto_carveout=True,
-)
-j = c.supervised_fine_tuning_jobs.get(JOB_ID)   # state, job_progress.percent, status.message
-urls = j.model_dump()                           # metricsFileSignedUrl, renderSamplesSignedUrl
-```
-
-Serverless Training API loop with base and tuned snapshots (run from
+Use a configured Serverless `FiretitanServiceClient` named `service`. This
+loop saves base and tuned snapshots (run from
 `$COOKBOOK_DIR/training` so the `training.*` helpers import):
 
 ```python
-import os
 from fireworks.training import tinker
-from fireworks.training.sdk import FiretitanServiceClient
 from training.utils.supervised import build_renderer, render_messages_to_datum
 from training.utils.tokenizers import load_tokenizer
 from training.renderer import get_text_content
@@ -107,8 +91,6 @@ tok = load_tokenizer("meta-models/Muse-Glimmer-30B")
 renderer = build_renderer(tok, "meta-models/Muse-Glimmer-30B", "muse_glimmer")
 datums = [render_messages_to_datum(r["messages"], renderer=renderer, max_seq_len=2048).datum for r in rows]
 
-service = FiretitanServiceClient(api_key=os.environ["FIREWORKS_API_KEY"],
-                                 base_url="https://api.fireworks.ai/training/v1/serverless")
 try:
     tc = service.create_lora_training_client(base_model="accounts/fireworks/models/muse-glimmer-30b", rank=8)
     for batch in batches(datums):
@@ -143,8 +125,7 @@ To keep the tuned adapter after the session, promote its sampler checkpoint
 before closing; session checkpoints are unreachable once the session ends:
 
 ```python
-from fireworks.training.sdk import FireworksClient
-fw = FireworksClient(api_key=os.environ["FIREWORKS_API_KEY"])
+# fw is a configured FireworksClient.
 rows = [r for r in fw.list_training_session_checkpoints(service.training_session_name)
         if r.get("promotable") and "tuned" in r["checkpointName"]]   # ids are prefixed/suffixed; never match by equality
 fw.promote_session_checkpoint(name=max(rows, key=lambda r: r["createTime"])["name"],
@@ -153,7 +134,7 @@ fw.promote_session_checkpoint(name=max(rows, key=lambda r: r["createTime"])["nam
 
 `service.close()` ends your use of the session, but the run keeps its slot in
 the account's concurrent-run quota until the session expires. Do not tell the
-user nothing is in use until then; a new run (Managed or Serverless) on the
+user nothing is in use until then; a new serverless run on the
 same model may queue or be rejected. More in
 [`execution-notes.md`](execution-notes.md).
 
@@ -171,7 +152,7 @@ process may resume.
 - `forward` — forward-only (e.g. reference-model logprobs); optional `loss_fn_config={"top_k": K}` returns per-token top-K logprobs/indices — see below.
 - `forward_projection(datums)` — forward-only raw projection-head outputs (`loss_fn_outputs[i]["projection"]`, shape `[tokens, projection_head_dim]`) for a trainer created with a positive `projection_head_dim`. Any compatible validated training shape can be used; the trainer setting configures the head dimension. Accumulates no gradients; train the head with `forward_backward_custom(..., output="projection")`. See `recipes/experiment/ppo_value_head_loop.py`.
 - `optim_step(...)` — optimizer update after gradient accumulation.
-- `save_weights_for_sampler()` + `create_sampling_client()` — export a checkpoint + stand up a sampler (weight sync for eval/rollouts). Sampling does not need a training client: a fresh `FiretitanServiceClient` (e.g. one per worker/activity process) can call `create_sampling_client(model_path=path)` with a path saved by any earlier run of the account (even after that training ended), or `create_sampling_client(base_model=...)`, without `create_lora_training_client()`. Neither consumes a concurrent-run slot. `model_path` may also name a live session's checkpoint (`accounts/<a>/trainingSessions/<ts>/checkpoints/<ckpt>`). The returned `FiretitanSamplingClient` is picklable (Tinker multiprocessing pattern): pickle it in the main process and unpickle per worker to sample the same rollout host. Like Tinker, the pickle carries the API key and headers, and each worker gets its own concurrency controller (a fixed limit carries over). To pass a sampler without credentials, use `get_sampler_handle()` and `FiretitanSamplingClient.from_sampler_handle(handle, api_key=None)`; the receiving process uses `api_key` or `FIREWORKS_API_KEY`.
+- `save_weights_for_sampler()` and `create_sampling_client()` export a checkpoint and open a sampler for evaluation or rollouts. A sampling client can use an existing sampler checkpoint or a base model. To share its configuration across processes, use `get_sampler_handle()` and `FiretitanSamplingClient.from_sampler_handle(...)`.
 
 Loss and datum routing: `training-api-losses.md`.
 

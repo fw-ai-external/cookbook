@@ -5,13 +5,13 @@ Runnable end-to-end notebooks in `training/case-studies/`. Each README has an
 
 | Slug | Technique | Is this you? (summary) | Notebook(s) | Path variants |
 |---|---|---|---|---|
-| `sft_prompt_router` | SFT / classification | End-to-end fine-tuning on a gradeable classification task | `prompt_router_dedicated.ipynb`, `prompt_router_serverless.ipynb` | managed SDK, serverless |
-| `sft_cord_receipts` | Vision SFT | One right output shape (JSON, tags, codes) from examples; invoice/OCR/form extraction | `cord_receipt_sft_sdk.ipynb` | managed SDK |
-| `dpo_style` | DPO | Accurate but wrong tone; easier to rank two answers than write the ideal one | `dpo_helpsteer3_sdk.ipynb` | managed SDK |
+| `sft_prompt_router` | SFT / classification | End-to-end fine-tuning on a gradeable classification task | `prompt_router_serverless.ipynb` (`prompt_router_dedicated.ipynb` used managed SFT and no longer runs) | serverless |
+| `sft_cord_receipts` | Vision SFT | One right output shape (JSON, tags, codes) from examples; invoice/OCR/form extraction | `cord_receipt_sft_sdk.ipynb` (used managed SFT; no longer runs) | New runs: Training API SFT recipe |
+| `dpo_style` | DPO | Accurate but wrong tone; easier to rank two answers than write the ideal one | `dpo_helpsteer3_sdk.ipynb` (used managed DPO; no longer runs) | New runs: Training API `dpo_loop` |
 | `reasoning_rl` | GRPO | Objectively checkable answers; grader exists but no gold worked solutions | `rft_grpo_math.ipynb` (removed managed RFT; no longer runs) | New runs: Training API `training/examples/rl/deepmath/` |
 | `embedding_support_search` | Contrastive embedding | RAG returns adjacent but wrong article; policy structure not in base model | `airbnb_policy_embedding.ipynb` | Training API `embedding_loop` |
 | `agentic_rl_text2sql` | GRPO / serverless RL | Tool-calling agent (SQL, APIs); multi-turn rollouts with verifiable rewards | `sql_agent_rl_loop.ipynb` | serverless Training API |
-| `multilora_fleet` | LoRA SFT / multi-LoRA serving | Many tenants or locales sharing one base model; per-tenant adapters served from a single deployment | `multilora_fleet.ipynb` | managed SDK |
+| `multilora_fleet` | LoRA SFT / multi-LoRA serving | Many tenants or locales sharing one base model; per-tenant adapters served from a single deployment | `multilora_fleet.ipynb` (used managed SFT; no longer runs) | New runs: Training API SFT recipe |
 | `grpo_countdown` | GRPO / serverless RL | Single-turn graded answers; Countdown task code on the serverless GRPO loop | `countdown_grpo.ipynb` | serverless (+ dedicated config-swap section) |
 
 Cookbook table: [`training/README.md`](https://github.com/fw-ai-external/cookbook/blob/main/training/README.md#case-studies).
@@ -20,13 +20,13 @@ Cookbook table: [`training/README.md`](https://github.com/fw-ai-external/cookboo
 
 | Slug | Implied method | Typical path |
 |---|---|---|
-| `sft_prompt_router` | SFT | managed SDK |
-| `sft_cord_receipts` | SFT | managed SDK |
-| `dpo_style` | DPO | managed SDK |
+| `sft_prompt_router` | SFT | serverless Training API |
+| `sft_cord_receipts` | SFT | Training API SFT recipe; the notebook used managed SFT and no longer runs |
+| `dpo_style` | DPO | Training API `dpo_loop`; the notebook used managed DPO and no longer runs |
 | `reasoning_rl` | RL (GRPO) | Training API `training/examples/rl/deepmath/`; `rft_grpo_math.ipynb` used the removed managed RFT and no longer runs |
 | `embedding_support_search` | embedding fine-tune | Training API dedicated |
 | `agentic_rl_text2sql` | RL (GRPO) | serverless Training API |
-| `multilora_fleet` | SFT (LoRA) | managed SDK |
+| `multilora_fleet` | SFT (LoRA) | Training API SFT recipe; the notebook used managed SFT and no longer runs |
 | `grpo_countdown` | RL (GRPO) | serverless Training API |
 
 ## Match rules
@@ -50,7 +50,7 @@ case_study: <slug>
 cookbook_entry_tier: case_study
 cookbook_entry_path: training/case-studies/<slug>
 implied_method: sft | dpo | orpo | rft | igpo | distillation | embedding
-suggested_path: managed | serverless | training_api_dedicated
+suggested_path: serverless | training_api_dedicated
 notebook: training/case-studies/<slug>/<notebook>.ipynb
 readme: training/case-studies/<slug>/README.md
 dataset_plan: ...

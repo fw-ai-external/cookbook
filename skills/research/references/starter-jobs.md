@@ -52,7 +52,8 @@ The human-readable walkthrough for every starter below is
 `training/examples/muse_glimmer/README.md`; link it when the user wants to run
 the steps themselves.
 
-The commands call `training/examples/sft/muse_glimmer_starter.py` and run from
+The commands call `training/examples/sft/muse_glimmer_starter.py`. Pass
+`--surface serverless` to `plan` and `launch` for local data. Run them from
 `$COOKBOOK_DIR/training` after the one-time install in
 `../../fireworks-training/references/cookbook-code.md`; the installed skill
 folder does not contain the scripts.
@@ -101,7 +102,7 @@ starter_job_id: <option id>
 cookbook_entry_tier: example
 cookbook_entry_path: <path from table>
 implied_method: sft | rft
-suggested_path: managed | serverless
+suggested_path: serverless
 supervision_signal: gold input-output pairs | verifiable answers
 dataset_plan:
   source: user_file

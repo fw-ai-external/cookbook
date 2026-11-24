@@ -31,7 +31,7 @@ environment after stating what will be created:
 ```bash
 cd "$COOKBOOK_DIR/training"
 python3 -m venv .venv && .venv/bin/pip install -e .   # needs Python 3.11+ (check python3 --version, else python3.12); uv works too
-.venv/bin/python -m examples.sft.muse_glimmer_starter plan
+.venv/bin/python -m examples.sft.muse_glimmer_starter plan --surface serverless
 ```
 
 Any Python 3.11 or newer works (3.14 was tested); `uv` and 3.12 are optional.

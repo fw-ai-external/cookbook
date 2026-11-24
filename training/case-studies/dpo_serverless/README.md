@@ -11,9 +11,6 @@ helpfulness, less rambling.
 
 And you want to understand the mechanism, not just call an API.
 
-**If you only want to ship**, use managed DPO jobs instead — `[../dpo_style/](../dpo_style/)` does the
-same training server-side in four SDK calls. Read that one to *use* DPO; read this one to *understand*
-it, because here every number in the log has a line of code you can point at.
 
 ## What the notebook does
 
@@ -38,12 +35,10 @@ uv pip install -e .
 uv pip install ipykernel matplotlib openai        # not declared in pyproject
 python -m ipykernel install --user --name cookbook-training --display-name "cookbook (3.12)"
 
-export FIREWORKS_API_KEY=fw_...
 jupyter lab case-studies/dpo_serverless/dpo_ultrafeedback_serverless.ipynb
 ```
 
-**Use an account-scoped API key.** Serverless training rejects keys with access to multiple
-accounts — creating the training client fails with `create_session: account not found`.
+Connect the account you want to train on using the [Fireworks quickstart](https://docs.fireworks.ai/getting-started/quickstart).
 
 On Colab, uncomment the block at the top of the setup cell. It clones the repo and installs
 `training/` itself, so you get the repo's pinned `transformers` / `torch` / `tinker` versions rather

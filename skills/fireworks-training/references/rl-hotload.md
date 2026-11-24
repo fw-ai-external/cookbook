@@ -30,35 +30,10 @@ shard ledgers.
 Generic trainer/deployment overrides are opaque, opt-in testing interfaces;
 leave them unset in recipes and provision configs.
 
-RDMA resources are configured by the platform/shape. Do not add `extra_args`,
-`extra_values`, or their deployment variants to enable it: these require a
-superuser API key. The normal SDK/cookbook path sends none of these overrides;
-unconfigured runtimes keep FILE. Experimental trainer topology belongs in the
-training shape; public model-handle options do not add launch overrides.
-
-Recipes use `make_weight_sync`, which reads the negotiated
-`policy.supports_rdma_weight_sync` property. Create this callback once after attaching the
-policy and reuse it before the first rollout and after optimizer steps. Its RDMA
-branch calls `policy.weight_sync()`; its FILE branch calls
-`saved = policy.save_weights_for_sampler(name)` followed by
-`service.hotload_sampler_snapshot(saved.path)`. The cookbook wrapper waits for
-completion. [`recipes/rl_loop.py`](../../../training/recipes/rl_loop.py) shows this usage.
-The compatibility option
-`weight_sync_transport="RDMA"` does not override capability checks. Do not
-infer support from an image tag. The SDK's `weight_sync()` rechecks inference
-support before each publication. Once RDMA is enabled or selected, capability
-loss and publication failures surface as errors. Reused deployments keep their
-existing RDMA enablement setting.
-
-Each completed recipe publication logs `Weight sync completed: RDMA` or
-`Weight sync completed: FILE`. Use this result to identify the transport that
-actually completed; an initial RDMA capability advertisement alone does not
-prove a later publication used RDMA.
-
-RDMA publications are temporary and do not create promotable sampler
-checkpoints. Keep explicit resumable/promotable checkpoint saves enabled when
-needed. The trainer-owned bucket and incremental snapshot chain below describe FILE
-publication and durable sampler checkpoints.
+Use a validated training and deployment shape pair that supports your selected
+synchronization method. Check the run's weight-sync log for the method that
+completed. Keep explicit checkpoint saves enabled when you need to resume a run
+or promote a model.
 
 ## Debug a trainer-first deployment
 
@@ -74,6 +49,8 @@ publication and durable sampler checkpoints.
    name. Verify the account, base model, deployment shape and ready state. On
    resume, pass the intended `DeployConfig(deployment_id=...)` and trainer
    identity. Allow the SDK to finish reattachment and readiness checks.
+   Treat `PARTIAL_READY` as a blocking state for sampling. Start rollouts once
+   the deployment is ready to serve and the intended weights are loaded.
 4. Publish once. For FILE, record the exact sampler snapshot returned and
    check the deployment reports that snapshot. For RDMA, record the version
    returned by `weight_sync()`. Sample only after publication completes.
@@ -86,12 +63,8 @@ publication and durable sampler checkpoints.
 | `hotload flow mismatch` or `hot_load_bucket_url ... conflicts with hot_load_trainer_job` | The existing trainer or rollout uses the deployment-owned layout. Restore from its durable checkpoint and create a trainer-first pair. |
 | Snapshot not found or serving reports a different snapshot | Check that the deployment's trainer attachment matches the writer and its bucket. Wait for the rollout to finish reattaching before publishing again. |
 | `FILE fallback is not allowed` | Check trainer and rollout readiness and compare their RDMA capabilities. For a dedicated LoRA run, verify RDMA LoRA support on each replica. If the trainer RDMA endpoint returns 404 or 405, use a compatible trainer image. |
-| Replay references missing or a shared-store mismatch | Compare the trainer and sampler's `r3_store_id` and inspect the sampler request ID. Keep the validated trainer and deployment versions together and recapture expired references. Follow the [R3 migration checks](training-api.md#migrate-inline-r3-to-shared-storage) if the client still returns inline routing matrices. |
-| Serving rejects a replay mask or score-centering capture | Check the rollout image pinned by the exact deployment shape version and the trainer capability for the selected loss. Use a validated shape pair with shared-storage capture support. |
-
-For an internal run, search Chronosphere by trainer name, deployment name and
-sampler request ID. Capture the first create, attachment or publication error
-along with the shape versions and snapshot identity.
+| Replay references missing or a shared-store mismatch | Use the sampler associated with the trainer and recapture expired references. Follow the [R3 migration checks](training-api.md#migrate-inline-r3-to-shared-storage) if the client still returns inline routing matrices. |
+| Serving rejects a replay mask or score-centering capture | Use a validated shape pair that supports replay capture and your selected loss. |
 
 ## The knobs
 
