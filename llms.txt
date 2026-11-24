@@ -13,7 +13,6 @@ Canonical documentation:
 
 Shape-selection notes:
 - The cookbook does not own a static model-to-shape inventory.
-- Auto-selection uses validated training and deployment shape versions from Fireworks control-plane data.
-- Requests are filtered by base model, trainer role, sequence length, deployment requirement, and LoRA vs full-tune mode.
-- RL-family recipes may auto-select both trainer and deployment shapes.
-- SFT, DPO, and ORPO only need trainer auto-selection.
+- Shapes are validated training and deployment shape versions from Fireworks control-plane data, filtered by base model, trainer role, sequence length, and LoRA vs full-tune mode.
+- SFT, DPO, ORPO, and embedding runs can leave `training_shape_id` unset; backend trainer creation picks one.
+- A new dedicated rollout deployment needs a deployment shape from a validated `training_shape_id` profile or an explicit versioned `deployment.deployment_shape`.

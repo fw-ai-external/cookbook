@@ -27,6 +27,11 @@ needs shared backend admission. The option adds no such global cap and sends no
 new backend mode or concurrency value. The adaptive default remains available
 for compatibility and for callers deliberately protecting one client's budget.
 
+Keep the serving engine's default queue order. Rollout-level priority is
+deferred. Revisit it with per-request or per-turn queue traces that distinguish
+engine waiting from tool time and test throughput without preempting valid
+in-flight trajectories.
+
 ## Synchronous `rl_loop`
 
 `prompt_groups_per_step` is the batch-native concurrency boundary. The recipe

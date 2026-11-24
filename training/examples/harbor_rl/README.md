@@ -1,7 +1,11 @@
 # Harbor agentic RL
 
-Agentic RL where each rollout is a Harbor trial (local Docker or E2B). The
-layers are separate so each can change on its own:
+Agentic RL where each rollout is a Harbor trial in local Docker or a remote
+sandbox. The training orchestrator runs in the client process. Before
+increasing remote concurrency, measure valid rollout throughput and tail
+latency using the [remote sandbox performance preflight](../../../skills/fireworks-training/references/rl-agentic.md#remote-sandbox-performance-preflight).
+
+The layers are separate so each can change on its own:
 
 | Layer | Location | Responsibility |
 | --- | --- | --- |

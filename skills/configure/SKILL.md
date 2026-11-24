@@ -1,8 +1,8 @@
 ---
 name: configure
 description: >-
-  Plan, run, and monitor Fireworks training from a coding agent. Covers managed
-  SFT, DPO, ORPO, and RFT plus Training API serverless and dedicated workflows,
+  Plan, run, and monitor Fireworks training from a coding agent. Covers SFT, DPO,
+  ORPO, RL, and distillation on Training API serverless and dedicated trainers,
   complete cost and parameter confirmation, active monitoring, checkpoints,
   deployment, resume, and teardown. Use for explicit train, fine-tune, deploy,
   or resume requests. Use research when method, data, or evaluation is unclear;
@@ -73,22 +73,13 @@ local run state. Telemetry must never block or slow training.
 
 Never guess current models, shapes, prices, limits, or defaults. Never quote an excluded deployment/inference rate unless fetched in this transcript; otherwise say `separately priced`. State promotion deadlines unambiguously (`2026-12-01T00:00:00-08:00` or through Nov 30 Pacific).
 
-## Authentication and execution surface
+## Execution surface
 
-The agent executes through the Fireworks Python SDK (`from fireworks import
-Fireworks`) or REST API with `FIREWORKS_API_KEY`. Use `firectl` only for
-read-only checks or for commands the user wants to run themselves.
-
-1. Check that `FIREWORKS_API_KEY` is set without printing it, then verify the
-   account with one read-only SDK call (for example a dataset or model `get`).
-2. If the key is missing, keep going on everything that does not need it (pick
-   the starter, draft the plan) and tell the user once how to add it: create a
-   key at <https://app.fireworks.ai/settings/users/api-keys>, then in the
-   agent's terminal run `read -s FIREWORKS_API_KEY && export FIREWORKS_API_KEY`,
-   or put it in a gitignored `.env`.
-
-Never ask for an API key in chat, echo it, or read it from another tool's
-credential files. Load `.env` inside each Python process.
+Use the Fireworks Python SDK or Training API for execution. Follow the
+[Fireworks quickstart](https://docs.fireworks.ai/getting-started/quickstart) to set up account access. Confirm the selected
+account with a read-only SDK call before launching. When account access is
+unavailable, continue planning. Use `firectl` for read-only checks and
+commands the user will run themselves.
 
 ## Easiest path
 
@@ -97,10 +88,10 @@ approval confirms it.
 
 | Workload | Default |
 |---|---|
-| Plain SFT on chat JSONL (text or vision) | Managed SFT via SDK `supervised_fine_tuning_jobs` |
+| Plain SFT on chat JSONL (text or vision) | Serverless Training API recipe |
 | User wants their own loop, in-session evaluation, or Tinker-style code | Serverless Training API |
 | RL, DPO on serverless, distillation, custom loss | Serverless Training API recipe |
-| Full-parameter, unsupported serverless model, reserved capacity, custom infra | Dedicated Training |
+| ORPO, full-parameter, unsupported serverless model, reserved capacity, custom infra | Dedicated Training |
 
 These are training surfaces. Serving a tuned model always needs an on-demand
 deployment; see the training-vs-serving table in `../fireworks-training/references/getting-started.md`.
@@ -113,20 +104,19 @@ preflight and plan in the same turn when evidence supports it. Do not add a
 ceremonial gate; ask only for a required fact that cannot be safely resolved or
 defaulted. The next complete approved plan launches.
 
-For Muse Glimmer starters, use
-`training/examples/sft/muse_glimmer_starter.py` (`plan`, `launch`, `watch`) and
-`../research/references/starter-jobs.md`. If the script is missing from the
-checkout, use the SDK calls in the [Training API quick reference](../fireworks-training/references/training-api.md#quick-reference-managed-and-serverless-sft).
+For Muse Glimmer, follow [the starter commands](../research/references/starter-jobs.md) with
+`--surface serverless` for `plan` and `launch`. If the script is missing, use
+the [Training API quick reference](../fireworks-training/references/training-api.md#quick-reference-serverless-sft).
 
 ## Read-only preflight
 
 Confirm in as few calls as possible:
 
 1. Account, authentication, model support, and tokenizer compatibility; automatically recover missing/incorrect tokenizers with [tokenizer recovery](../fireworks-training/references/sdk-recipes.md#tokenizer-recovery).
-2. Dataset existence, `READY` state, format, row count, and split. For local
-   files: schema, roles, empty or malformed rows, duplicates, leakage, and
-   token lengths. Account datasets cannot be downloaded by default.
-3. Evaluator, reward, or preference-data contract when relevant.
+2. Input file availability, format, row count, and split. For local files,
+   check schema, roles, empty or malformed rows, duplicates, leakage, and
+   token lengths.
+3. Evaluator, reward, or preference-data contract; for sandboxed RL, [sandbox performance preflight](../fireworks-training/references/rl-agentic.md#remote-sandbox-performance-preflight).
 4. Held-out evaluation and success metric.
 5. Cookbook commit, SDK version, [LR schedule](../fireworks-training/references/sdk-recipes.md#learning-rate-schedule-sft-and-dpo), [LoRA continuation compatibility](../fireworks-training/references/sdk-checkpoints.md#before-planning-lora-continuation), and [checkpoint evaluation plan](../fireworks-training/references/sdk-checkpoints.md#save-evaluate-and-promote-a-chosen-checkpoint) for Training API work.
 
@@ -136,19 +126,19 @@ Do not upload or create resources during preflight.
 
 Read `references/cost-estimation.md`. For a direct route comparison, lead with totals and recommend the lowest-cost compatible route unless the user named another priority.
 
-1. Calculate Managed SFT or DPO only after resolving rendered token volume,
-   tuning mode, exact path context, and the current published rate.
+1. Resolve rendered token volume, tuning mode, exact path context, and the
+   current published rate before calculating.
 2. Calculate Serverless SFT from trainer tokens. For DPO, return an unpadded
    baseline with policy train tokens plus one-time all-uncached reference
    prefill; list padding and optional sampling as excluded work.
-3. Apply the dated Muse Glimmer LoRA SFT promotion (Managed SFT, Serverless
-   Training API SFT) exactly as in `references/cost-estimation.md`; RL is not
+3. Apply the dated Muse Glimmer LoRA SFT promotion (Serverless Training API
+   SFT) exactly as in `references/cost-estimation.md`; RL is not
    covered. Price excluded operations separately.
 4. Do not calculate vision SFT, DPO, or RL without visual token accounting,
    except a qualifying `$0` promotional SFT line; visual tokens still gate context.
 5. Do not calculate Dedicated SFT or DPO. Direct the user to
    <https://docs.fireworks.ai/fine-tuning/cost-estimator>.
-6. Do not calculate Managed ORPO until its billing contract is documented.
+6. Managed SFT, DPO, and ORPO no longer accept jobs; do not plan or price them.
 7. Route RL, embedding, IGPO, and distillation estimates to
    the Training team with method-specific assumptions.
 
@@ -193,8 +183,8 @@ exact command and ask the user to run it.
 2. Create resources with stable IDs. If a response is lost or reports
    `AlreadyExists`, query the planned ID and reuse only an exact match.
 3. Stay actively monitoring while a run is in progress. State alone is not
-   progress; report the numeric signal (Managed `job_progress.percent` and
-   epoch, or Training API step, loss, and gradient norm). Check render samples
+   progress; report the numeric signal (Training API step, loss, and
+   gradient norm). Check render samples
    and queue status per `../fireworks-training/references/execution-notes.md`.
 4. On the approved no-progress timeout, gather evidence and route to `debug`.
    Never launch a replacement before reconciling the prior run.
@@ -233,7 +223,7 @@ For Training API SFT and RL, pass `emit_grad_norm_metrics=True` to each
 
 1. Validate locally before upload; report bad rows and the proposed fix instead
    of silently dropping or rewriting them.
-2. Prefer the easiest compatible path: Managed, then Serverless, then Dedicated.
+2. Prefer the easiest compatible path: Serverless, then Dedicated.
 3. Prefer maintained cookbook recipes over blank custom loops.
 4. Keep quota, billing, capacity, user configuration, and platform failures
    distinct.

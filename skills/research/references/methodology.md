@@ -107,12 +107,12 @@ case_study:               # omit for example or recipe
 cookbook_entry_tier: case_study | example | recipe
 cookbook_entry_path: training/...
 implied_method: sft | dpo | orpo | rft | igpo | distillation | embedding
-suggested_path: managed | serverless | training_api_dedicated
+suggested_path: serverless | training_api_dedicated
 supervision_signal:
 notebook:                # when applicable
 readme:
 dataset_plan:
-  source: local | account_preloaded | cookbook_bundled | huggingface | labeling_required
+  source: local | cookbook_bundled | huggingface | labeling_required
   candidates: []
 eval_plan:
   metric:

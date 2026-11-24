@@ -24,7 +24,7 @@ recipes/experiment/   Loops not yet stable (serverless async RL, SAO/PPO)
 utils/                Reusable pieces recipes assemble: config, data, losses,
                       rollout helpers, metrics (structured, per step)
 examples/             Task code + one recipe call; no loop logic
-  muse_glimmer/        Free first fine-tune walkthrough (Managed and serverless SFT)
+  muse_glimmer/        Free first fine-tune walkthrough (serverless SFT)
   sft/ dpo/ orpo/ embedding/ distillation/
   rl/                 deepmath (text) · visual_toolbench (vision) ·
                       frozen_lake (multi-turn env) · multihop_qa (IGPO) ·
@@ -86,11 +86,13 @@ Self-contained, runnable notebooks in [`case-studies/`](case-studies/) — each 
 | [reasoning_rl](case-studies/reasoning_rl) | GRPO via Training API (the legacy managed RFT notebook no longer runs) | GSM8K | Improve step-by-step reasoning | [deepmath](examples/rl/deepmath/) |
 | [embedding_support_search](case-studies/embedding_support_search) | Contrastive embedding fine-tuning (`embedding_loop` recipe) | Airbnb Help Center scenarios | Retrieve the help article that *governs* a situation, not the one that sounds like it | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai-external/cookbook/blob/main/training/case-studies/embedding_support_search/airbnb_policy_embedding.ipynb) |
 | [agentic_rl_text2sql](case-studies/agentic_rl_text2sql) | Serverless tool-calling GRPO (Training API SDK) | BIRD text-to-SQL | Train a multi-turn tool-calling SQL agent; evaluate on unseen (out-of-distribution) databases | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai-external/cookbook/blob/main/training/case-studies/agentic_rl_text2sql/sql_agent_rl_loop.ipynb) |
-| [sft_bfcl_toolcalls](case-studies/sft_bfcl_toolcalls) | SFT on the Training API: serverless, dedicated, and managed compared (Python SDK) | xLAM function-calling-60k + xlam-irrelevance-7.5k, scored on BFCL V4 non-live | Fix tool-call emission/abstention on a public benchmark, not a metric we invented | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai-external/cookbook/blob/main/training/case-studies/sft_bfcl_toolcalls/bfcl_toolcall_sft.ipynb) |
+| [sft_bfcl_toolcalls](case-studies/sft_bfcl_toolcalls) | SFT on the Training API: serverless and dedicated compared (Python SDK) | xLAM function-calling-60k + xlam-irrelevance-7.5k, scored on BFCL V4 non-live | Fix tool-call emission/abstention on a public benchmark, not a metric we invented | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai-external/cookbook/blob/main/training/case-studies/sft_bfcl_toolcalls/bfcl_toolcall_sft.ipynb) |
 | [multilora_fleet](case-studies/multilora_fleet) | LoRA SFT + multi-LoRA serving (Python SDK) | MASSIVE (51 locales) | One deployment, a per-tenant specialist for every locale | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai-external/cookbook/blob/main/training/case-studies/multilora_fleet/multilora_fleet.ipynb) |
 | [grpo_countdown](case-studies/grpo_countdown) | Serverless non-agentic GRPO (Training API SDK) | TinyZero Countdown | Own the single-turn GRPO loop on serverless; same algorithm as a dedicated config swap | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai-external/cookbook/blob/main/training/case-studies/grpo_countdown/countdown_grpo.ipynb) |
 
-**Setup.** Follow the install instructions below, using `uv pip install -e '.[eval]'` to include the SDK and Eval Protocol, and create a `.env` with `FIREWORKS_API_KEY` (`FIREWORKS_ACCOUNT_ID` for the deploy/RFT cells). A couple of case studies add extras, noted in their own READMEs. Train/deploy cells provision real GPU and cost money. Each folder has its own README with the specifics.
+**Setup.** Follow the [Fireworks quickstart](https://docs.fireworks.ai/getting-started/quickstart) and install the Cookbook with
+`uv pip install -e '.[eval]'`. Check each case study for additional dependencies.
+Training and deployment cells create billable resources.
 
 ## Open Weight Room
 
@@ -120,16 +122,18 @@ in editable mode:
 git clone https://github.com/fw-ai-external/cookbook.git && cd cookbook/training
 uv venv --python 3.12 && source .venv/bin/activate
 uv pip install -e .                      # installs the SDK and recipe dependencies
-export FIREWORKS_API_KEY=...             # or put it in training/.env
 python -m training.examples.sft.train_sft --help
 ```
 
 The `eval` and `dev` extras install `eval-protocol==0.3.33` from PyPI,
 which supports the tested LiteLLM 1.105.0 release.
 
-Each recipe's `Config` dataclass documents its fields. Leave `TrainerConfig()`
-empty for SDK-selected defaults, or set `training_shape_id`; deployments resolve
-their shape from the training shape. Weight sync, shapes, HSDP replicas,
+Each recipe's `Config` dataclass documents its fields. Trainer-only recipes
+(SFT, DPO, ORPO, embedding) can leave `TrainerConfig()` empty so the backend
+picks a shape. A new dedicated rollout deployment (RL or distillation) needs
+a deployment shape from the validated training profile or an explicit versioned
+override. See [Training shapes](../skills/fireworks-training/references/sdk-shapes.md).
+Weight sync, shapes, HSDP replicas,
 reservations and distillation teachers are covered by the
 [skills](../skills/GETTING-STARTED.md) and the
 [configuration reference](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/reference).
@@ -146,18 +150,3 @@ pytest tests/
 
 SDFT is maintained in the [Fireworks Tinker-Cookbook fork](https://github.com/fw-ai-external/tinker-cookbook).
 See the [customer guide](docs/sdft.md) for where to start.
-
-## Publishing releases
-
-Releases are managed by the maintainers' private CI after the reviewed promotion
-PR merges. Promotion commits the calendar version in `pyproject.toml` and the
-root package entry in `uv.lock` before review. For example,
-`cookbook-v2026.1.2.1` publishes package version `2026.1.2.1`.
-
-The publisher builds the wheel from the source distribution, validates both
-artifacts, publishes to PyPI, and verifies the installed version. This repository
-has no publishing workflow or stored release credentials. Contact a maintainer
-to retry a failed release.
-
-The `eval` extra pins `eval-protocol==0.3.33`. Release builds reject direct URL
-dependencies in all extras so Git pins cannot break PyPI publication.

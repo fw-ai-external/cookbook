@@ -7,23 +7,18 @@ own, rather than the one-call managed path — scored on the **Berkeley Function
 
 **Muse Glimmer 30B on the serverless trainer pool**: no provisioning, per-token billing, attach in
 seconds. §6 trains, §7 drops to the three raw API calls underneath and runs them live, §8 deploys
-and scores. §9 then shows the *same* `Config` expressed for dedicated and as a managed job, so the
-differences between the three paths are concrete rather than abstract.
+and scores. §9 then shows the *same* `Config` expressed for dedicated, so the differences between the
+paths are concrete rather than abstract. (§9's managed-job cell is historical: Managed SFT no
+longer accepts jobs.)
 
-Fireworks has [three ways to run SFT](https://docs.fireworks.ai/fine-tuning/finetuning-intro):
-**[Managed Training](https://docs.fireworks.ai/fine-tuning/managed-finetuning-intro)** (a job spec,
-no loop), the **[Serverless Training API](https://docs.fireworks.ai/fine-tuning/training-api/serverless)**
+Fireworks runs SFT on the Training API in two ways: the
+**[Serverless Training API](https://docs.fireworks.ai/fine-tuning/training-api/serverless)**
 (your loop, a shared pool, per-token billing), and the
 **[Dedicated Training API](https://docs.fireworks.ai/fine-tuning/training-api/dedicated)** (your
 loop, your GPUs, LoRA or full-parameter). §2 covers choosing between them.
 
 On tuning modes: serverless is **LoRA only** (frozen shared base weights), and dedicated is the
-documented path for **full-parameter**. Managed is documented as
-[LoRA only](https://docs.fireworks.ai/fine-tuning/managed-finetuning-intro#tuning-modes-and-context-length)
-too — its job API does accept `lora_rank=0` as a full-parameter request, but that is admitted only
-for base models flagged full-parameter-tunable, and the flag is not published on the model resource
-for you to check. Plan on the Training API for full-parameter unless Fireworks has confirmed
-otherwise for your model.
+documented path for **full-parameter**.
 
 This notebook is for you if you want the Training API end to end, graded against a public
 benchmark rather than a metric we invented — or a template to point at your own tool-calling data,
@@ -69,7 +64,7 @@ when RL is the goal, because an unparseable rollout scores zero regardless of it
 ## The data
 
 [`Salesforce/xlam-function-calling-60k`](https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k)
-for positives (CC-BY-4.0, **gated — accept the terms once and set `HF_TOKEN`**) and
+for positives (CC-BY-4.0, **gated — request access on the dataset page**) and
 [`MadeAgents/xlam-irrelevance-7.5k`](https://huggingface.co/datasets/MadeAgents/xlam-irrelevance-7.5k)
 for abstention negatives (CC-BY-4.0, ungated). Same three columns in both, so one parser covers
 them; a negative is simply a row whose `answers` is `[]`. ~13.8k rows by default.
@@ -106,8 +101,8 @@ in-session sampler on the serverless trainer or an on-demand deployment. Trained
 on-demand only, from every path.
 
 It publishes two dedicated shapes as well — `muse-glimmer-30b-131k-lora` (`LORA_TRAINER`, 1 × B200)
-and `muse-glimmer-30b-131k` (`POLICY_TRAINER`, 2 × B200) — and is enabled for Managed SFT. §9 shows
-the dedicated and managed configs without running them.
+and `muse-glimmer-30b-131k` (`POLICY_TRAINER`, 2 × B200) . §9 shows
+the dedicated config without running it.
 
 **Check the [Models catalog](https://docs.fireworks.ai/fine-tuning/models) (Availability =
 Serverless) for the pool as it is today** rather than trusting the ids here; the pool is small and
@@ -118,7 +113,7 @@ it moves. §7 has a probe cell that answers it from code.
 Three separate things have to line up before a model will train, and they fail in different ways:
 
 1. **Does a training shape exist?** `firectl training-shape list` — no shape, no training.
-2. **Is the method enabled?** The catalog's `hasServerless` / `managedSft` flags differ per model.
+2. **Is the method enabled?** The catalog's `hasServerless` flag differs per model.
 3. **Does your account's policy allow it?** An account can carry a model-access policy with
    per-model rules, and `allowTraining` is separate from `allowServerless` and
    `allowDedicatedDeployments`. When it blocks you, training fails with an HTTP 403 that says
@@ -175,8 +170,8 @@ uv pip install -e .
 uv pip install "bfcl-eval==2025.12.17" datasets openai matplotlib python-dotenv soundfile
 ```
 
-`.env` needs `FIREWORKS_API_KEY`, `FIREWORKS_ACCOUNT_ID`, and `HF_TOKEN`. Optional:
-`WANDB_API_KEY` / `WANDB_ENTITY`.
+Connect your account using the [Fireworks quickstart](https://docs.fireworks.ai/getting-started/quickstart).
+See the notebook for external dataset and optional experiment tracking setup.
 
 Installing the cookbook pulls `fireworks-ai[training]`, which is what provides the training SDK and
 `tinker`. Plain `pip install fireworks-ai` does **not** — and the training extra needs Python ≥ 3.11.
@@ -242,8 +237,6 @@ is pinned to commit `f7cf735`, so scores stay comparable to the published board.
   read from the SDK, so from code the only check is to attempt the attach, which is what §7's probe
   does. Skip it and you get a 400: `create_model: ... is not available for serverless training`, or
   `no eligible shared trainer found for base model ...`.
-- **Serverless training needs an account-scoped API key.** A multi-account key fails with
-  `create_session: account not found`, which does not name the real cause.
 - **Serverless requires `lora_rank > 0` and an explicit `max_seq_len`** — the pool is LoRA-only, and
   there is no training shape to resolve the sequence length from, so you choose it (up to the
   model's pool context, which is far more than this notebook asks for).

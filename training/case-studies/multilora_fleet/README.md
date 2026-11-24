@@ -1,5 +1,7 @@
 # Multi-LoRA: One deployment, many specialists
 
+> **This notebook no longer runs.** It uploads an account dataset and submits a managed SFT job per adapter, and Fireworks no longer accepts either. For new runs, use the SFT recipe (`training/examples/sft/train_sft_serverless.py`) for each adapter on the Training API; see the [migration guide](https://docs.fireworks.ai/fine-tuning/training-api/migrate-from-managed).
+
 In this example we'll train a separate little "adapter" for each customer (here, each language) and then serve *all of them* from a single model deployment — routing each request to the right specialist on the fly.
 
 **Is this you?** You serve lots of tenants, domains, or languages; one shared model does an okay job for everyone but a great job for no one — and running a full dedicated model per tenant would break the budget. This pattern gives each tenant its own behavior without its own GPU bill.

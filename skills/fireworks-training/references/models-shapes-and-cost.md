@@ -12,15 +12,7 @@ Locked by the shape (not user-overridable): `acceleratorType`, `acceleratorCount
 
 **Pick one:** find your base model in the catalog, confirm the supported method and surface, then pick the compatible shape for LoRA or full-parameter work. Pass the full path, for example `accounts/fireworks/trainingShapes/qwen3p5-9b-256k`. Live catalog: https://docs.fireworks.ai/fine-tuning/models.md
 
-```python
-service = FiretitanServiceClient.from_firetitan_config(
-    api_key=api_key,
-    base_model="accounts/fireworks/models/qwen3p5-9b",
-    training_shape_id="accounts/fireworks/trainingShapes/qwen3p5-9b-256k",
-    lora_rank=0,   # 0 = full-parameter; positive int (16, 64…) = LoRA
-    lora_alpha=32, # LoRA scaling factor; ignored for full-parameter training
-)
-```
+Set the selected shape on the recipe's trainer configuration. See [Training shapes](sdk-shapes.md) for an example.
 
 ## Supported base models
 
@@ -40,7 +32,7 @@ The platform maps GPU class + count to the model — **let it**. Larger/MoE → 
 
 ## Pricing model
 
-**Per training token** — managed SFT and DPO where listed. **Read current rates from the live [pricing page](https://fireworks.ai/pricing)** rather than trusting a hardcoded table.
+**Per training token** — Serverless Training API work. **Read current rates from the live [pricing page](https://fireworks.ai/pricing)** rather than trusting a hardcoded table.
 
 **Runtime-priced resources** — dedicated Training API resources follow current pricing. Dedicated trainers and deployments use GPU-hour rates and are metered by runtime. Never claim a free RFT tier unless the live pricing page explicitly shows one.
 
@@ -76,4 +68,4 @@ deploy_cost  = days × 24 × gpu_count × $/GPU-hr  # reduce for scale-to-zero /
 - **Use the full shape path** and let the SDK pin the version.
 - **Use a compatible shape's context** — read the selected method and tuning mode's `max_supported_context_length`, not the model-level maximum.
 - **Always check the live catalog + pricing** — generated from the live registry; they change.
-- **Billing-aware:** use the current pricing page for the selected managed method or Training API infrastructure; label unknown rates rather than generalizing.
+- **Billing-aware:** use the current pricing page for the selected Training API infrastructure; label unknown rates rather than generalizing.

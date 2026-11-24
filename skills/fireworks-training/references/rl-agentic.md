@@ -88,106 +88,15 @@ The following additional text/function-tool pairs also use `full_history`:
 | `glm-5p3-flash` | `glm53_flash_preserve_thinking` | `zai-org/GLM-5.3-Flash@690b705278a3a58e538fcb37c2ca8b5f9511213c` |
 | `kimi-k3p1-pro` | `kimi_k31` | `moonshotai/Kimi-K3.1-Pro@d9e99b0792a5e93b78ea9bea62a68167e36ddd9e` |
 
-Qwen3.6-35B-A3B has a candidate `qwen3_6_preserved` renderer pinned to
-`Qwen/Qwen3.6-35B-A3B@995ad96eacd98c81ed38be0c5b274b04031597b0`.
-It explicitly enables thinking and preserves prior reasoning; the template
-default drops prior reasoning. This pin passed six live text/tool token-parity
-cases. Validate your exact serving deployment before training with this
-candidate. Use `full_history`.
-
-GLM-5.3 Flash is distinct: `glm53_flash.py` does not inherit the GLM-5.3 adapter.
-Prompts use `apply_chat_template`, `clear_thinking=False`, and `reasoning_effort="max"`.
-Only text/tool primitives verified by Flash-specific tests are reused.
-Image, video, and audio payloads are rejected, not rendered as token-only placeholders.
-
-The V4 Flash/Pro checkpoints have no Jinja chat template. Both versions use
-the same implementation, delegating rendering and parsing to the reviewed
-`encoding_dsv4.py` shipped in the cookbook package. Tests verify it byte-for-byte
-against the certified upstream SHA-256; loading never imports the checkpoint's
-encoder Python. The contract remains thinking mode, low effort, and preserved
-reasoning history. Do not substitute a preview tokenizer, a hand-written Jinja
-translation, or the separate SFT renderer for this exact-token contract.
-
-Kimi K3.1 Pro ships a tiktoken vocabulary and no `tokenizer.json`, so TITO
-cannot use the checkpoint tokenizer directly. Build the certified fast
-tokenizer once with `python -m training.utils.kimi_k31_tokenizer <out-dir>`
-(it reads only the pinned data files) and pass `<out-dir>` as
-`--tokenizer-model`. Rendering uses the reviewed `encoding_k3.py` shipped in the
-cookbook package and never imports the checkpoint's Python. `kimi_k31` renders
-no thinking-effort message, like a request without `reasoning_effort`;
-`kimi_k31_<low|high|max>` pin one effort; a `medium` request folds into `high`.
-Text and function tools only.
-
-V4.1 retains its own pinned Jinja prompt and high-effort (75), text/function-tool
-contract. Its publisher parser now ships in the cookbook package too; neither
-host nor sidecar imports `encoding.py` from a model artifact. This does not add
-image or namespace support to TITO.
-
-V4/V4.1 tokenizer loads use `trust_remote_code=False`. Recipes forward the selected
-base model separately from tokenizer overrides so changed tokenizer metadata
-cannot reopen code loading for a known migrated model. Callers of the shared tokenizer
-helpers should pass `base_model` when available. Tokenizer revisions, renderer
-selection and tokenization backends retain their existing behavior; arbitrary
-renamed models without family metadata are not identified by this name signal.
-Code-loading restriction is separate from renderer identity: reviewed tokenizer
-bytes still force installed tokenizer/processor code when mutable metadata names
-another family. This does not select a V4 renderer or change another family's
-encoder; neither data match grants authenticity or permission to execute Python.
-Managed runs also retain the model record's `base_model_type` independently of
-its resource name, staged tokenizer files, and renderer choice. For V4/V4.1 this
-metadata is restrict-only: it keeps tokenizer/processor loads code-free without
-changing the selected model or renderer. Direct cookbook configs leave it unset
-by default. Cookbook loaders retain this context even with the supported minimum
-SDK, omitting only an unsupported SDK metadata argument. Current-source SDKs also
-retain the type for their explicit code-free tokenizer load. This does not retrofit
-the released minimum SDK's standalone tokenizer helper, which can ask for trust
-when no installed mapping exists. The managed runtime bundles its matching SDK and
-cookbook source. No dependency upgrade is required.
-
-V4.1 Flash has a different DSML protocol and its own pinned chat template.
-Prompts delegate to `apply_chat_template`, cross-checked against its native
-`encoding/encoding.py`; output parsing delegates to that hash-verified native
-module, also bundled offline. Its fixed contract is thinking mode, high effort
-(75), and `drop_thinking=False`. Only text and unqualified function tools are
-admitted; image markers and tool namespaces are rejected. Do not alias it to V4.
-
-Applying a chat template constructs a prompt; it does not parse sampled
-reasoning/tool protocols, preserve response argument order, verify tokenizer
-identity, or package an offline runtime. Those are the remaining TITO adapter
-responsibilities. The sidecar settings choose the lineage and prompt construction modes. Full rendering still checks exact sampled token
-prefixes; template rewrites or tokenization differences can split a segment.
-HF/native-encoder parity is not full served-model certification: perform live
-prompt-token and sampled-completion verification on the exact deployment before
-training. Shape validation alone is not renderer validation.
-
-The offline SFT/DPO renderer registry does not establish TITO or lightweight
-sidecar support. Both builders reject unsupported or mismatched pairs.
-
-For renderer review, submit the model/tokenizer repository and exact
-revision, tokenizer fingerprint, renderer implementation, and tests covering
-text, reasoning, null tool-only content, single/parallel tool calls, argument
-order, tool results, stop boundaries, and multi-turn history rewrites. Include
-raw sampled token IDs and aligned logprobs from a live run, plus token-for-token
-HF-template and sampled-completion round-trip comparisons. The
-[`renderer-verification.md`](renderer-verification.md) workflow supplies live
-parity evidence. HF parity alone does not certify sampled-history continuity.
-Adapters can use `training.renderer.tito.plugins`; registration does not certify
-a renderer. Certification applies only to the exact pinned model/tokenizer pair.
-
-For another model family, implement the shared loss-agnostic conversation and
-assistant-parse primitives, characterize complete multi-turn
-text/reasoning/tool/stop rendering against live sampled token IDs, add a
-reviewed source-controlled TITO certification, and run the renderer verifier
-before training. The template need not be incrementally appendable, but the
-complete rendered prompt, output parser, and aligned sampled arrays must be
-exact. Incremental prompt construction is experimental and is a separate,
-stronger capability: it
-also requires append-only message matching, synthetic-anchor suffix tests, and
-model-specific token-junction coverage. Until that work lands, use a certified
-full-history model implementation or wait for support; do not bypass either
-check merely because an SFT renderer or chat template exists. Defining
-`prepare_incremental_prompt` is an explicit renderer-author assertion, not
-automatic coverage inherited from the base renderer certification.
+Use the matching renderer for the exact model. These DeepSeek, GLM Flash,
+and Kimi pairs support text and function tools. Check tool calls, tool results,
+multi-turn history, and token alignment on your deployment before training.
+The [renderer verification guide](renderer-verification.md) covers these
+checks. For Qwen3.6-35B-A3B, validate `qwen3_6_preserved` in `full_history`
+mode on your deployment before training. For Kimi K3.1 Pro, build the
+compatible tokenizer with
+`python -m training.utils.kimi_k31_tokenizer <out-dir>` and pass that directory
+as `--tokenizer-model`.
 
 ### Host-side runtime for isolated Docker agents
 
@@ -208,24 +117,12 @@ await sidecar.start()
 endpoint = sidecar.create_trajectory()
 ```
 
-Pass `endpoint.openai_base_url` and its per-trajectory `api_key` to the agent
-through your private harness configuration. No SDK/tokenizer install in the
-problem image or `--network host` is required. The default remains `127.0.0.1`;
-only specific IPv4/IPv6 addresses are accepted, not wildcard binds or hostnames.
-Binding is not a security boundary by itself: use dedicated Docker networks
-and host firewall rules to restrict which containers can reach the listener
-and other host services. Each trajectory still requires its own credential.
-The existing Harbor adapters continue to launch their sidecar in the sandbox.
+Use the trajectory endpoint with the agent's OpenAI-compatible harness.
+Keep Docker network access scoped to the agent container. Standard Harbor
+adapters work with local Docker and supported remote sandbox providers.
 
-The sidecar buffers an entire completion before emitting assistant SSE data;
-it does not stream model tokens as they arrive. Streamed tool calls carry
-zero-based `index` values; non-streaming responses and stored lineage do not.
-Responses preserve parser-produced function argument strings, including key
-order and whitespace. Canonical JSON is used separately for semantic history
-and request identity. Semantic equivalence never overrides exact prompt-token
-alignment: if the harness or template changes history tokens, the configured
-drift policy still applies. GLM template inputs map null assistant content to
-an empty string so it cannot render as literal `None`.
+TITO preserves tool arguments and validates token alignment across turns.
+Use the configured drift policy when the harness or renderer rewrites history.
 
 ### Slime reference
 
@@ -332,15 +229,8 @@ retirement. New lineage features and optimizations target tree only.
 Linear receives compatibility fixes until retirement. The v1 reader remains
 available for artifacts that meet the current shared replay contract.
 
-In tree mode, each policy call selects the deepest unique committed
-message prefix. Reusing its token checkpoint requires the same render
-contract. A fork begins a new
-segment with its shared prompt masked. Later requests can resume that segment
-after calls to another branch. Token drift that would overwrite sampled
-tokens on an older branch starts a new segment. Ambiguous checkpoints use
-the configured mismatch policy, and a length-truncated checkpoint cannot
-extend its segment. A change in routing or sampling replay evidence also
-starts a new segment so its token-aligned arrays stay complete.
+Tree lineage can resume each branch from its previous checkpoint. Prompt
+rewrites that change sampled tokens can create a new segment.
 
 Tree lineage can improve training efficiency by reducing repeated prompt
 tokens and the number of trainable segments when exact branch continuations
@@ -356,12 +246,8 @@ sequence-normalized metrics. During migration, keep linear for runs that
 need to reproduce legacy sequence grouping and weights. Validate that
 weighting before moving those runs to tree.
 
-Both lineages require a Training SDK with the native TITO extension. Use a
-Linux x86-64 controller and sandbox that can load the same SDK native wheel
-(CPython 3.11 or later, glibc 2.34 or later). The SDK
-owns token alignment, lineage, and the sidecar runtime. Harbor
-owns sandbox and harness execution plus clean verification. The Cookbook
-combines SDK evidence with harness outcomes to build training samples.
+Both lineages require a Training SDK with the native TITO extension. Follow
+the [SDK setup guide](sdk-setup.md) on the training host and in the sandbox.
 
 Both lineages support the same prompt modes. `full_history` is the default and
 renders the complete request before checking token alignment. `incremental`
@@ -397,8 +283,7 @@ Keep these identities separate:
 | Retry attempt ID | Prevents failed trace state and cache affinity from leaking into a new attempt |
 
 Each rollout attempt binds a stable typed `prompt_cache_key` for all policy and
-auxiliary model calls. It is deliberately different from the TITO
-trajectory ID and loopback bearer credential. A cache hit is an optimization
+auxiliary model calls. Keep this key separate from the TITO trajectory ID. A cache hit is an optimization
 and never proves token lineage. Compaction keeps the rollout affinity key even
 though the new segment's first request establishes a different prefix on that
 replica. Create a fresh trajectory and affinity key for a retry.
@@ -408,6 +293,13 @@ session service. Document who owns session creation, routing, rollback,
 collection, deletion, sampler-version changes, and abandoned-request cleanup.
 
 ## Failure and retry policy
+
+Let admitted trajectories finish and score eligible results under the run's
+reward and version rules. Adjust admission to limit new work under load.
+Avoid intentionally cancelling in-flight requests or dropping otherwise
+valid trajectories to improve scheduling. Explicit request-ID cancellation
+is outside the Cookbook rollout policy. Faults and shutdown still use the
+normal cleanup path.
 
 Classify failures at the rollout boundary:
 
@@ -419,8 +311,7 @@ Classify failures at the rollout boundary:
 | Unexpected ordinary adapter exception | Log the traceback and discard at the adapter's documented trajectory boundary, or propagate if the adapter does not own that boundary |
 | Control-plane cancellation | Propagate; do not convert it to a trajectory drop |
 
-A retry is a new attempt: clean the environment, TITO trajectory, serving
-affinity, and temporary credentials before starting it. Return `None` after exhausted
+Start retries in a fresh environment with a fresh trajectory. Return `None` after exhausted
 retries to keep malformed data out of group assembly. Supporting an explicit
 terminal-failure reward is useful, but keep it an opt-in algorithm choice.
 
@@ -444,38 +335,9 @@ truncations, and sampler failures follow the existing failure policy.
 
 ## Responsibility split
 
-The SDK owns protocol-neutral request normalization, exact-token
-trajectory state, full-prompt drift classification, bounded masked realignment,
-safe segmentation, transaction/idempotency, typed sampler facts, serving
-affinity, metrics, buffered OpenAI transport, and optional local JSONL debug
-evidence. The compact `.tito` artifact remains authoritative. The SDK contains
-no OpenCode, Pi, Mini-SWE-Agent, Harbor, or model-family switch.
-
-Each chat response reports OpenAI `usage` from the exact prompt and sampled
-token counts, with cached prompt tokens when the server reports them. A
-streamed response adds the final `choices: []` usage chunk when the request sets
-`stream_options.include_usage`. Harness auto-compaction, such as OpenCode's,
-measures context from these counts.
-
-The existing cookbook renderer registry owns tokenizer/message conversion,
-reasoning and tool parsing, the loss-agnostic full-conversation primitive, and
-reviewed TITO certification artifacts. SFT, DPO, and TITO share that primitive
-but keep separate training materializers.
-
-Keep these in each harness adapter:
-
-- agent and environment APIs;
-- policy-versus-auxiliary classification and compaction entry points;
-- harness retry identity and compatibility settings;
-- OpenCode/Pi/Mini-SWE-Agent/Harbor/container lifecycle and local tool timeouts;
-- verifier extraction, semantic trace acceptance, retry policy, and artifacts.
-
-The frozen `training.utils.rl.agent` and `rollout.message` modules remain only
-as a public-import compatibility island. Production examples do not import or
-extend them.
-
-The rollout function is the gate between those layers. It should return only a
-valid logical run or `None`; malformed partial data must not reach the trainer.
+TITO records model turns and checks token alignment. The harness manages
+the agent, tools, and sandbox. The verifier provides a reward for each
+completed trial. The Cookbook uses those outputs to build training samples.
 
 ## Calibration checklist
 
@@ -549,7 +411,7 @@ Mini-SWE-Agent are alternate adapters over the same harness-neutral contract;
 they are not dependencies of the default path. The shipped Pi command disables
 unrelated extensions and rejects `/tree` and `/fork`; Pi subagent/child support
 is not claimed. Supporting it requires the owning adapter to launch each child
-with a separately created TITO trajectory and credential. Fork only the adapter
+with its own TITO trajectory. Fork only the adapter
 pieces that match the target harness. Harbor is environment support, neither
 agent is required by `async_rl_loop`, and all retain the ordinary
 `rollout_fn(sample_prompt) -> RolloutRun | None` boundary.
@@ -561,95 +423,82 @@ Use `"docker"` for local containers and `"e2b"` or `"daytona"` for remote sandbo
 Install Harbor's Daytona extra with a Daytona SDK that supports streaming file
 downloads. The OpenCode example accepts `--harbor-environment daytona`.
 
-### One sandbox per trial, not per turn
+The environments share a rollout contract. Placement, CPU capacity, network
+overhead, and provider limits can change end-to-end performance.
 
-**The harness runs inside the sandbox.** The agent process (Pi, OpenCode,
-Mini-SWE-Agent) and the environment-local TITO sidecar both run *inside* the
-container or microVM, not on the client host. One sandbox is created per trial
-attempt and held for the whole trajectory:
+### Remote sandbox performance preflight
 
-1. the client uploads the sidecar bundle and its launch spec, then starts the
-   sidecar and waits for it to publish a loopback endpoint;
-2. the agent starts inside the sandbox and runs every turn there — each model
-   call goes agent → in-sandbox sidecar → inference deployment, and each tool
-   call executes in-sandbox next to the task data;
-3. the sidecar records exact prompt and completion tokens per turn into one
-   trajectory artifact;
-4. the trial terminalizes, the client collects artifacts, and the sandbox stops.
+**Treat remote sandbox performance as a separate scaling concern.** Sandbox
+setup, tools, verification, and data movement can dominate RL wall time and
+cause severe throughput regressions while model serving remains fast. Async
+overlap does not remove a sustained shortage of completed, valid rollouts.
+When recommending Harbor with a remote provider, include this caveat and a
+measurement plan before increasing training or rollout capacity.
 
-A turn is not a sandbox boundary, and neither is a segment split: multi-turn
-state lives in one sandbox for the trial's lifetime. Do not restructure this as
-client-driven remote commands — per-trial state, tool I/O, and exact-token
-capture all depend on the sandbox-local placement. A retry is the one case that
-gets a fresh sandbox, because a retried attempt is a fresh trajectory.
+The cookbook runs a client-side orchestrator and delegates sandbox execution
+to the chosen provider. This integration alone does not provide durable,
+Fireworks-hosted orchestration or guarantee sandbox colocation. Plan driver
+supervision, checkpoints, and restart recovery separately. Check provider
+placement, network latency, transferred bytes, and applicable transfer charges
+across the client, sandbox fleet, and Fireworks endpoints.
 
-### Credentials, in both modes
+Before scaling a remote run:
 
-The rules are the same for local and remote; only the provider key differs.
+1. Compare the same representative short, long, tool-heavy, and verifier-heavy
+   tasks with Docker and the remote provider, holding the model, harness,
+   token budget, task images, and reward contract fixed. Record CPU/memory
+   differences. Measure cold setup separately from warm-template execution.
+2. Test low concurrency and the intended rollout concurrency. Record completed,
+   valid rollouts per second, per-trial median and p95 wall time, verifier
+   tails, timeouts, retries, and drops. One successful trial does not establish
+   fleet throughput; raising concurrency can worsen CPU contention and provider
+   queueing.
+3. Break down `tito/trial/environment_setup_seconds`, `agent_setup_seconds`,
+   `agent_execution_seconds`, `verifier_seconds`, and `trial_wall_seconds`
+   (each under `tito/trial/`, with `_mean` and `_max` summaries). Agent execution
+   includes model calls and tool work; it is not pure inference time. Use
+   per-trial artifacts for percentiles and inspect failures too. Missing
+   timing data does not mean a phase was free.
+4. Inspect provider calls, artifact upload/download, and gaps between phases
+   alongside inference timing. Compare valid-rollout supply with training
+   demand using the [async RL timing metrics](async-rl-metrics.md#read-the-timing-boundary).
+   `perf/wait_time_ratio` measures client-loop wait, not physical GPU idleness.
+5. Set a workload-specific throughput and tail-latency acceptance target.
+   Recheck it after changing the provider, CPU allocation, images, harness, or
+   concurrency. Resolve the measured bottleneck before expanding the run.
 
-- **Inference credential** (both modes): reaches the sidecar *inside* the
-  sandbox through the launch spec, written as a private file and read once at
-  start. It is never baked into a task image or a prepared task context, and it
-  is scrubbed from every retained artifact before the trial directory is
-  handed back.
-- **Provider key** (remote only): the provider SDK reads its key from the
-  client environment. It stays on the client and never enters the sandbox —
-  the sandbox has no reason to create sandboxes.
-- **Local Docker needs no additional credential at all** beyond the inference
-  one: a running Docker daemon is the whole requirement.
+### Sandbox lifecycle
 
-Whatever you add to a rollout, keep the same two-place split: infrastructure
-credentials on the client, exactly one model credential inside the sandbox, and
-nothing in images or artifacts.
+Each trial uses one environment for the agent's full multi-turn attempt. A
+retry starts a fresh attempt. Measure setup, agent execution, verification and
+artifact collection separately on your own workload.
 
-### Where the time goes
+### Verification performance
 
-Measured with one agent, 4 tasks × 4 repeats per environment, trial
-concurrency above the trial count. Per completed trial, as a share of trial
-wall:
+The default `verifier_environment_mode` uses a separate environment for grading.
+Measure verifier time and tail latency under your intended concurrency.
 
-| phase | short tasks, remote | long tasks, remote | long tasks, local |
-|---|---|---|---|
-| environment setup | ~4% | <1% | <1% |
-| agent setup (sidecar install) | ~37% | ~1% | ~1% |
-| agent execution | ~41% | ~43% | ~94% |
-| verifier | ~3% | ~47% | ~4% |
-| inter-phase gaps | ~16% | ~9% | ~1% |
+If the verifier is your bottleneck, compare these options with measurements:
 
-Read this as a shape, not a constant. Sidecar install is a roughly fixed
-~10s remote / ~5s local, so it dominates short tasks and vanishes on long
-ones. Server-side generation is placement-invariant — the model spends the
-same time regardless of sandbox — so what actually differs between local and
-remote is everything *around* the model: tool-call latency, verifier cost, and
-the gaps between phases (provider round trips, which ran ~14× larger remote
-than local in the same comparison).
+- **Bound concurrency.** `HarborSettings.max_concurrent_trials` limits whole
+  trials. Separate verifier admission requires a Harbor/task integration
+  change; it is not a shipped independent cookbook concurrency setting.
+  Test whether a smaller cap reduces contention enough to improve throughput.
+- **Right-size verifier CPU and memory.** Check task resource requests and
+  actual utilization before increasing the provider tier. More concurrent
+  trials do not compensate for a CPU-starved verifier.
+- **Consider separate local verification** only through a task integration
+  that preserves the pinned tests, dependencies, candidate patch, isolation,
+  and reward semantics. Keep untrusted task code in an isolated environment;
+  never run it directly on the training host. Verification remains required
+  before its rollout can supply a graded training sample.
+- **Reuse the agent sandbox only when grading permits it.** Fresh verifier
+  isolation may be part of the reward contract. Reuse must not let agent
+  state or modified tests change the grade, and needs task-level validation.
 
-### The verifier is a second sandbox
-
-With `verifier_environment_mode` at its default, verification runs in its own
-sandbox rather than the agent's. On a remote provider that made the verifier
-the single largest phase of a long-task trial, with a heavy tail: the same
-task's verifier took ~1 minute at low concurrency and 25–50 minutes with three
-or four verifiers running at once, and one hit its verifier timeout outright.
-Locally the same suites ran in 26–107s with no concurrency sensitivity.
-
-If the verifier is your bottleneck, the provider tier is the *last* lever.
-Cheaper ones first:
-
-- **Cap verifier concurrency separately from trial concurrency.** The tail
-  tracks simultaneous verifiers, so a small semaphore around the verifier
-  phase converts tail into floor.
-- **Verify where compute is cheap.** Verification needs no model — running it
-  on the training host from the collected patch takes it off the remote
-  critical path entirely.
-- **Give the sandbox more vCPU.** Test suites are CPU-bound and task
-  definitions often declare only two.
-- **Reuse the agent sandbox** when the task's isolation model permits it, and
-  skip a second build and start per trial.
-
-Watch `tito/trial/verifier_seconds_max` next to its mean: a mean that tracks
-the max means a uniform cost, and a mean far below the max means a tail, which
-is a scheduling problem rather than a provider one.
+Watch `tito/trial/verifier_seconds_max` next to its `_mean`: a large gap
+indicates a tail worth investigating. Check task mix, resource contention,
+provider scheduling, and failures before attributing the cause.
 
 ### Choosing
 
@@ -657,8 +506,8 @@ Iterate locally — no provider latency, no template builds, full host CPU, and
 a debugger on the same machine — then scale out remotely for isolation and
 parallelism beyond one host. Prebuild remote templates in waves before
 rollouts fan out (`prebuild_e2b_templates`) so trials start from ready
-templates instead of building inline, and keep verification local when the
-task allows it.
+templates instead of building inline, and consider isolated local verification
+when the task allows it.
 
 For large prepared Dockerfile contexts, pin qualified E2B templates with
 `training.examples.harbor_rl.sandboxes.e2b.frozen.pin_e2b_context` and pass the

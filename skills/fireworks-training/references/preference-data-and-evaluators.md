@@ -9,7 +9,7 @@ Generate preference pairs and evaluators transparently in the user's workspace: 
 | User has | Recommended path |
 |---|---|
 | Ideal labeled answers | SFT. Do not manufacture preference pairs. |
-| Human or model-ranked pairs | DPO or ORPO. Normalize to the managed preference schema. |
+| Human or model-ranked pairs | DPO or ORPO. Normalize to the DPO preference schema. |
 | Prompts only, plus a clear preference criterion | Generate pairs, review a sample, then run DPO or ORPO. |
 | Prompts plus objective correctness | Training API RL with an inline reward. |
 | Open-ended quality criteria | Write and calibrate an LLM-judge rubric before training. |
@@ -49,7 +49,7 @@ Do not include secrets, private file paths, or hidden chain-of-thought in the ou
 
 ### 4. Judge and normalize
 
-Map the winner into the managed DPO schema:
+Map the winner into the DPO preference schema:
 
 ```jsonl
 {"input":{"messages":[{"role":"user","content":"..."}]},"preferred_output":[{"role":"assistant","content":"better"}],"non_preferred_output":[{"role":"assistant","content":"worse"}]}
@@ -66,9 +66,11 @@ Drop ties and invalid pairs by default. Do not randomly break ties. Report:
 
 Randomize candidate order before judging and check for position bias. If one generator wins nearly every row, the pairs may be too easy to teach useful preferences.
 
-### 5. Review, then upload
+### 5. Review and validate the file
 
-Show the user representative pairs and the aggregate quality report. Upload only after approval. Preserve the generated JSONL and provenance beside the run manifest. Then run the local DPO validator and `firectl dataset create`.
+Show the user representative pairs and the aggregate quality report. Preserve
+the generated JSONL and provenance beside the run manifest. Run the local DPO
+validator and pass the file to the Training API recipe.
 
 ## Author an evaluator
 

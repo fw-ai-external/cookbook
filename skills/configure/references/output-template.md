@@ -32,7 +32,7 @@ Ready to launch. Nothing has been created yet.
 
 | | |
 |---|---|
-| Path | <Managed / Serverless / Dedicated>, <surface>, because <reason> |
+| Path | <Serverless / Dedicated>, <surface>, because <reason> |
 | Model | <resolved model and tuning mode> |
 | Data | <resolved source, format, rows, and split> |
 | Params | <user choices + resolved defaults; label backend-resolved unknowns> |
@@ -51,14 +51,14 @@ or promotion values into this generic template.
 ## Final plan (full cost block when cost is non-trivial)
 
 ```text
-**Path** — Workflow (Managed / serverless / dedicated), surface (SDK / Training
-API recipe / firectl run by the user), method, and why in one sentence.
+**Path** — Workflow (serverless / dedicated), surface (Training API recipe
+or starter), method, and why in one sentence.
 
 **Cost** (from `cost-estimation.md`)
 
 | | |
 |---|---|
-| Recommended path | Managed / Serverless / Dedicated (estimator page) / RL handoff |
+| Recommended path | Serverless / Dedicated (estimator page) / RL handoff |
 | Estimate type | Promotional / Planning range / Unpadded baseline / Not calculated |
 | Cost result | $0 / $low–$high / Baseline $value / <$0.01 / **Not calculated** |
 | Rate certainty | product promotion / published / unavailable |
@@ -66,7 +66,7 @@ API recipe / firectl run by the user), method, and why in one sentence.
 
 | Line | Estimate | Assumptions / source |
 |---|---|---|
-| Training | … | Managed or Serverless meters only |
+| Training | … | Serverless meters only |
 | Reference sampler | … | Serverless DPO one-time all-uncached prefill |
 | Eval / inference | … | if in plan |
 | Deployment | … | post-training uptime only; not Dedicated training cost |

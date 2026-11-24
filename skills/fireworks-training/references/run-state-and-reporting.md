@@ -12,7 +12,7 @@ At the start of the skill run, generate one random UUID and export it as
 for all firectl, Training API Python, direct REST, retry, resume, and blocked
 manual terminal handoff calls in this run. Do not use `PURPOSE_PILOT`.
 
-Before the first protected action, create `fireworks-training-runs/<run-id>/run.md` in the current workspace. Use a stable, human-readable `<run-id>` such as `<method>-<output-model>-<UTC timestamp>`. Keep datasets and generated evaluation files beside it unless the user chooses another location. Record the UUID only in this private manifest. Do not create a separate telemetry file. When a structured intake flow is active, bounded journey events use the authenticated command described in [`telemetry.md`](telemetry.md).
+Before the first protected action, create `fireworks-training-runs/<run-id>/run.md` in the current workspace. Use a stable, human-readable `<run-id>` such as `<method>-<output-model>-<UTC timestamp>`. Keep datasets and generated evaluation files beside it unless the user chooses another location. Record the UUID only in the local manifest. See the [telemetry notice](telemetry-notice.md) for what the skill reports.
 
 Do not write API keys, environment values, raw customer data, or secret-bearing command output into the manifest. Resource names, configs, commands, metrics, and explicit user decisions are allowed, but treat the file as customer-private.
 
@@ -29,7 +29,7 @@ skill_client_source: fireworks-training-skill/2.3.0
 task:
 success_metric:
 method: sft | dpo | orpo | rft | igpo | distillation | embedding
-workflow_path: managed_firectl | managed_sdk | serverless | dedicated
+workflow_path: serverless | dedicated
 
 ## Inputs
 account:
@@ -138,11 +138,11 @@ When asked to resume:
 
    | Resource | SDK (`client = Fireworks()`) | `firectl` |
    |---|---|---|
-   | Dataset | `client.datasets.get(<DATASET_ID>)` | `firectl dataset get <DATASET_ID> -o json` |
-   | SFT | `client.supervised_fine_tuning_jobs.get(<JOB_ID>)` | `firectl sftj get <JOB_ID> -o json` |
-   | DPO / ORPO | `client.dpo_jobs.get(<JOB_ID>)` | `firectl dpo-job get <JOB_ID> -o json` |
+   | Archived dataset (read only) | `client.datasets.get(<DATASET_ID>)` | `firectl dataset get <DATASET_ID> -o json` |
+   | Managed SFT (no new jobs, read only) | `client.supervised_fine_tuning_jobs.get(<JOB_ID>)` | `firectl sftj get <JOB_ID> -o json` |
+   | Managed DPO / ORPO (no new jobs, read only) | `client.dpo_jobs.get(<JOB_ID>)` | `firectl dpo-job get <JOB_ID> -o json` |
    | Managed RFT (removed, read only) | — | `firectl rftj get <JOB_ID> -o json` |
-   | Dedicated trainer checkpoints | `FireworksClient(api_key).list_checkpoints(<TRAINER_JOB_ID>)` | `firectl rlor-trainer-job list-checkpoints <TRAINER_JOB_ID>` |
+   | Dedicated trainer checkpoints | `client.list_checkpoints(<TRAINER_JOB_ID>)` | `firectl rlor-trainer-job list-checkpoints <TRAINER_JOB_ID>` |
    | Dedicated trainer job | — | `firectl rlor-trainer-job get <TRAINER_JOB_ID> -o json` |
    | Deployment | `client.deployments.get(<DEPLOYMENT_ID>)` | `firectl deployment get <DEPLOYMENT_ID> -o json` |
    | Output model | `client.models.get(<OUTPUT_MODEL_ID>)` | `firectl model get <OUTPUT_MODEL_ID> -o json` |
@@ -159,9 +159,8 @@ approval before reconnecting or creating paid resources.
 
 Never replay dataset, evaluator, job, model, or deployment creation merely because the previous chat ended. Every create must use the stable ID recorded before execution:
 
-- dataset: `dataset_id` (the positional name in `firectl`);
 - evaluator: planned display name plus the reviewed source SHA-256 when the current evaluator API supports naming;
-- managed job: `supervised_fine_tuning_job_id` (or the DPO/RFT equivalent; `--job-id` in `firectl`);
+- trainer job: the recipe's `TrainerConfig` job ID;
 - output model: `output_model` (`--output-model`);
 - deployment: `deployment_id` (`--deployment-id`).
 
@@ -169,13 +168,13 @@ If the manifest says creation was attempted but has no returned resource, call t
 
 ### Resume a Training API dedicated run
 
-Training API dedicated recipes may provision several resources rather than one managed job. Before launch, record the recipe path, cookbook commit, full config, local working directory, planned output-model ID, and deployment IDs. Immediately after provisioning, persist every returned RLOR trainer job and rollout deployment ID.
+Training API dedicated recipes may provision several resources rather than one session. Before launch, record the recipe path, cookbook commit, full config, local working directory, planned output-model ID, and deployment IDs. Immediately after provisioning, persist every returned RLOR trainer job and rollout deployment ID.
 
 On resume:
 
 1. Confirm the same cookbook commit and SDK version are available.
 2. Read the recorded RLOR trainer with `firectl rlor-trainer-job get` (read-only; ask the user to run it if `firectl` is not installed).
-3. List its checkpoints with `FireworksClient(api_key).list_checkpoints(<TRAINER_JOB_ID>)` or `firectl rlor-trainer-job list-checkpoints`.
+3. List its checkpoints with `client.list_checkpoints(<TRAINER_JOB_ID>)` or `firectl rlor-trainer-job list-checkpoints`.
 4. Read every rollout or evaluation deployment and the promoted model, if present.
 5. Reconcile the last checkpoint, optimizer step, deployment attachment, and promotion state with the manifest.
 6. Use the recipe's documented reconnect path only when it supports reconnecting to that trainer. Do not start the recipe from the beginning.

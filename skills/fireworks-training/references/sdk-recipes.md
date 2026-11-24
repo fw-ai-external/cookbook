@@ -83,7 +83,10 @@ Always required on `Config` (with `trainer=TrainerConfig(...)`):
   models. Unknown or ambiguous aliases and other recipes require an explicit
   value. Explicit values always take precedence; this table is not an availability list.
 - `log_path` — directory for `dataloader.json` and logs
-- `trainer.training_shape_id` — optional override; leave unset for auto-selection. `accelerator_type` and `accelerator_count` are unsupported; do not set manual `node_count` (see [`sdk-shapes.md`](sdk-shapes.md))
+- `trainer.training_shape_id` — selects a validated trainer profile. Trainer-only
+  recipes can leave it unset for backend selection. For a new dedicated rollout,
+  supply a profile with a linked deployment shape or set a compatible versioned
+  `deployment.deployment_shape`. See [Training shapes](sdk-shapes.md).
 - `trainer.use_reservation` — optional, default `True`. Tries reservation
   capacity first; set `False` to use shared trainer capacity. A
   full-parameter DPO reference trainer inherits the option and tries
@@ -181,14 +184,13 @@ cross-run reference format.
 
 ## Optional SFT generation comparison
 
-For serverless SFT, set `generation_eval=True` (managed SFT: `generation_eval`,
-`firectl --generation-eval`). The recipe uses `evaluation_dataset`, or a seeded
+For serverless SFT, set `generation_eval=True`. The recipe uses `evaluation_dataset`, or a seeded
 20% holdout excluded from training, and samples up to `max_eval_seqs`
 conversations, including image prompts. The last assistant turn selected by
 `train_on_what` and the normalized per-message flags is the reference; earlier
 turns are the prompt. After training, the base model and the final LoRA weights
 answer each prompt with temperature 0 and at most 1024 generated tokens.
-`log_path/generation_eval.json` (managed: `generation_eval_signed_url`) stores
+`log_path/generation_eval.json` stores
 the prompts, references, answers and status. Its `checkpoints` are
 `["Original", "Your model"]`; each `examples` entry has string `prompt` and
 `reference` fields and two ordered `cells` with `output`, `tokens`, and
@@ -204,9 +206,6 @@ rewritten with status `skipped` so a resumed run does not keep an older
 comparison. After the final checkpoint, an inference failure
 or a failure to write `generation_eval.json` is logged and does not fail the
 training job. A requested cancellation still stops the job.
-Managed jobs enter `JOB_STATE_EVALUATION` during generation and complete only
-afterwards, so session cleanup follows evaluation; `state_timestamps` keeps the
-evaluation entry even when it finishes between watcher polls.
 
 ## RL specifics
 
