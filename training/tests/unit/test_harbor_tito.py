@@ -1402,6 +1402,7 @@ def test_reward_only_evaluation_does_not_invent_a_missing_score(
 class _EnvironmentType(str, Enum):
     E2B = "e2b"
     DOCKER = "docker"
+    DAYTONA = "daytona"
 
 
 class _Config(SimpleNamespace):
@@ -1415,7 +1416,11 @@ class _Config(SimpleNamespace):
 
 
 def _fake_harbor():
-    return SimpleNamespace(EnvironmentType=_EnvironmentType, TrialConfig=_Config)
+    return SimpleNamespace(
+        EnvironmentType=_EnvironmentType,
+        TrialConfig=_Config,
+        TrialEvent=SimpleNamespace(AGENT_END="agent-end"),
+    )
 
 
 @pytest.mark.parametrize("environment", ["e2b", "docker"])
@@ -1442,7 +1447,7 @@ def test_frozen_e2b_manifest_selects_only_the_builtin_adapter(tmp_path, environm
 
 @pytest.mark.parametrize(
     ("configured_environment", "environment"),
-    [("docker", "docker"), ("e2b", "e2b"), ("docker", "e2b")],
+    [("docker", "docker"), ("e2b", "e2b"), ("docker", "e2b"), ("docker", "daytona")],
 )
 def test_trial_config_uses_same_sidecar_contract_for_both_backends(
     tmp_path, configured_environment, environment
@@ -1467,10 +1472,7 @@ def test_trial_config_uses_same_sidecar_contract_for_both_backends(
         agent_import_path=OPENCODE_HARBOR_IMPORT_PATH,
         agent_version=DEFAULT_OPENCODE_VERSION,
     )
-    expected = (
-        _EnvironmentType.DOCKER if environment == "docker" else _EnvironmentType.E2B
-    )
-    assert config.environment.type is expected
+    assert config.environment.type is _EnvironmentType(_harbor(environment=environment).environment)
     assert config.agent.kwargs["sidecar_bundle_path"] == str(tmp_path / "bundle")
     assert config.agent.kwargs["sidecar_launch_spec"] == sidecar_launch_spec
     assert "tool_profile" not in config.agent.kwargs
@@ -2319,8 +2321,9 @@ def test_trial_bound_never_undercuts_the_agent_budget() -> None:
     )
 
 
+@pytest.mark.parametrize("environment", ["e2b", "docker", "daytona"])
 def test_unbounded_agent_budget_leaves_the_trial_unbounded(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, environment
 ) -> None:
     """No declared agent budget means no derived bound, not an invented one."""
     artifact = _artifact("unbounded-agent")
@@ -2350,9 +2353,141 @@ def test_unbounded_agent_budget_leaves_the_trial_unbounded(
     harbor = _fake_harbor()
     harbor.Trial = Trial
     monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
-    outcome = asyncio.run(
-        harbor_adapter.run_harbor_trial(**_bound_probe_kwargs(tmp_path))
-    )
+    # The task is unresolved here. The fake Harbor trial intentionally has
+    # no pre-teardown hook and provides only its final collected artifact.
+    kwargs = _bound_probe_kwargs(tmp_path) | {"harbor_environment": environment}
+    outcome = asyncio.run(harbor_adapter.run_harbor_trial(**kwargs))
     assert outcome.reward == 1.0
     # No bound was derived, so no bound utilization is reported for it.
     assert "bound_utilization" not in outcome.phase_timings
+
+
+def _resolved_single_step_task(tmp_path: Path) -> dict[str, str]:
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "task.toml").write_text("")
+    return {"path": str(task)}
+
+
+def test_temporary_receipt_failure_does_not_override_a_harbor_timeout(monkeypatch, tmp_path):
+    from tempfile import TemporaryDirectory
+
+    class Trial:
+        _agent_timeout_sec = 7200
+
+        def __init__(self, config):
+            self.config = config
+
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
+
+        def add_hook(self, _event, collect):
+            self.collect = collect
+
+        async def run(self):
+            await self.collect(None)
+            return SimpleNamespace(
+                task_name="example",
+                trial_name=self.config.trial_name,
+                verifier_result=None,
+                exception_info=SimpleNamespace(
+                    exception_type="AgentTimeoutError", exception_message="agent timed out",
+                ),
+            )
+
+    def temporary_directory(*args, **kwargs):
+        if kwargs.get("prefix") == "harbor-tito-receipt-":
+            raise OSError("scratch unavailable")
+        return TemporaryDirectory(*args, **kwargs)
+
+    harbor = _fake_harbor()
+    harbor.Trial = Trial
+    monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
+    monkeypatch.setattr(harbor_adapter.tempfile, "TemporaryDirectory", temporary_directory)
+    kwargs = _bound_probe_kwargs(tmp_path) | {
+        "harbor_environment": "docker",
+        "task_config": _resolved_single_step_task(tmp_path),
+        "sidecar_launch_spec": json.dumps(
+            {"bundle_digest": "abc", "inference_base_url": "https://api.fireworks.ai"}
+        ),
+    }
+    with pytest.raises(RuntimeError, match="non-retryable AgentTimeoutError") as error:
+        asyncio.run(harbor_adapter.run_harbor_trial(**kwargs))
+    assert not isinstance(error.value, RecoverableRolloutError)
+    assert error.value.__cause__.reason == "artifact_transfer"
+
+
+def test_transfer_admission_releases_before_slow_verification(monkeypatch, tmp_path):
+    async def run():
+        count = 8
+        active = peak = verifying = 0
+        all_verifying = asyncio.Event()
+        finish_verifier = asyncio.Event()
+
+        class Trial:
+            _agent_timeout_sec = 7200
+            agent_environment = None
+
+            def __init__(self, config):
+                self.config = config
+
+            @classmethod
+            async def create(cls, config):
+                return cls(config)
+
+            def add_hook(self, _event, collect):
+                self.collect = collect
+
+            async def run(self):
+                nonlocal verifying
+                await self.collect(None)
+                verifying += 1
+                if verifying == count:
+                    all_verifying.set()
+                await finish_verifier.wait()
+                return SimpleNamespace(
+                    task_name="example", trial_name=self.config.trial_name,
+                    verifier_result=SimpleNamespace(rewards={"reward": 1}),
+                    exception_info=None,
+                )
+
+        async def collect(*_args, **kwargs):
+            nonlocal active, peak
+            active += 1
+            peak = max(active, peak)
+            try:
+                await asyncio.sleep(0.01)
+                kwargs["spool"].write_bytes(b"test")
+                return kwargs["spool"], {}
+            finally:
+                active -= 1
+
+        def finish(outcome, *, received_artifact, **_kwargs):
+            assert received_artifact[0].read_bytes() == b"test"
+            return outcome
+
+        harbor = _fake_harbor()
+        harbor.Trial = Trial
+        monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
+        monkeypatch.setattr(harbor_adapter, "collect_trajectory", collect)
+        monkeypatch.setattr(harbor_adapter, "_finish_harbor_trial", finish)
+        kwargs = _bound_probe_kwargs(tmp_path) | {
+            "harbor_environment": "docker",
+            "task_config": _resolved_single_step_task(tmp_path),
+            "sidecar_launch_spec": json.dumps(
+                {"bundle_digest": "abc", "inference_base_url": "https://api.fireworks.ai"}
+            ),
+        }
+        results = asyncio.gather(*(
+            harbor_adapter.run_harbor_trial(**(kwargs | {"run_id": f"receipt-{index}"}))
+            for index in range(count)
+        ))
+        try:
+            await asyncio.wait_for(all_verifying.wait(), timeout=5)
+            assert peak == 4
+        finally:
+            finish_verifier.set()
+            await results
+
+    asyncio.run(run())

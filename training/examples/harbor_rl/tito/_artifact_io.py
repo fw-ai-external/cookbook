@@ -6,7 +6,7 @@ import asyncio
 import contextvars
 import logging
 import multiprocessing
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from functools import partial
 from typing import Any, Callable, TypeVar
@@ -149,11 +149,30 @@ class ArtifactProcessPool:
                 )
 
 
+async def wait_for_artifact_worker(submitted: Future[_Result]) -> _Result:
+    result = asyncio.wrap_future(submitted)
+    try:
+        return await asyncio.shield(result)
+    except asyncio.CancelledError:
+        if submitted.cancel():
+            raise
+        # A running worker may own its temporary workspace
+        # until it exits. A queued cancellation returns without waiting.
+        while not result.done():
+            try:
+                await asyncio.shield(result)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not result.cancelled():
+            result.exception()
+        raise
+
+
 async def run_artifact_task(
     function: Callable[..., _Result], *args: Any, **kwargs: Any
 ) -> _Result:
     context = contextvars.copy_context()
     call = partial(function, *args, **kwargs)
-    return await asyncio.get_running_loop().run_in_executor(
-        _ARTIFACT_EXECUTOR, context.run, call
-    )
+    return await wait_for_artifact_worker(_ARTIFACT_EXECUTOR.submit(context.run, call))

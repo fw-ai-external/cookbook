@@ -17,7 +17,7 @@ from training.examples.harbor_rl.tito.trial import HarborTrialOutcome
 from training.utils.rl.async_rl.errors import RecoverableRolloutError
 from training.utils.rl.rollout import RolloutRun
 
-from .artifacts import tool_timeout_count
+from .artifacts import tool_execution_metrics, tool_timeout_count
 from .constants import (
     PI_AGENT_PROVIDER,
     PI_HARBOR_IMPORT_PATH,
@@ -105,6 +105,7 @@ def _materialize_pi_trajectory(
             pi_abandoned_turn_count=len(abandoned_turn_ids),
             harness_tool_timeout_count=tool_timeout_count(outcome.trial_path),
         )
+        rollout.metadata["tito_metrics"].update(tool_execution_metrics(outcome.trial_path))
     return rollout
 
 

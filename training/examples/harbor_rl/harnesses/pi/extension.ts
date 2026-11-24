@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { renameSync, writeFileSync } from "node:fs";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -33,6 +34,47 @@ function validateTextWorldAction(action: string): string {
 // assistant retry is disabled by the cookbook-generated settings.json.
 export default function (pi: ExtensionAPI) {
 	let compactionDepth = 0;
+	const activeTools = new Map<string, number>();
+	let toolOnlyStarted = 0;
+	let toolBusyMs = 0;
+	let toolWorkMs = 0;
+	let succeeded = 0;
+	let failed = 0;
+
+	pi.on("tool_execution_start", (event) => {
+		const now = performance.now();
+		if (activeTools.size === 0) toolOnlyStarted = now;
+		activeTools.set(event.toolCallId, now);
+	});
+	pi.on("tool_execution_end", (event) => {
+		const started = activeTools.get(event.toolCallId);
+		if (started === undefined) return;
+		const now = performance.now();
+		activeTools.delete(event.toolCallId);
+		if (activeTools.size === 0) toolBusyMs += now - toolOnlyStarted;
+		toolWorkMs += now - started;
+		if (event.isError) failed += 1;
+		else succeeded += 1;
+	});
+	pi.on("agent_end", () => {
+		try {
+			const path = "/logs/agent/pi-tools.json";
+			const now = performance.now();
+			let openWorkMs = 0;
+			for (const started of activeTools.values()) openWorkMs += now - started;
+			const openBusyMs = activeTools.size > 0 ? now - toolOnlyStarted : 0;
+			writeFileSync(path + ".tmp", JSON.stringify({
+				succeeded,
+				failed,
+				work_seconds: (toolWorkMs + openWorkMs) / 1000,
+				busy_seconds: (toolBusyMs + openBusyMs) / 1000,
+				unclosed: activeTools.size,
+			}));
+			renameSync(path + ".tmp", path);
+		} catch {
+			// Metrics have no effect on the agent or its terminal status.
+		}
+	});
 
 	if (toolProfile === "textworld") {
 		pi.registerTool({

@@ -13,19 +13,30 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import tomllib
 from collections.abc import Callable, Mapping
-from contextlib import nullcontext
+from contextlib import AsyncExitStack, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import yaml
 
+from training.examples.harbor_rl.sandboxes.artifacts import artifact_reader_factory
 from training.examples.harbor_rl.tito._artifact_io import (
     ArtifactProcessPool,
     run_artifact_task,
+)
+from training.examples.harbor_rl.tito._artifact_transfer import (
+    CHUNK_BYTES,
+    MAX_MANIFEST_BYTES,
+    artifact_transfer_slots,
+    collect_trajectory,
+    decode_artifact,
+    read_manifest,
 )
 from training.examples.harbor_rl.tito.sidecar import (
     SIDECAR_ARTIFACT_MANIFEST_PATH,
@@ -506,6 +517,7 @@ def _build_trial_config(
     tool_profile: str = "coding",
     agent_extra_kwargs: Mapping[str, Any] | None = None,
     collect_tito_artifacts: bool = True,
+    collect_compact_artifact: bool = True,
     e2b_template_manifest: str | Path | None = None,
 ) -> Any:
     """Merge a native TrialConfig template with Fireworks-owned runtime fields."""
@@ -522,6 +534,8 @@ def _build_trial_config(
     environment.pop("import_path", None)
     if harbor_environment == "docker":
         environment["type"] = harbor.EnvironmentType.DOCKER
+    elif harbor_environment == "daytona":
+        environment["type"] = harbor.EnvironmentType.DAYTONA
     elif harbor_environment == "e2b":
         # Early duplicate of Harbor's capability gate: failing here avoids an
         # E2B template build. Harbor remains the authoritative backstop if its
@@ -603,7 +617,7 @@ def _build_trial_config(
     agent["kwargs"] = {**agent_kwargs, **extra_agent_kwargs}
 
     artifacts = list(document.get("artifacts") or ())
-    if collect_tito_artifacts:
+    if collect_tito_artifacts and collect_compact_artifact:
         for source in (
             SIDECAR_ARTIFACT_PATH,
             SIDECAR_ARTIFACT_MANIFEST_PATH,
@@ -617,6 +631,7 @@ def _build_trial_config(
                     ),
                 }
             )
+    if collect_tito_artifacts:
         for source in (SIDECAR_STDOUT_PATH, SIDECAR_STDERR_PATH):
             artifacts.append(
                 {
@@ -757,37 +772,15 @@ def _load_sidecar_artifact(trial_path: Path) -> tuple[Any, dict[str, Any]]:
             + ", ".join(missing)
         )
     try:
-        encoded = artifact_path.read_bytes()
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RecoverableRolloutError(
-            f"could not read the collected TITO sidecar artifact: {exc}"
-        ) from exc
-    if not isinstance(manifest, Mapping):
-        raise RecoverableRolloutError("TITO sidecar artifact manifest is not an object")
-    if manifest.get("schema_version") != 1:
-        raise RecoverableRolloutError("unsupported TITO sidecar artifact manifest")
-    if int(manifest.get("bytes") or -1) != len(encoded):
-        raise RecoverableRolloutError("TITO sidecar artifact byte count mismatch")
-    if manifest.get("sha256") != hashlib.sha256(encoded).hexdigest():
-        raise RecoverableRolloutError("TITO sidecar artifact checksum mismatch")
-    try:
-        from fireworks.training.sdk import TITOTrajectoryArtifact
-
-        artifact = TITOTrajectoryArtifact.unpack(encoded)
+        with manifest_path.open("rb") as stream:
+            manifest = read_manifest(stream.read(MAX_MANIFEST_BYTES + 1))
+        with artifact_path.open("rb") as stream:
+            artifact = decode_artifact(iter(lambda: stream.read(CHUNK_BYTES), b""), manifest)
     except Exception as exc:
         raise RecoverableRolloutError(
             f"TITO sidecar artifact decoding failed: {type(exc).__name__}: {exc}"
         ) from exc
-    if artifact.trajectory_id != manifest.get("trajectory_id"):
-        raise RecoverableRolloutError(
-            "TITO sidecar artifact trajectory identity mismatch"
-        )
-    if artifact.status != manifest.get("status"):
-        raise RecoverableRolloutError("TITO sidecar artifact terminal status mismatch")
-    if artifact.terminal_reason != manifest.get("terminal_reason"):
-        raise RecoverableRolloutError("TITO sidecar artifact terminal reason mismatch")
-    return artifact, dict(manifest)
+    return artifact, manifest
 
 
 async def run_harbor_trial(
@@ -838,7 +831,34 @@ async def run_harbor_trial(
         else Path(configured_trials_dir).expanduser()
     )
     cleanup = temp_dir if temp_dir is not None else nullcontext()
-    with cleanup:
+    async with AsyncExitStack() as receipt_scope:
+        receipt_scope.enter_context(cleanup)
+        environment_template = template.get("environment") or {}
+        reader_factory = None
+        if require_trajectory_artifact:
+            reader_factory = artifact_reader_factory(
+                harbor_environment,
+                uses_compose=lambda: (
+                    _task_uses_compose(task_config)
+                    or bool(environment_template.get("extra_docker_compose"))
+                ),
+            )
+        if reader_factory is not None:
+            # Harbor resolves some registry and Git tasks during Trial.create.
+            # Let Harbor collect these and multistep tasks.
+            document = _task_document(task_config)
+            if document is None or document.get("steps"):
+                reader_factory = None
+        stream_compact = reader_factory is not None
+        received = None
+        collection_error = None
+        transfer_timings: dict[str, float] = {}
+        if stream_compact:
+            spec = json.loads(sidecar_launch_spec)
+            trajectory_id = uuid4().hex
+            spec["trajectory_id"] = trajectory_id
+            bundle_digest = str(spec["bundle_digest"])
+            sidecar_launch_spec = json.dumps(spec, separators=(",", ":"))
         config = _build_trial_config(
             harbor,
             template=template,
@@ -857,6 +877,7 @@ async def run_harbor_trial(
             tool_profile=tool_profile,
             agent_extra_kwargs=agent_extra_kwargs,
             collect_tito_artifacts=require_trajectory_artifact,
+            collect_compact_artifact=not stream_compact,
             e2b_template_manifest=e2b_template_manifest,
         )
         result = None
@@ -869,6 +890,41 @@ async def run_harbor_trial(
                 _raise_trial_execution_failure(
                     "before creating a trial", exc, retry_names
                 )
+            if reader_factory is not None:
+                async def collect_sealed_artifact(_: Any) -> None:
+                    nonlocal received, collection_error
+                    current = asyncio.current_task()
+                    if received is not None or collection_error is not None or (
+                        current is not None and current.cancelling()
+                    ):
+                        return
+
+                    waiting_since = time.monotonic()
+                    permits = artifact_transfer_slots()
+                    async with permits:
+                        transfer_timings["artifact_admission_seconds"] = time.monotonic() - waiting_since
+                        try:
+                            # Keep the verified file in a private runner directory
+                            # outside the Harbor paths mounted into the sandbox.
+                            scratch = receipt_scope.enter_context(
+                                tempfile.TemporaryDirectory(prefix="harbor-tito-receipt-")
+                            )
+                            received = await collect_trajectory(
+                                trial.agent_environment, reader_factory,
+                                trajectory_id=trajectory_id, bundle_digest=bundle_digest,
+                                spool=Path(scratch) / "trajectory.tito",
+                                measurements=transfer_timings,
+                            )
+                        except RecoverableRolloutError as exc:
+                            # Harbor still needs to collect its scoring result or agent failure.
+                            collection_error = exc
+                        except OSError as exc:
+                            collection_error = RecoverableRolloutError(
+                                f"Could not stage the verified TITO artifact ({type(exc).__name__})",
+                                reason="artifact_transfer",
+                            )
+
+                trial.add_hook(harbor.TrialEvent.AGENT_END, collect_sealed_artifact)
             _validate_tool_timeout_below_trial(
                 trial,
                 tool_timeout_seconds=tool_timeout_seconds,
@@ -960,7 +1016,7 @@ async def run_harbor_trial(
             harbor_environment=harbor_environment,
         )
         verifier_result = result.verifier_result
-        phase_timings = _trial_phase_timings(result)
+        phase_timings = {**_trial_phase_timings(result), **transfer_timings}
         if trial_bound_seconds and "trial_wall_seconds" in phase_timings:
             # How close this trial ran to its bound: the signal that says
             # whether the bound is near-firing on healthy trials.
@@ -998,6 +1054,9 @@ async def run_harbor_trial(
                 retryable_sidecar_readiness=retryable_sidecar_readiness,
                 materializer=materializer,
                 require_trajectory_artifact=require_trajectory_artifact,
+                received_artifact=received,
+                collection_error=collection_error,
+                stream_compact=stream_compact,
             )
         except asyncio.CancelledError:
             raise
@@ -1021,6 +1080,9 @@ def _finish_harbor_trial(
     retryable_sidecar_readiness: bool,
     materializer: Callable[[HarborTrialOutcome], RolloutRun | None] | None = None,
     require_trajectory_artifact: bool = True,
+    received_artifact: tuple[Path, dict[str, Any]] | None = None,
+    collection_error: RecoverableRolloutError | None = None,
+    stream_compact: bool = False,
 ) -> HarborTrialOutcome:
     """Validate, select rewards and materialize while the artifact stays local."""
     exception_type = outcome.exception_type
@@ -1028,9 +1090,34 @@ def _finish_harbor_trial(
     artifact_manifest = None
     if require_trajectory_artifact:
         try:
-            trajectory_artifact, artifact_manifest = _load_sidecar_artifact(
-                outcome.trial_path
-            )
+            if collection_error is not None:
+                raise collection_error
+            if stream_compact:
+                if received_artifact is None:
+                    raise RecoverableRolloutError(
+                        "Harbor did not run the sealed trajectory receipt hook",
+                        reason="artifact_unsealed",
+                    )
+                artifact_path, artifact_manifest = received_artifact
+                started = time.monotonic()
+                try:
+                    with artifact_path.open("rb") as stream:
+                        trajectory_artifact = decode_artifact(
+                            iter(lambda: stream.read(CHUNK_BYTES), b""),
+                            artifact_manifest,
+                            verified=True,
+                        )
+                except Exception as exc:
+                    raise RecoverableRolloutError(
+                        "TITO sidecar artifact could not be decoded",
+                        reason="artifact_integrity",
+                    ) from exc
+                outcome = replace(outcome, phase_timings={
+                    **outcome.phase_timings,
+                    "artifact_codec_seconds": time.monotonic() - started,
+                })
+            else:
+                trajectory_artifact, artifact_manifest = _load_sidecar_artifact(outcome.trial_path)
         except RecoverableRolloutError as exc:
             retained = []
             try:
@@ -1069,7 +1156,13 @@ def _finish_harbor_trial(
                     "startup window",
                     trace_paths=exc.trace_paths,
                 ) from exc
-            if exception_type and exception_type not in retry_names:
+            if exception_type:
+                if exception_type in retry_names:
+                    raise RecoverableRolloutError(
+                        f"Harbor ended with {exception_type} and produced no valid TITO artifact",
+                        reason=exception_type,
+                        trace_paths=exc.trace_paths,
+                    ) from exc
                 raise RuntimeError(
                     "Harbor produced no valid TITO artifact after a non-retryable "
                     f"{exception_type}: {exc}"

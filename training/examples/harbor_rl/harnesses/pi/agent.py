@@ -12,7 +12,7 @@ from harbor.agents.installed.pi import Pi
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from training.examples.harbor_rl.tito.harness_exec import exec_harness
+from training.examples.harbor_rl.harnesses.exec import exec_harness
 from training.examples.harbor_rl.tito.sidecar import (
     harness_command,
     install_sidecar,

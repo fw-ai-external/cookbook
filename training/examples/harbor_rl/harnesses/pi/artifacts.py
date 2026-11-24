@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
+import os
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -51,4 +54,39 @@ def tool_timeout_count(trial_path: Path) -> int:
     return len(timed_out_calls)
 
 
-__all__ = ["tool_timeout_count"]
+def tool_execution_metrics(trial_path: Path) -> dict[str, float]:
+    """Read Pi's bounded numeric summary, with missing evidence left uncovered."""
+    path = trial_path / "agent" / "pi-tools.json"
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return {}
+            payload = stream.read(4097)
+        if len(payload) > 4096:
+            return {}
+        document = json.loads(payload)
+    except (OSError, RecursionError, ValueError):
+        return {}
+    if not isinstance(document, dict):
+        return {}
+    fields = ("succeeded", "failed", "unclosed", "work_seconds", "busy_seconds")
+    result = {}
+    for field in fields:
+        value = document.get(field)
+        if type(value) not in (int, float):
+            return {}
+        try:
+            number = float(value)
+        except OverflowError:
+            return {}
+        if not math.isfinite(number) or number < 0:
+            return {}
+        if not field.endswith("_seconds") and not number.is_integer():
+            return {}
+        result[f"tito/tool/{field}"] = number
+    result["tito/tool/observed_rollouts"] = 1.0
+    return result
+
+
+__all__ = ["tool_execution_metrics", "tool_timeout_count"]

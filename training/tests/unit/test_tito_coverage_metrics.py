@@ -45,3 +45,47 @@ def test_coverage_fraction_omitted_without_samples() -> None:
     metrics: dict = {}
     publish_tito_sidecar_metrics(metrics, [{"tito/lineage/realign": 0.0}])
     assert "tito/coverage/trained_fraction" not in metrics
+
+
+def test_tool_work_and_busy_seconds_merge_as_counters():
+    result = {}
+    common = {
+        "tito/trajectory/policy_turns_count": 1,
+        "tito/trajectory/policy_turns_sum": 0,
+        "tito/trajectory/policy_turns_min": 0,
+        "tito/trajectory/policy_turns_max": 0,
+    }
+    publish_tito_sidecar_metrics(
+        result,
+        [
+            common
+            | {
+                "tito/tool/observed_rollouts": 1,
+                "tito/tool/work_seconds": 3,
+                "tito/tool/busy_seconds": 2,
+            },
+            common,
+        ],
+    )
+    assert result["tito/tool/work_seconds_sum"] == 3
+    assert result["tito/tool/busy_seconds_sum"] == 2
+    assert result["tito/tool/rollout_coverage"] == 0.5
+
+
+def test_failed_trial_timing_stays_bounded_between_publications():
+    from training.utils.rl import trial_events
+
+    trial_events.reset()
+    try:
+        for index in range(10_000):
+            trial_events.record_failed_trial_wall(0.4 if index < 9_600 else 12.0)
+        result = trial_events.drain()
+        root = "tito/trial_failed/trial_wall_seconds"
+        assert result[f"{root}_count"] == 10_000
+        assert result[f"{root}_min"] == 0.4
+        assert result[f"{root}_max"] == 12.0
+        assert result[f"{root}_p95_upper_bound"] == 0.5
+        assert result[f"{root}_p99_upper_bound"] == 12.0
+        assert trial_events.drain() == {}
+    finally:
+        trial_events.reset()
