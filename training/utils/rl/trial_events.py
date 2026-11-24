@@ -114,8 +114,8 @@ def record_trial_discarded(reason: str) -> None:
     _increment(f"{_COUNTER_ROOT}discard_reason/{_slug(reason)}")
 
 
-def record_trial_reward(source: Literal["verifier", "terminal_fallback"]) -> None:
-    """One materialized trial with a verifier or configured terminal reward."""
+def record_trial_reward(source: Literal["verifier", "terminal_fallback", "malformed_tool_call"]) -> None:
+    """Count the source of the reward on a materialized trial."""
     _increment(f"{_COUNTER_ROOT}reward_source/{source}")
 
 

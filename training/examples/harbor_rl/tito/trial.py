@@ -677,7 +677,7 @@ class HarborTrialOutcome:
     """Client-observed Harbor phase brackets in seconds (environment/agent
     setup, agent execution, verifier, trial wall). Empty when Harbor did not
     record them."""
-    reward_source: Literal["verifier", "terminal_fallback"] | None = None
+    reward_source: Literal["verifier", "terminal_fallback", "malformed_tool_call"] | None = None
 
 
 def _load_sidecar_artifact(trial_path: Path) -> tuple[Any, dict[str, Any]]:
@@ -1129,7 +1129,13 @@ def _finish_harbor_trial(
                     diagnostics={"final_error_kind": exception_type},
                 ) from exc
             raise
-    if trajectory_artifact is not None:
+    malformed = getattr(trajectory_artifact, "malformed_tool_call", None)
+    if malformed is not None and retry_error is not None:
+        raise retry_error
+    malformed_tool_call = malformed is not None and exception_type in {None, "NonZeroAgentExitCodeError"}
+    if malformed_tool_call:
+        raw_rewards = {**(raw_rewards or {}), reward_key: 0.0}
+    elif trajectory_artifact is not None:
         error = trajectory_discard_error(trajectory_artifact)
         if error is not None:
             # lazy: new SDK diagnostics are needed only for failed TITO trials.
@@ -1162,7 +1168,9 @@ def _finish_harbor_trial(
         and trajectory_artifact.terminal_reason == "context_budget_exhausted"
     )
     agent_limit_reached = context_budget_exhausted or exception_type == "AgentTimeoutError"
-    reward_source: Literal["verifier", "terminal_fallback"] = "verifier"
+    reward_source: Literal["verifier", "terminal_fallback", "malformed_tool_call"] = (
+        "malformed_tool_call" if malformed_tool_call else "verifier"
+    )
     if raw_rewards is None:
         if agent_limit_reached and terminal_failure_reward is not None:
             reward_source = "terminal_fallback"

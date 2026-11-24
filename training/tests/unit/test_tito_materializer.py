@@ -13,6 +13,7 @@ from fireworks.training.sdk import (
     TITODistribution,
     TITOMetricSummary,
     TITOParsedAssistant,
+    TITOMalformedToolCall,
     TITOResponseAttempt,
     TITOSegmentResult,
     TITOTrajectoryArtifact,
@@ -21,7 +22,7 @@ from fireworks.training.sdk import (
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.rollout.tito import materialize_tito_trajectory
-from training.utils.rl.async_rl.errors import DiscardTrajectoryError
+from training.utils.rl.async_rl.errors import DiscardTrajectoryError, RecoverableRolloutError
 from training.utils.rl.rollout.types import Rollout, rollout_to_prompt_group
 from training.utils.rl.losses import build_policy_datums
 from training.utils.rl.sampling_support import (
@@ -179,6 +180,116 @@ def _assert_coverage_conserved(run) -> None:
         metrics["tito/coverage/trained_tokens"] + lost
     )
     assert metrics["tito/coverage/unaccounted_tokens"] == 0
+
+
+@pytest.fixture
+def malformed_tool_artifact() -> TITOTrajectoryArtifact:
+    first = _turn("one", (1, 2), (3, 4))
+    last = replace(
+        _turn("bad", (1, 2, 3, 4, 5), (6, 7), disposition="append", prefix_match_tokens=4),
+        assistant=TITOParsedAssistant(
+            message={"role": "assistant", "content": ""}, output_kind="malformed_tool_call"
+        ),
+    )
+    result = _result((first, last), (_attempt(first.turn_id),))
+    terminal_call = replace(result.calls[-1], outcome="model_malformed", error_code="tito_sdk_parse_error")
+    return replace(
+        result,
+        calls=(result.calls[0], terminal_call),
+        segments=(replace(result.segments[0], closed_reason="malformed_tool_call"),),
+        status="failed",
+        terminal_reason="tito_sdk_parse_error",
+        metadata={
+            "tito_malformed_tool_call_id": terminal_call.call_id,
+            "tito_failure": {
+                "code": "tito_sdk_parse_error",
+                "origin": "sdk_parser",
+                "call_id": terminal_call.call_id,
+                "parser_reason_code": "tool_unknown_name",
+            },
+        },
+    )
+
+
+def test_malformed_tool_reward_materializes_exact_terminal_action(malformed_tool_artifact) -> None:
+    artifact = malformed_tool_artifact
+    first, last = artifact.segments[0].turns
+    initial_call, terminal_call = artifact.calls
+    assert artifact.malformed_tool_call == TITOMalformedToolCall(turn_id="bad", reason_code="tool_unknown_name")
+    run = materialize_tito_trajectory(artifact, reward=1.0)
+    assert len(run.segments) == 1
+    sample = run.segments[0]
+    assert sample.reward == 0.0
+    assert sample.tokens == [1, 2, 3, 4, 5, 6, 7]
+    assert sample.logprobs == [0.0, 0.0, -0.2, -0.2, 0.0, -0.2, -0.2]
+    assert sample.loss_mask == [0, 0, 1, 1, 0, 1, 1]
+    _assert_coverage_conserved(run)
+
+    with pytest.raises(DiscardTrajectoryError):
+        materialize_tito_trajectory(artifact, reward=1.0, max_context_tokens=6)
+    for broken in (
+        replace(artifact, calls=(initial_call, replace(terminal_call, kind="auxiliary"))),
+        replace(artifact, metadata={
+            **artifact.metadata,
+            "tito_failure": {**artifact.metadata["tito_failure"], "debug_storage_error": "test storage failure"},
+        }),
+        replace(artifact, segments=(replace(
+            artifact.segments[0], turns=(first, replace(last, sampling_logprobs=(-0.2, float("nan")))),
+        ),)),
+    ):
+        with pytest.raises(DiscardTrajectoryError):
+            materialize_tito_trajectory(broken, reward=1.0)
+
+
+@pytest.mark.parametrize(
+    ("exception_type", "rewards", "missing_verifier_result", "retry_reason"),
+    [
+        (None, {"reward": 0.75}, False, None),
+        ("NonZeroAgentExitCodeError", None, False, None),
+        ("AgentTimeoutError", None, False, None),
+        ("NonZeroAgentExitCodeError", None, True, "harbor_verifier_missing_result"),
+        ("ApiRateLimitError", {"reward": 0.75}, False, "ApiRateLimitError"),
+    ],
+)
+def test_harbor_scores_malformed_tool_action(
+    malformed_tool_artifact, monkeypatch, tmp_path, exception_type, rewards, missing_verifier_result, retry_reason,
+):
+    from training.examples.harbor_rl.tito import trial
+
+    monkeypatch.setattr(trial, "_load_sidecar_artifact", lambda _: (malformed_tool_artifact, {}))
+    outcome = trial.HarborTrialOutcome(
+        task_name="task",
+        trial_name="trial",
+        trial_path=tmp_path,
+        reward=None,
+        rewards={},
+        exception_type=exception_type,
+        exception_message=None,
+    )
+    kwargs = dict(
+        raw_rewards=rewards,
+        reward_key="reward",
+        terminal_failure_reward=None,
+        verifier_started_without_result=missing_verifier_result,
+        retry_names=trial.DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
+        retryable_e2b_timeout=False,
+        retryable_sidecar_readiness=False,
+        materializer=lambda item: materialize_tito_trajectory(item.trajectory_artifact, reward=item.reward),
+    )
+    if retry_reason is not None:
+        with pytest.raises(RecoverableRolloutError) as failure:
+            trial._finish_harbor_trial(outcome, **kwargs)
+        assert failure.value.reason == retry_reason
+    elif exception_type == "AgentTimeoutError":
+        with pytest.raises(DiscardTrajectoryError, match="tito_sdk_parse_error"):
+            trial._finish_harbor_trial(outcome, **kwargs)
+    else:
+        finished = trial._finish_harbor_trial(outcome, **kwargs)
+        assert finished.reward == 0.0
+        assert finished.reward_source == "malformed_tool_call"
+        assert finished.rewards == {"reward": 0.0}
+        assert finished.rollout.segments[0].reward == 0.0
+        assert finished.rollout.segments[0].loss_mask[-2:] == [1, 1]
 
 
 def test_materializes_exact_append_and_pads_completion_only_r3() -> None:
