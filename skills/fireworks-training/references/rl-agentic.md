@@ -10,7 +10,7 @@ scheduler, batching, off-policy, optimizer, and publication behavior.
 - [Boundary and invariants](#boundary-and-invariants)
 - [Choose an architecture](#choose-an-architecture)
 - [Choose prompt construction and a token-mismatch policy](#choose-prompt-construction-and-a-token-mismatch-policy)
-- [Linear V1 and future trees](#linear-v1-and-future-trees)
+- [Opt-in tree lineage](#opt-in-tree-lineage)
 - [Session and prompt-cache identity](#session-and-prompt-cache-identity)
 - [Failure and retry policy](#failure-and-retry-policy)
 - [Responsibility split](#responsibility-split)
@@ -59,7 +59,7 @@ remain useful references, but they are not interchangeable runtime modes:
 
 | Architecture | Use when | Main tradeoff |
 |---|---|---|
-| Per-environment linear TITO sidecar | OpenCode, Pi, Mini-SWE-Agent, or another existing harness runs inside a Docker container or remote sandbox | Preserves the rollout function and exact tokens without callbacks or another deployed service; each environment owns its loopback runtime and artifacts |
+| Per-environment TITO sidecar | OpenCode, Pi, Mini-SWE-Agent, or another existing harness runs inside a Docker container or remote sandbox | Preserves the rollout function and exact tokens without callbacks or another deployed service; each environment owns its loopback runtime and artifacts |
 | Slime-style message tree with bounded token realignment | The harness may re-render a recent assistant response with small token drift | Preserves longer contiguous samples, but realignment is a heuristic and repaired tokens must be masked |
 | Miles-style inference-side session service | High-volume multi-turn inference where strict append-only templating and prefix-cache efficiency justify a stateful service | Centralizes token accumulation and sample assembly, but adds service lifecycle, routing, template, and concurrency concerns |
 | Strict append-only adapter | The harness and renderer can guarantee exact history extension | Strongest and easiest invariant; violations require retry or drop |
@@ -154,8 +154,7 @@ admitted; image markers and tool namespaces are rejected. Do not alias it to V4.
 Applying a chat template constructs a prompt; it does not parse sampled
 reasoning/tool protocols, preserve response argument order, verify tokenizer
 identity, or package an offline runtime. Those are the remaining TITO adapter
-responsibilities. These additions do not change SDK lineage, introduce a tree,
-or enable incremental rendering. Full rendering still checks exact sampled token
+responsibilities. The sidecar settings choose the lineage and prompt construction modes. Full rendering still checks exact sampled token
 prefixes; template rewrites or tokenization differences can split a segment.
 HF/native-encoder parity is not full served-model certification: perform live
 prompt-token and sampled-completion verification on the exact deployment before
@@ -250,13 +249,11 @@ messages while the service reuses accumulated input IDs, which avoids
 client-side re-tokenization and can preserve inference prefix caching. Miles
 requires a verified TITO chat template and rejects unsupported history edits.
 
-Fireworks' experimental incremental strategy acknowledges and follows Miles's
-linear construction mechanism: render appended messages under a synthetic
-system/assistant anchor, merge that suffix with the exact sampled checkpoint,
-and let a model-specific junction rule declare a bounded trailing edit. It does
-not copy Miles's session tree, branching, leaf selection, or centralized
-placement; Fireworks keeps independent linear lineage in each environment-local
-sidecar.
+Fireworks' incremental strategy renders appended messages under a synthetic
+anchor and joins the suffix to an exact sampled checkpoint. The tree lineage
+policy matches committed parents within each environment-local sidecar. Miles
+also supports configurable leaf selection and finalizes shared completion
+ownership after that selection.
 
 Choose this pattern for measured throughput or trace-movement benefits, not
 only to make the rollout adapter look smaller. Plan service affinity, cleanup,
@@ -325,19 +322,62 @@ tokenization and caching, but it is an alternative centralized architecture,
 not a mode of the per-environment sidecar. It does not remove the need to
 validate the final trainer payload.
 
-## Linear V1 and future trees
+## Opt-in tree lineage
 
-V1 stores one ordered `Trajectory` containing linear exact-token `Segment`s and
-committed policy `Turn`s. A compaction or incompatible history closes a segment;
-it does not create a hidden branch. A subagent that can be scored independently
-gets another trajectory. Retry creates a fresh trajectory, environment, bearer
-credential, and serving-affinity key.
+Use tree lineage for new runs. Enable it with
+`--tito-lineage-mode tree` in Harbor or
+`TrajectoryDriftPolicy(lineage_mode="tree")` in the SDK. Linear is the
+compatibility default during migration and is planned for deprecation and
+retirement. New lineage features and optimizations target tree only.
+Linear receives compatibility fixes until retirement. The v1 reader remains
+available for artifacts that meet the current shared replay contract.
 
-A future tree is justified only when the product must retain simultaneous
-sibling continuations from one exact checkpoint, select among those siblings
-later, or assign credit across a shared generated trunk without training that
-trunk twice. Those are tree-only capabilities. Prefix-cache lookup, sequential
-retries, and post-compaction continuation do not require ancestry state.
+In tree mode, each policy call selects the deepest unique committed
+message prefix. Reusing its token checkpoint requires the same render
+contract. A fork begins a new
+segment with its shared prompt masked. Later requests can resume that segment
+after calls to another branch. Token drift that would overwrite sampled
+tokens on an older branch starts a new segment. Ambiguous checkpoints use
+the configured mismatch policy, and a length-truncated checkpoint cannot
+extend its segment. A change in routing or sampling replay evidence also
+starts a new segment so its token-aligned arrays stay complete.
+
+Tree lineage can improve training efficiency by reducing repeated prompt
+tokens and the number of trainable segments when exact branch continuations
+interleave. It retains valid sibling continuations and uses each shared
+completion as a loss target at most once. Straight-line trajectories already
+avoid that repetition. The verifier reward is trajectory-scoped. A subagent
+that can be scored independently gets its own trajectory and reward. A retry
+starts a fresh trajectory and affinity key.
+
+Segment boundaries define sequence-level weighting. Merging a continued
+branch can change GSPO, sequence-level importance weighting, and
+sequence-normalized metrics. During migration, keep linear for runs that
+need to reproduce legacy sequence grouping and weights. Validate that
+weighting before moving those runs to tree.
+
+Both lineages require a Training SDK with the native TITO extension. Use a
+Linux x86-64 controller and sandbox that can load the same SDK native wheel
+(CPython 3.11 or later, glibc 2.34 or later). The SDK
+owns token alignment, lineage, and the sidecar runtime. Harbor
+owns sandbox and harness execution plus clean verification. The Cookbook
+combines SDK evidence with harness outcomes to build training samples.
+
+Both lineages support the same prompt modes. `full_history` is the default and
+renders the complete request before checking token alignment. `incremental`
+is an opt-in renderer mode that can append a suffix to the checkpoint when
+supported. An aligned turn can have an `append` disposition in either mode.
+Harbor forwards `--tito-lineage-mode` and `--tito-prompt-mode` to the SDK.
+
+The supported Linux wheel already contains the Rust extension. Installing
+it and copying it into the sandbox require no Rust toolchain. For an
+editable SDK checkout, build the extension before creating the Harbor
+bundle. The controller and sandbox must both be able to load the same
+binary, since the bundle copies the installed SDK files.
+
+Tree artifacts use schema v2 and linear artifacts use v1. Both versions
+follow the shared replay contract. Recapture older trajectories with inline
+replay data using a sampler bound to the trainer's shared store.
 
 Do not call every non-append history "compaction." Dynamic system fields,
 subagent roots, retries, tool rewrites, renderer changes, and genuine context
@@ -352,7 +392,7 @@ Keep these identities separate:
 |---|---|
 | Logical rollout ID | Reward, artifacts, metrics, and GRPO membership |
 | Environment trial ID | Sandbox/container lifecycle and verifier result |
-| TITO trajectory ID | Selects one independent linear engine inside the environment sidecar |
+| TITO trajectory ID | Selects one independent trajectory engine inside the environment sidecar |
 | Serving-affinity key | Routes model turns from one attempt to a compatible rollout replica |
 | Retry attempt ID | Prevents failed trace state and cache affinity from leaking into a new attempt |
 
@@ -404,7 +444,7 @@ truncations, and sampler failures follow the existing failure policy.
 
 ## Responsibility split
 
-The SDK owns protocol-neutral request normalization, exact-token linear
+The SDK owns protocol-neutral request normalization, exact-token
 trajectory state, full-prompt drift classification, bounded masked realignment,
 safe segmentation, transaction/idempotency, typed sampler facts, serving
 affinity, metrics, buffered OpenAI transport, and optional local JSONL debug
@@ -475,7 +515,7 @@ Training rollouts still require validated artifacts; an absent verifier score st
 - Harbor owns local Docker task execution and verifier reward;
 - OpenCode, Pi, Mini-SWE-Agent, or mimoagent supplies the multi-turn agent and tool behavior;
 - one environment-local `TITOSidecar` records exact sampler responses and may
-  route multiple independent linear trajectories;
+  route multiple independent trajectories;
 - the shared renderer layer resolves structured model messages and parses tools;
 - harness-local code owns call classification, compaction reconciliation, and
   agent lifecycle; the shared rollout owns attempt retries;
@@ -502,8 +542,7 @@ Preparation is also composed by the runner: dataset inspectors such as
 `harbor_rl.preparation.prepare_harbor_tasks` accepts the selected installer
 callable and records harness identity plus source/prepared hashes. Bind agent
 version and image options at the runner with `functools.partial`; datasets do
-not enumerate harnesses or select versions. The original DeepSWE/OpenCode
-preparation wrapper is deprecated but retains its old API and manifest field.
+not enumerate harnesses or select versions.
 The default qualification and training path is **Pi + DeepSWE + one
 environment-local TITO sidecar in `full_history` mode**. OpenCode and
 Mini-SWE-Agent are alternate adapters over the same harness-neutral contract;

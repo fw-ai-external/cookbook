@@ -51,18 +51,6 @@ def _required_sampling_logprobs(turn: TITOTurn) -> list[float]:
     return [float(value) for value in values if value is not None]
 
 
-def _request_semantically_continues_turn(
-    prior: TITOTurn,
-    later: TITOTurn,
-) -> bool:
-    """Return whether a later accepted request contains the prior action."""
-    expected = (*prior.request.messages, prior.assistant.message)
-    messages = later.request.messages
-    return len(messages) >= len(expected) and all(
-        actual == prior_message for actual, prior_message in zip(messages, expected)
-    )
-
-
 def _turn_exactly_continues_prior(prior: TITOTurn, turn: TITOTurn) -> bool:
     if turn.prompt_disposition == "append":
         checkpoint = prior.exact_checkpoint_ids
@@ -388,9 +376,8 @@ def _materialize_tito_trajectory(
         raise ValueError("max_context_tokens must be positive")
     visible = set(harness_visible_turn_ids or ())
     abandoned = set(harness_abandoned_turn_ids or ())
-    turns_by_id = {
-        turn.turn_id: turn for segment in result.segments for turn in segment.turns
-    }
+    turns = [turn for segment in result.segments for turn in segment.turns]
+    turns_by_id = {turn.turn_id: turn for turn in turns}
     unknown_abandoned = abandoned - turns_by_id.keys()
     if unknown_abandoned:
         raise ValueError(
@@ -412,12 +399,7 @@ def _materialize_tito_trajectory(
         for attempt in result.response_attempts
         if attempt.emission == "completed"
     )
-    chronological_turns = [
-        turn for segment in result.segments for turn in segment.turns
-    ]
-    for prior, later in zip(chronological_turns, chronological_turns[1:]):
-        if _request_semantically_continues_turn(prior, later):
-            visible.add(prior.turn_id)
+    visible.update(result.continued_turn_ids())
     visible.difference_update(abandoned)
     fail_closed_turn_ids = {
         call.turn_id
@@ -467,9 +449,7 @@ def _materialize_tito_trajectory(
                     raise ValueError(
                         "the first turn in a TITO segment must start a new segment"
                     )
-            elif prior_turn is None or not _turn_exactly_continues_prior(
-                prior_turn, turn
-            ):
+            elif prior_turn is None or not _turn_exactly_continues_prior(prior_turn, turn):
                 raise ValueError(
                     "turn disposition does not continue its exact prior checkpoint"
                 )
@@ -567,7 +547,7 @@ def _materialize_tito_trajectory(
         raise ValueError("malformed tool call was not retained as a trainable turn")
 
     sampled_completion_tokens = sum(
-        len(turn.exact_completion_ids) for turn in chronological_turns
+        len(turn.exact_completion_ids) for turn in turns
     )
     abandoned_tokens = sum(
         len(turns_by_id[turn_id].exact_completion_ids) for turn_id in abandoned
@@ -581,7 +561,7 @@ def _materialize_tito_trajectory(
         raise ValueError("fail-closed coverage accounting underflowed")
     invisible_tokens = sum(
         len(turn.exact_completion_ids)
-        for turn in chronological_turns
+        for turn in turns
         if turn.turn_id not in visible and turn.turn_id not in abandoned
     )
     unaccounted_tokens = sampled_completion_tokens - (
